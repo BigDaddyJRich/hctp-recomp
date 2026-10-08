@@ -1057,6 +1057,19 @@ index 589d768..3e543e3 100644
  if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
      set_target_properties(ps2EntryRunner PROPERTIES
          UNITY_BUILD ON
+diff --git a/ps2xRuntime/cmake/ReleaseMode.cmake b/ps2xRuntime/cmake/ReleaseMode.cmake
+index 92ef0d5..163ceb0 100644
+--- a/ps2xRuntime/cmake/ReleaseMode.cmake
++++ b/ps2xRuntime/cmake/ReleaseMode.cmake
+@@ -15,7 +15,7 @@ function(EnableFastReleaseMode TargetName)
+                 /Gw # global data in COMDAT
+                 /GF # string pooling
+                 /Zc:inline # remove unreferenced inline
+-                /fp:fast # fast math (graphics friendly)
++                /fp:precise # exact float maths: the game's float code and the VU model must not be reordered or fused
+                 /DNDEBUG
+                 /arch:AVX2 # Advanced Vector Extensions 2
+                 /GS- # Disable Buffer Security Check (faster)
 diff --git a/ps2xRuntime/include/ps2_call_list.h b/ps2xRuntime/include/ps2_call_list.h
 index 94a6fa1..ac60b23 100644
 --- a/ps2xRuntime/include/ps2_call_list.h
@@ -1888,6 +1901,26 @@ index 2012083..c17aace 100644
  
      GifArbiter() = default;
      explicit GifArbiter(ProcessPacketFn processFn);
+diff --git a/ps2xRuntime/include/runtime/gs/ps2_gs_memory.h b/ps2xRuntime/include/runtime/gs/ps2_gs_memory.h
+index c784ff7..bb5eb6a 100644
+--- a/ps2xRuntime/include/runtime/gs/ps2_gs_memory.h
++++ b/ps2xRuntime/include/runtime/gs/ps2_gs_memory.h
+@@ -585,4 +585,14 @@ namespace GSMem
+ 	u32 ReadP4HH(u8* data, u32 bp, u32 bw, u32 x, u32 y);
+ 
+ 	u32 ReadNull(u8* data, u32 bp, u32 bw, u32 x, u32 y);
++
++	// The page lookup tables those reads and writes use (ps2_gs_memory.cpp), for callers that inline a read: the
++	// rasteriser's per-pixel texture reads call PixelStorageTraits<...>::Read with the same table directly.
++	extern PixelStorageTraits<C32>::PageLookupTableT PageTableC32;
++	extern PixelStorageTraits<C16>::PageLookupTableT PageTableC16;
++	extern PixelStorageTraits<C16S>::PageLookupTableT PageTableC16S;
++	extern PixelStorageTraits<P8>::PageLookupTableT PageTableP8;
++	extern PixelStorageTraits<P4>::PageLookupTableT PageTableP4;
++	extern PixelStorageTraits<Z32>::PageLookupTableT PageTableZ32;
++	extern PixelStorageTraits<Z16>::PageLookupTableT PageTableZ16;
+ }
+\ No newline at end of file
 diff --git a/ps2xRuntime/include/runtime/ps2_audio.h b/ps2xRuntime/include/runtime/ps2_audio.h
 index a8c2a55..4ba7728 100644
 --- a/ps2xRuntime/include/runtime/ps2_audio.h
@@ -2585,10 +2618,10 @@ index 67c8184..633a964 100644
      void flushPipelines();
 diff --git a/ps2xRuntime/include/runtime/ps2_vu1_compiled.h b/ps2xRuntime/include/runtime/ps2_vu1_compiled.h
 new file mode 100644
-index 0000000..fe366eb
+index 0000000..d84c38b
 --- /dev/null
 +++ b/ps2xRuntime/include/runtime/ps2_vu1_compiled.h
-@@ -0,0 +1,331 @@
+@@ -0,0 +1,499 @@
 +#ifndef PS2_VU1_COMPILED_H
 +#define PS2_VU1_COMPILED_H
 +
@@ -2813,6 +2846,174 @@ index 0000000..fe366eb
 +            flags |= 0x20u;
 +        return flags;
 +    }
++}
++
++// The same rules on all four lanes of a register at once (SSE / AVX2): per lane exactly the operations of the
++// vu1fast helpers above, in the same order. Results are stored as whole registers (store<Dest> blends the lanes that
++// aren't written), so a later whole-register load is forwarded from one store. Dest / Lanes: bit c = component c
++// (x = bit 0). Without AVX2, V is four floats and each helper runs the vu1fast helper per lane.
++namespace vu1v
++{
++#if defined(__AVX2__)
++    using V = __m128;
++    using VI = __m128i;
++
++    VU1_FORCEINLINE V load(const float *p) { return _mm_loadu_ps(p); }
++    VU1_FORCEINLINE V loadBytes(const uint8_t *p) { return _mm_loadu_ps(reinterpret_cast<const float *>(p)); }
++    VU1_FORCEINLINE V splat(float value) { return _mm_set1_ps(value); }
++    VU1_FORCEINLINE V add(V a, V b) { return _mm_add_ps(a, b); }
++    VU1_FORCEINLINE V sub(V a, V b) { return _mm_sub_ps(a, b); }
++    VU1_FORCEINLINE V mul(V a, V b) { return _mm_mul_ps(a, b); }
++    // (a > b) ? a : b and (a < b) ? a : b per lane — MAXPS / MINPS return the second operand when equal (no NaN
++    // reaches them: operands are clamped)
++    VU1_FORCEINLINE V max(V a, V b) { return _mm_max_ps(a, b); }
++    VU1_FORCEINLINE V min(V a, V b) { return _mm_min_ps(a, b); }
++
++    // = vu1fast::operand per lane: denormals -> signed zero, Inf / NaN -> signed max
++    VU1_FORCEINLINE V operand(V value)
++    {
++        const __m128i bits = _mm_castps_si128(value);
++        const __m128i exponentMask = _mm_set1_epi32(0x7F800000);
++        const __m128i exponent = _mm_and_si128(bits, exponentMask);
++        const __m128i sign = _mm_and_si128(bits, _mm_set1_epi32(static_cast<int>(0x80000000u)));
++        __m128i out = _mm_blendv_epi8(bits, sign, _mm_cmpeq_epi32(exponent, _mm_setzero_si128()));
++        out = _mm_blendv_epi8(out, _mm_or_si128(sign, _mm_set1_epi32(0x7F7FFFFF)), _mm_cmpeq_epi32(exponent, exponentMask));
++        return _mm_castsi128_ps(out);
++    }
++
++    VU1_FORCEINLINE V abs(V value) { return _mm_andnot_ps(_mm_set1_ps(-0.0f), value); }
++
++    // acc ± a·b = vu1fast::exactResult(c ± a * b, (double)c ± (double)a * (double)b) per written lane: the float
++    // result unless the exact one is zero / below the smallest normal / above the largest float, which take the
++    // scalar rule (rare)
++    template <unsigned Dest, bool Subtract>
++    VU1_FORCEINLINE V fused(V c, V a, V b)
++    {
++        const V value = Subtract ? _mm_sub_ps(c, _mm_mul_ps(a, b)) : _mm_add_ps(c, _mm_mul_ps(a, b));
++        const __m256d product = _mm256_mul_pd(_mm256_cvtps_pd(a), _mm256_cvtps_pd(b));
++        const __m256d exact = Subtract ? _mm256_sub_pd(_mm256_cvtps_pd(c), product)
++                                       : _mm256_add_pd(_mm256_cvtps_pd(c), product);
++        const __m256d magnitude = _mm256_andnot_pd(_mm256_set1_pd(-0.0), exact);
++        const __m256d special = _mm256_or_pd(
++            _mm256_cmp_pd(magnitude, _mm256_set1_pd(static_cast<double>(std::numeric_limits<float>::min())), _CMP_LT_OQ),
++            _mm256_cmp_pd(magnitude, _mm256_set1_pd(static_cast<double>(std::numeric_limits<float>::max())), _CMP_GT_OQ));
++        const unsigned lanes = static_cast<unsigned>(_mm256_movemask_pd(special)) & Dest;
++        if (lanes == 0u)
++            return value;
++        alignas(16) float values[4];
++        alignas(32) double exacts[4];
++        _mm_store_ps(values, value);
++        _mm256_store_pd(exacts, exact);
++        for (unsigned component = 0; component < 4u; ++component)
++        {
++            if ((lanes & (1u << component)) != 0u)
++                values[component] = vu1fast::exactResult(values[component], exacts[component]);
++        }
++        return _mm_load_ps(values);
++    }
++
++    // = vu1fast::floatToInt(value, scale) per lane: (double)value * scale, clamped to int32, truncated
++    VU1_FORCEINLINE V floatToInt(V value, float scale)
++    {
++        __m256d scaled = _mm256_mul_pd(_mm256_cvtps_pd(value), _mm256_set1_pd(static_cast<double>(scale)));
++        scaled = _mm256_min_pd(_mm256_max_pd(scaled, _mm256_set1_pd(static_cast<double>(std::numeric_limits<int32_t>::min()))),
++                               _mm256_set1_pd(static_cast<double>(std::numeric_limits<int32_t>::max())));
++        return _mm_castsi128_ps(_mm256_cvttpd_epi32(scaled));
++    }
++
++    // static_cast<float>(int32 lane bits) / divisor (ITOF4 / 12 / 15; ITOF0 = intToFloat(v))
++    VU1_FORCEINLINE V intToFloat(V bits) { return _mm_cvtepi32_ps(_mm_castps_si128(bits)); }
++    VU1_FORCEINLINE V intToFloat(V bits, float divisor) { return _mm_div_ps(_mm_cvtepi32_ps(_mm_castps_si128(bits)), _mm_set1_ps(divisor)); }
++
++    // MR32: (y, z, w, x)
++    VU1_FORCEINLINE V rotate(V value) { return _mm_shuffle_ps(value, value, _MM_SHUFFLE(0, 3, 2, 1)); }
++    // an integer's bits in every lane (MFIR)
++    VU1_FORCEINLINE V splatBits(int32_t bits) { return _mm_castsi128_ps(_mm_set1_epi32(bits)); }
++
++    template <unsigned Dest>
++    VU1_FORCEINLINE void store(float *p, V value)
++    {
++        if constexpr (Dest == 0xFu)
++            _mm_storeu_ps(p, value);
++        else
++            _mm_storeu_ps(p, _mm_blend_ps(_mm_loadu_ps(p), value, static_cast<int>(Dest)));
++    }
++#else
++    struct V
++    {
++        float f[4];
++    };
++
++    VU1_FORCEINLINE V load(const float *p) { V out; std::memcpy(out.f, p, 16); return out; }
++    VU1_FORCEINLINE V loadBytes(const uint8_t *p) { V out; std::memcpy(out.f, p, 16); return out; }
++    VU1_FORCEINLINE V splat(float value) { return V{{value, value, value, value}}; }
++    template <typename F>
++    VU1_FORCEINLINE V each(V a, V b, F f) { return V{{f(a.f[0], b.f[0]), f(a.f[1], b.f[1]), f(a.f[2], b.f[2]), f(a.f[3], b.f[3])}}; }
++    VU1_FORCEINLINE V add(V a, V b) { return each(a, b, [](float x, float y) { return x + y; }); }
++    VU1_FORCEINLINE V sub(V a, V b) { return each(a, b, [](float x, float y) { return x - y; }); }
++    VU1_FORCEINLINE V mul(V a, V b) { return each(a, b, [](float x, float y) { return x * y; }); }
++    VU1_FORCEINLINE V max(V a, V b) { return each(a, b, [](float x, float y) { return x > y ? x : y; }); }
++    VU1_FORCEINLINE V min(V a, V b) { return each(a, b, [](float x, float y) { return x < y ? x : y; }); }
++    VU1_FORCEINLINE V operand(V v) { return V{{vu1fast::operand(v.f[0]), vu1fast::operand(v.f[1]), vu1fast::operand(v.f[2]), vu1fast::operand(v.f[3])}}; }
++    VU1_FORCEINLINE V abs(V v) { return V{{std::fabs(v.f[0]), std::fabs(v.f[1]), std::fabs(v.f[2]), std::fabs(v.f[3])}}; }
++
++    template <unsigned Dest, bool Subtract>
++    VU1_FORCEINLINE V fused(V c, V a, V b)
++    {
++        V out;
++        for (unsigned k = 0; k < 4u; ++k)
++        {
++            const double exact = Subtract ? static_cast<double>(c.f[k]) - static_cast<double>(a.f[k]) * static_cast<double>(b.f[k])
++                                          : static_cast<double>(c.f[k]) + static_cast<double>(a.f[k]) * static_cast<double>(b.f[k]);
++            out.f[k] = vu1fast::exactResult(Subtract ? c.f[k] - a.f[k] * b.f[k] : c.f[k] + a.f[k] * b.f[k], exact);
++        }
++        return out;
++    }
++
++    VU1_FORCEINLINE V floatToInt(V v, float scale)
++    {
++        V out;
++        for (unsigned k = 0; k < 4u; ++k)
++        {
++            const int32_t i = vu1fast::floatToInt(v.f[k], scale);
++            std::memcpy(&out.f[k], &i, 4);
++        }
++        return out;
++    }
++
++    VU1_FORCEINLINE V intToFloat(V bits)
++    {
++        V out;
++        for (unsigned k = 0; k < 4u; ++k)
++        {
++            int32_t i;
++            std::memcpy(&i, &bits.f[k], 4);
++            out.f[k] = static_cast<float>(i);
++        }
++        return out;
++    }
++
++    VU1_FORCEINLINE V intToFloat(V bits, float divisor)
++    {
++        V out = intToFloat(bits);
++        for (unsigned k = 0; k < 4u; ++k)
++            out.f[k] = out.f[k] / divisor;
++        return out;
++    }
++
++    VU1_FORCEINLINE V rotate(V v) { return V{{v.f[1], v.f[2], v.f[3], v.f[0]}}; }
++    VU1_FORCEINLINE V splatBits(int32_t bits) { float f; std::memcpy(&f, &bits, 4); return splat(f); }
++
++    template <unsigned Dest>
++    VU1_FORCEINLINE void store(float *p, V value)
++    {
++        for (unsigned k = 0; k < 4u; ++k)
++        {
++            if ((Dest & (1u << k)) != 0u)
++                p[k] = value.f[k];
++        }
++    }
++#endif
 +}
 +
 +// The compiled code's access to the interpreter (a friend of VU1Interpreter). The generated functions take
@@ -3676,6 +3877,32 @@ index 56a978e..beb7eb1 100644
      }
  
      void sceCdStPause(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/Compatibility.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/Compatibility.cpp
+index 9f8f59f..5beeb91 100644
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/Compatibility.cpp
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/Compatibility.cpp
+@@ -8,7 +8,10 @@ namespace ps2_stubs
+     {
+         const uint32_t count = getRegU32(ctx, 5); // $a1
+         const uint32_t size = getRegU32(ctx, 6);  // $a2
+-        const uint32_t guestAddr = runtime ? runtime->guestCalloc(count, size) : 0u;
++        // as newlib: a zero count or size still gets a valid minimum block
++        const uint32_t guestAddr = runtime ? (count != 0u && size != 0u ? runtime->guestCalloc(count, size)
++                                                                         : runtime->guestCalloc(1u, 1u))
++                                           : 0u;
+         setReturnU32(ctx, guestAddr);
+     }
+ 
+@@ -58,7 +61,8 @@ namespace ps2_stubs
+     void malloc_r(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+     {
+         const uint32_t size = getRegU32(ctx, 5); // $a1
+-        const uint32_t guestAddr = runtime ? runtime->guestMalloc(size) : 0u;
++        // newlib's malloc(0) returns a valid minimum block, not NULL
++        const uint32_t guestAddr = runtime ? runtime->guestMalloc(size != 0u ? size : 1u) : 0u;
+         setReturnU32(ctx, guestAddr);
+     }
+ 
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/Font.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/Font.cpp
 index 41e4387..84dfee4 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/Font.cpp
@@ -3823,11 +4050,173 @@ index 9c54919..1476278 100644
                  result |= 0x10;
  
              setReturnS32(ctx, result);
+diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h b/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h
+index b1bb6d8..11fc11e 100644
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h
+@@ -773,6 +773,11 @@ namespace
+         return out;
+     }
+ 
++    // The EE calling convention (MIPS EABI with 64-bit registers): every argument takes one 64-bit slot — the eight
++    // argument registers a0-a3 / t0-t3 (r4-r11), then the caller's stack from its sp + 0 in 8-byte slots — and a
++    // soft-float double is one such slot. A va_list walks the same 8-byte slots (a variadic function spills t0..t3
++    // with sd next to the caller's stack arguments). (The O32 rules used before — 4-byte slots, doubles in two
++    // registers, stack arguments from sp + 0x10 — read the second of two va_list arguments as 0 / -1.)
+     class Ps2VarArgCursor
+     {
+     public:
+@@ -781,7 +786,7 @@ namespace
+               m_ctx(ctx),
+               m_runtime(runtime),
+               m_fixedArgs(fixedArgs),
+-              m_stackBase(getRegU32(ctx, 29) + 0x10)
++              m_stackBase(getRegU32(ctx, 29))
+         {
+             if (m_fixedArgs < 0)
+             {
+@@ -792,38 +797,31 @@ namespace
+ 
+         uint32_t nextU32()
+         {
+-            const uint32_t value = readWordAtSlot(m_slotIndex);
+-            ++m_slotIndex;
+-            return value;
++            return static_cast<uint32_t>(nextU64());
+         }
+ 
+         uint64_t nextU64()
+         {
+-            // O32 ABI aligns 64-bit variadic values on even 32-bit slots.
+-            if ((m_slotIndex & 1u) != 0u)
+-            {
+-                ++m_slotIndex;
+-            }
+-            const uint64_t low = readWordAtSlot(m_slotIndex);
+-            const uint64_t high = readWordAtSlot(m_slotIndex + 1u);
+-            m_slotIndex += 2u;
+-            return low | (high << 32);
++            const uint64_t value = readSlot(m_slotIndex);
++            ++m_slotIndex;
++            return value;
+         }
+ 
+     private:
+-        uint32_t readWordAtSlot(uint32_t slotIndex) const
++        uint64_t readSlot(uint32_t slotIndex) const
+         {
+             if (slotIndex < 8u)
+             {
+-                // EE calls use eight integer argument registers (a0-a3, t0-t3 / r4-r11).
+-                return getRegU32(m_ctx, 4 + static_cast<int>(slotIndex));
++                const int reg = 4 + static_cast<int>(slotIndex);
++                return static_cast<uint64_t>(_mm_extract_epi64(m_ctx->r[reg], 0));
+             }
+ 
+-            const uint32_t stackIndex = slotIndex - 8u;
+-            const uint32_t stackAddr = m_stackBase + stackIndex * 4u;
+-            uint32_t value = 0;
+-            (void)tryReadWordFromGuest(m_rdram, m_runtime, stackAddr, value);
+-            return value;
++            const uint32_t stackAddr = m_stackBase + (slotIndex - 8u) * 8u;
++            uint32_t low = 0;
++            uint32_t high = 0;
++            (void)tryReadWordFromGuest(m_rdram, m_runtime, stackAddr, low);
++            (void)tryReadWordFromGuest(m_rdram, m_runtime, stackAddr + 4u, high);
++            return static_cast<uint64_t>(low) | (static_cast<uint64_t>(high) << 32);
+         }
+ 
+         uint8_t *m_rdram;
+@@ -844,18 +842,17 @@ namespace
+ 
+         uint32_t nextU32()
+         {
+-            uint32_t value = 0;
+-            (void)tryReadWordFromGuest(m_rdram, m_runtime, m_curr, value);
+-            m_curr += 4;
+-            return value;
++            return static_cast<uint32_t>(nextU64());
+         }
+ 
+         uint64_t nextU64()
+         {
+-            m_curr = (m_curr + 7u) & ~7u;
+-            const uint64_t low = nextU32();
+-            const uint64_t high = nextU32();
+-            return low | (high << 32);
++            uint32_t low = 0;
++            uint32_t high = 0;
++            (void)tryReadWordFromGuest(m_rdram, m_runtime, m_curr, low);
++            (void)tryReadWordFromGuest(m_rdram, m_runtime, m_curr + 4u, high);
++            m_curr += 8u;
++            return static_cast<uint64_t>(low) | (static_cast<uint64_t>(high) << 32);
+         }
+ 
+     private:
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/LibC.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/LibC.cpp
-index d467c4b..b35b6a9 100644
+index d467c4b..8832003 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/LibC.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/LibC.cpp
-@@ -571,7 +571,10 @@ namespace ps2_stubs
+@@ -50,7 +50,8 @@ namespace ps2_stubs
+     void malloc(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+     {
+         const uint32_t size = getRegU32(ctx, 4); // $a0
+-        const uint32_t guestAddr = runtime ? runtime->guestMalloc(size) : 0u;
++        // newlib's malloc(0) returns a valid minimum block, not NULL
++        const uint32_t guestAddr = runtime ? runtime->guestMalloc(size != 0u ? size : 1u) : 0u;
+         setReturnU32(ctx, guestAddr);
+     }
+ 
+@@ -75,7 +76,10 @@ namespace ps2_stubs
+     {
+         const uint32_t count = getRegU32(ctx, 4); // $a0
+         const uint32_t size = getRegU32(ctx, 5);  // $a1
+-        const uint32_t guestAddr = runtime ? runtime->guestCalloc(count, size) : 0u;
++        // as newlib: a zero count or size still gets a valid minimum block
++        const uint32_t guestAddr = runtime ? (count != 0u && size != 0u ? runtime->guestCalloc(count, size)
++                                                                         : runtime->guestCalloc(1u, 1u))
++                                           : 0u;
+         setReturnU32(ctx, guestAddr);
+     }
+ 
+@@ -347,7 +351,16 @@ namespace ps2_stubs
+ 
+         if (hostStr1 && hostStr2)
+         {
+-            result = ::strcmp(hostStr1, hostStr2);
++            // newlib's result: the difference of the first differing bytes, as unsigned chars (the host CRT may
++            // return just -1 / 0 / 1)
++            const unsigned char *a = reinterpret_cast<const unsigned char *>(hostStr1);
++            const unsigned char *b = reinterpret_cast<const unsigned char *>(hostStr2);
++            while (*a != 0u && *a == *b)
++            {
++                ++a;
++                ++b;
++            }
++            result = static_cast<int>(*a) - static_cast<int>(*b);
+         }
+         else
+         {
+@@ -375,7 +388,17 @@ namespace ps2_stubs
+ 
+         if (hostStr1 && hostStr2)
+         {
+-            result = ::strncmp(hostStr1, hostStr2, size);
++            // newlib's result: the difference of the first differing bytes within size, as unsigned chars
++            const unsigned char *a = reinterpret_cast<const unsigned char *>(hostStr1);
++            const unsigned char *b = reinterpret_cast<const unsigned char *>(hostStr2);
++            uint32_t left = size;
++            while (left != 0u && *a != 0u && *a == *b)
++            {
++                ++a;
++                ++b;
++                --left;
++            }
++            result = left == 0u ? 0 : static_cast<int>(*a) - static_cast<int>(*b);
+         }
+         else
+         {
+@@ -571,7 +594,10 @@ namespace ps2_stubs
          const std::string formatOwned = readPs2CStringBounded(rdram, runtime, format_addr, 1024);
          int ret = -1;
  
@@ -3839,7 +4228,7 @@ index d467c4b..b35b6a9 100644
          {
              const uint32_t watchBase = ps2PathWatchPhysAddr();
              const uint32_t watchEnd = watchBase + PS2_PATH_WATCH_BYTES;
-@@ -612,9 +615,10 @@ namespace ps2_stubs
+@@ -612,9 +638,10 @@ namespace ps2_stubs
          }
          else
          {
@@ -3852,7 +4241,7 @@ index d467c4b..b35b6a9 100644
                        << std::endl;
          }
  
-@@ -1147,7 +1151,8 @@ namespace ps2_stubs
+@@ -1147,7 +1174,8 @@ namespace ps2_stubs
          const std::string formatOwned = readPs2CStringBounded(rdram, runtime, format_addr, 1024);
          int ret = -1;
  
@@ -3862,7 +4251,7 @@ index d467c4b..b35b6a9 100644
          {
              std::string rendered = formatPs2StringWithVaList(rdram, runtime, formatOwned.c_str(), va_list_addr);
              if (rendered.size() >= kSafeVsprintfBytes)
-@@ -1166,9 +1171,10 @@ namespace ps2_stubs
+@@ -1166,9 +1194,10 @@ namespace ps2_stubs
          }
          else
          {
@@ -4734,7 +5123,7 @@ index 9614016..7d8d39c 100644
          else if (stack != 0u)
          {
 diff --git a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
-index f0ad507..4727aa7 100644
+index f0ad507..8f554f5 100644
 --- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 @@ -1,3 +1,8 @@
@@ -5404,7 +5793,7 @@ index f0ad507..4727aa7 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      m_texturePageCache.Invalidate();
  }
-@@ -655,6 +1079,7 @@ void GSCpuBackend::Sync(GSSyncReason)
+@@ -655,40 +1079,114 @@ void GSCpuBackend::Sync(GSSyncReason)
  uint32_t GSCpuBackend::ReadVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y) const
  {
      std::lock_guard<std::mutex> lock(m_mutex);
@@ -5412,7 +5801,77 @@ index f0ad507..4727aa7 100644
      return ReadVramUnlocked(psm, base, bw, x, y);
  }
  
-@@ -665,17 +1090,21 @@ uint32_t GSCpuBackend::ReadVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw
+-uint32_t GSCpuBackend::ReadVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y) const
++namespace
++{
++    // The reads / writes m_readVramFuncs / m_writeVramFuncs make for the frame and depth formats drawing uses most
++    // (GSMem::ReadCT32 / CT24 / CT16 / Z32 / Z24 / Z16 and the writes), inlined; false = another format.
++    GS_FORCEINLINE bool readVramDirect(uint32_t psm, const uint8_t *vram, u32 base, u32 bw, u32 x, u32 y, u32 &out)
++    {
++        using namespace GSMem;
++        switch (psm)
++        {
++        case GS_PSM_CT32:
++            out = PixelStorageTraits<C32>::Read(PageTableC32, vram, base, bw, x, y);
++            return true;
++        case GS_PSM_CT24:
++            out = PixelStorageTraits<C24>::Read(PageTableC32, vram, base, bw, x, y);
++            return true;
++        case GS_PSM_CT16:
++            out = PixelStorageTraits<C16>::Read(PageTableC16, vram, base, bw, x, y);
++            return true;
++        case GS_PSM_Z32:
++            out = PixelStorageTraits<Z32>::Read(PageTableZ32, vram, base, bw, x, y);
++            return true;
++        case GS_PSM_Z24:
++            out = PixelStorageTraits<Z24>::Read(PageTableZ32, vram, base, bw, x, y);
++            return true;
++        case GS_PSM_Z16:
++            out = PixelStorageTraits<Z16>::Read(PageTableZ16, vram, base, bw, x, y);
++            return true;
++        default:
++            return false;
++        }
++    }
++
++    GS_FORCEINLINE bool writeVramDirect(uint32_t psm, uint8_t *vram, u32 base, u32 bw, u32 x, u32 y, u32 value)
++    {
++        using namespace GSMem;
++        switch (psm)
++        {
++        case GS_PSM_CT32:
++            PixelStorageTraits<C32>::Write(PageTableC32, vram, base, bw, x, y, value);
++            return true;
++        case GS_PSM_CT24:
++            PixelStorageTraits<C24>::Write(PageTableC32, vram, base, bw, x, y, value);
++            return true;
++        case GS_PSM_CT16:
++            PixelStorageTraits<C16>::Write(PageTableC16, vram, base, bw, x, y, static_cast<u16>(value));
++            return true;
++        case GS_PSM_Z32:
++            PixelStorageTraits<Z32>::Write(PageTableZ32, vram, base, bw, x, y, value);
++            return true;
++        case GS_PSM_Z24:
++            PixelStorageTraits<Z24>::Write(PageTableZ32, vram, base, bw, x, y, value);
++            return true;
++        case GS_PSM_Z16:
++            PixelStorageTraits<Z16>::Write(PageTableZ16, vram, base, bw, x, y, static_cast<u16>(value));
++            return true;
++        default:
++            return false;
++        }
++    }
++}
++
++GS_FORCEINLINE uint32_t GSCpuBackend::ReadVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y) const
+ {
+     if (!m_vram)
+         return 0u;
++    // the common formats inline; the reference renderer (VENDETTA_GS_VERIFY's shadow) keeps the table, so the verify
++    // mode compares the two
++    u32 out = 0u;
++    if (!m_referenceMode && readVramDirect(psm, m_vram, base, bw, x, y, out))
++        return out;
      return m_readVramFuncs[psm & 0x3Fu](m_vram, base, bw, x, y);
  }
  
@@ -5436,7 +5895,16 @@ index f0ad507..4727aa7 100644
      WriteVramUnlocked(psm, base, bw, x, y, value);
  }
  
-@@ -689,6 +1118,7 @@ void GSCpuBackend::WriteVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw, u
+-void GSCpuBackend::WriteVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint32_t value)
++GS_FORCEINLINE void GSCpuBackend::WriteVramUnlocked(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y, uint32_t value)
+ {
+     if (!m_vram)
+         return;
++    if (!m_referenceMode && writeVramDirect(psm, m_vram, base, bw, x, y, value))
++        return;
+     m_writeVramFuncs[psm & 0x3Fu](m_vram, base, bw, x, y, value);
+ }
+ 
  void GSCpuBackend::SnapshotVram(std::vector<uint8_t> &out) const
  {
      std::lock_guard<std::mutex> lock(m_mutex);
@@ -5444,7 +5912,7 @@ index f0ad507..4727aa7 100644
      if (!m_vram || m_vramSize == 0u)
      {
          out.clear();
-@@ -708,10 +1138,37 @@ GSTransferSnapshot GSCpuBackend::GetTransferSnapshot() const
+@@ -708,10 +1206,37 @@ GSTransferSnapshot GSCpuBackend::GetTransferSnapshot() const
      return result;
  }
  
@@ -5483,7 +5951,7 @@ index f0ad507..4727aa7 100644
      PS2_IF_AGRESSIVE_LOGS({
          const uint32_t primitiveIndex = s_debugPrimitiveCount.fetch_add(1u, std::memory_order_relaxed);
          if (primitiveIndex < 64u)
-@@ -821,16 +1278,16 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
+@@ -821,16 +1346,16 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
      switch (state.prim.type)
      {
      case GS_PRIM_SPRITE:
@@ -5503,7 +5971,7 @@ index f0ad507..4727aa7 100644
          break;
      case GS_PRIM_POINT:
      {
-@@ -838,7 +1295,8 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
+@@ -838,7 +1363,8 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
          const auto &ctx = state.context;
          int px = static_cast<int>(v.x) - (ctx.xyoffset.ofx >> 4);
          int py = static_cast<int>(v.y) - (ctx.xyoffset.ofy >> 4);
@@ -5513,17 +5981,30 @@ index f0ad507..4727aa7 100644
          break;
      }
      default:
-@@ -1012,7 +1470,8 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
+@@ -1012,12 +1538,16 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
      }
  }
  
 -uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
-+GS_FORCEINLINE uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
-+                                  const uint16_t *clut,
-                                   uint8_t index,
-                                   uint8_t cpsm,
-                                   uint8_t csm,
-@@ -1037,17 +1496,17 @@ uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
+-                                  uint8_t index,
+-                                  uint8_t cpsm,
+-                                  uint8_t csm,
+-                                  uint8_t csa,
+-                                  uint8_t sourcePsm)
++namespace
++{
++    // a palette entry as RGBA (GSCpuBackend::LookupCLUT; free, for the format-specific texel samplers)
++    GS_FORCEINLINE uint32_t clutColor(const GSDrawState &state,
++                                      const uint16_t *clut,
++                                      uint8_t index,
++                                      uint8_t cpsm,
++                                      uint8_t csm,
++                                      uint8_t csa,
++                                      uint8_t sourcePsm)
+ {
+     const bool sixteenBit = cpsm == GS_PSM_CT16 || cpsm == GS_PSM_CT16S;
+     const uint32_t csaMask = sixteenBit ? 0x1Fu : 0x0Fu;
+@@ -1037,17 +1567,17 @@ uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
      {
      case GS_PSM_CT32:
      {
@@ -5544,16 +6025,102 @@ index f0ad507..4727aa7 100644
      default:
          break;
      }
-@@ -1055,7 +1514,7 @@ uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
+@@ -1055,7 +1585,93 @@ uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
      return 0xFFFF00FFu;
  }
  
 -uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t, float q, uint16_t u, uint16_t v)
++    // a texel of texture format Psm straight from GS memory: the read m_readVramFuncs[Psm] makes
++    // (GSMem::ReadCT32 / ReadCT24 / ReadCT16 / ReadCT16S / ReadP8 / ReadP4), inlined
++    template <uint8_t Psm>
++    GS_FORCEINLINE uint32_t readTexel(const uint8_t *vram, uint32_t base, uint32_t bw, uint32_t x, uint32_t y)
++    {
++        using namespace GSMem;
++        if constexpr (Psm == GS_PSM_CT32)
++            return PixelStorageTraits<C32>::Read(PageTableC32, vram, base, bw, x, y);
++        else if constexpr (Psm == GS_PSM_CT24)
++            return PixelStorageTraits<C24>::Read(PageTableC32, vram, base, bw, x, y);
++        else if constexpr (Psm == GS_PSM_CT16)
++            return PixelStorageTraits<C16>::Read(PageTableC16, vram, base, bw, x, y);
++        else if constexpr (Psm == GS_PSM_CT16S)
++            return PixelStorageTraits<C16S>::Read(PageTableC16S, vram, base, bw, x, y);
++        else if constexpr (Psm == GS_PSM_T8)
++            return PixelStorageTraits<P8>::Read(PageTableP8, vram, base, bw, x, y);
++        else
++        {
++            static_assert(Psm == GS_PSM_T4);
++            return PixelStorageTraits<P4>::Read(PageTableP4, vram, base, bw, x, y);
++        }
++    }
++
++    // one texel of a texture whose format is known ahead (the generic sampler in SampleTexture, with its format
++    // switch and the read through m_readVramFuncs resolved at compile time)
++    template <uint8_t Psm>
++    struct FormatTexelSampler
++    {
++        const GSDrawState &state;
++        const uint16_t *clut;
++        const GSTex0Reg &tex;
++        const uint8_t *vram;
++        int texW, texH;
++        uint8_t wrapU, wrapV;
++        uint16_t minU, maxU, minV, maxV;
++
++        GS_FORCEINLINE uint32_t operator()(int sampleU, int sampleV) const
++        {
++            sampleU = wrapTextureCoordinate(sampleU, texW, wrapU, minU, maxU);
++            sampleV = wrapTextureCoordinate(sampleV, texH, wrapV, minV, maxV);
++            const u32 out = readTexel<Psm>(vram, tex.tbp0, tex.tbw, sampleU, sampleV);
++            if constexpr (Psm == GS_PSM_CT32 || Psm == GS_PSM_CT24)
++                return applyTexa(state.texa, Psm, out);
++            else if constexpr (Psm == GS_PSM_CT16 || Psm == GS_PSM_CT16S)
++                return applyTexa(state.texa, Psm, Rgba5551ToRgba8888(out));
++            else
++                return clutColor(state, clut, static_cast<u8>(out), tex.cpsm, tex.csm, tex.csa, Psm);
++        }
++    };
++
++    // point or bilinear sampling with a texel sampler (shared by the generic and the format-specific paths)
++    template <typename Sampler>
++    GS_FORCEINLINE uint32_t filterTexture(const Sampler &samplePoint, bool linear, float texUf, float texVf)
++    {
++        if (!linear)
++            return samplePoint(static_cast<int>(texUf), static_cast<int>(texVf));
++
++        const float sampleU = texUf - 0.5f;
++        const float sampleV = texVf - 0.5f;
++        const int u0 = static_cast<int>(std::floor(sampleU));
++        const int v0 = static_cast<int>(std::floor(sampleV));
++        const int u1 = u0 + 1;
++        const int v1 = v0 + 1;
++        const float fx = sampleU - static_cast<float>(u0);
++        const float fy = sampleV - static_cast<float>(v0);
++
++        const uint32_t c00 = samplePoint(u0, v0);
++        const uint32_t c10 = samplePoint(u1, v0);
++        const uint32_t c01 = samplePoint(u0, v1);
++        const uint32_t c11 = samplePoint(u1, v1);
++
++        return bilinearBlend(c00, c10, c01, c11, fx, fy);
++    }
++}
++
++GS_FORCEINLINE uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
++                                                 const uint16_t *clut,
++                                                 uint8_t index,
++                                                 uint8_t cpsm,
++                                                 uint8_t csm,
++                                                 uint8_t csa,
++                                                 uint8_t sourcePsm)
++{
++    return clutColor(state, clut, index, cpsm, csm, csa, sourcePsm);
++}
++
 +uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, const uint16_t *clut, float s, float t, float q, uint16_t u, uint16_t v)
  {
      const auto &ctx = state.context;
      const auto &tex = ctx.tex0;
-@@ -1083,35 +1542,48 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
+@@ -1083,83 +1699,82 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
          texVf = t * invQ * static_cast<float>(texH);
      }
  
@@ -5563,8 +6130,6 @@ index f0ad507..4727aa7 100644
      {
 -        sampleU = wrapTextureCoordinate(sampleU, texW, wrapU, minU, maxU);
 -        sampleV = wrapTextureCoordinate(sampleV, texH, wrapV, minV, maxV);
--
--        u32 out = ReadTextureVramUnlocked(tex.psm, tex.tbp0, tex.tbw, sampleU, sampleV);
 +        GSCpuBackend &self;
 +        const GSDrawState &state;
 +        const uint16_t *clut;
@@ -5572,32 +6137,15 @@ index f0ad507..4727aa7 100644
 +        int texW, texH;
 +        uint8_t wrapU, wrapV;
 +        uint16_t minU, maxU, minV, maxV;
- 
--        switch (tex.psm)
++
 +        GS_FORCEINLINE uint32_t operator()(int sampleU, int sampleV) const
-         {
--        case GS_PSM_CT32:
--        case GS_PSM_Z32:
--        case GS_PSM_CT24:
--        case GS_PSM_Z24:
--            return applyTexa(state.texa, tex.psm, out);
--        case GS_PSM_CT16:
--        case GS_PSM_CT16S:
--        case GS_PSM_Z16:
--        case GS_PSM_Z16S:
--            return applyTexa(state.texa, tex.psm, Rgba5551ToRgba8888(out));
--        case GS_PSM_T8:
--        case GS_PSM_T8H:
--        case GS_PSM_T4:
--        case GS_PSM_T4HL:
--        case GS_PSM_T4HH:
--            return LookupCLUT(state, static_cast<u8>(out), tex.cpsm, tex.csm, tex.csa, tex.psm);
--        }
++        {
 +            sampleU = wrapTextureCoordinate(sampleU, texW, wrapU, minU, maxU);
 +            sampleV = wrapTextureCoordinate(sampleV, texH, wrapV, minV, maxV);
-+
+ 
+-        u32 out = ReadTextureVramUnlocked(tex.psm, tex.tbp0, tex.tbw, sampleU, sampleV);
 +            u32 out = self.ReadTextureVramUnlocked(tex.psm, tex.tbp0, tex.tbw, sampleU, sampleV);
-+
+ 
 +            switch (tex.psm)
 +            {
 +            case GS_PSM_CT32:
@@ -5617,19 +6165,72 @@ index f0ad507..4727aa7 100644
 +            case GS_PSM_T4HH:
 +                return self.LookupCLUT(state, clut, static_cast<u8>(out), tex.cpsm, tex.csm, tex.csa, tex.psm);
 +            }
- 
--        return 0xFFFF00FFu;
++
 +            return 0xFFFF00FFu;
 +        }
-     };
-+    const TexelSampler samplePoint{*this, state, clut, tex, texW, texH, wrapU, wrapV, minU, maxU, minV, maxV};
++    };
++    // The common texture formats sample through a sampler with the format fixed: no indirect read call and no format
++    // switch per texel. The reference renderer (VENDETTA_GS_VERIFY's shadow) keeps the generic sampler, so the verify
++    // mode compares the two.
++    if (!m_referenceMode && m_vram)
++    {
+         switch (tex.psm)
+         {
+         case GS_PSM_CT32:
+-        case GS_PSM_Z32:
++            return filterTexture(FormatTexelSampler<GS_PSM_CT32>{state, clut, tex, m_vram, texW, texH, wrapU, wrapV, minU, maxU, minV, maxV},
++                                 state.linearFilter, texUf, texVf);
+         case GS_PSM_CT24:
+-        case GS_PSM_Z24:
+-            return applyTexa(state.texa, tex.psm, out);
++            return filterTexture(FormatTexelSampler<GS_PSM_CT24>{state, clut, tex, m_vram, texW, texH, wrapU, wrapV, minU, maxU, minV, maxV},
++                                 state.linearFilter, texUf, texVf);
+         case GS_PSM_CT16:
++            return filterTexture(FormatTexelSampler<GS_PSM_CT16>{state, clut, tex, m_vram, texW, texH, wrapU, wrapV, minU, maxU, minV, maxV},
++                                 state.linearFilter, texUf, texVf);
+         case GS_PSM_CT16S:
+-        case GS_PSM_Z16:
+-        case GS_PSM_Z16S:
+-            return applyTexa(state.texa, tex.psm, Rgba5551ToRgba8888(out));
++            return filterTexture(FormatTexelSampler<GS_PSM_CT16S>{state, clut, tex, m_vram, texW, texH, wrapU, wrapV, minU, maxU, minV, maxV},
++                                 state.linearFilter, texUf, texVf);
+         case GS_PSM_T8:
+-        case GS_PSM_T8H:
++            return filterTexture(FormatTexelSampler<GS_PSM_T8>{state, clut, tex, m_vram, texW, texH, wrapU, wrapV, minU, maxU, minV, maxV},
++                                 state.linearFilter, texUf, texVf);
+         case GS_PSM_T4:
+-        case GS_PSM_T4HL:
+-        case GS_PSM_T4HH:
+-            return LookupCLUT(state, static_cast<u8>(out), tex.cpsm, tex.csm, tex.csa, tex.psm);
++            return filterTexture(FormatTexelSampler<GS_PSM_T4>{state, clut, tex, m_vram, texW, texH, wrapU, wrapV, minU, maxU, minV, maxV},
++                                 state.linearFilter, texUf, texVf);
++        default:
++            break;
+         }
++    }
  
-     if (!state.linearFilter)
-     {
-@@ -1132,34 +1604,10 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
-     const uint32_t c01 = samplePoint(u0, v1);
-     const uint32_t c11 = samplePoint(u1, v1);
- 
+-        return 0xFFFF00FFu;
+-    };
+-
+-    if (!state.linearFilter)
+-    {
+-        return samplePoint(static_cast<int>(texUf), static_cast<int>(texVf));
+-    }
+-
+-    const float sampleU = texUf - 0.5f;
+-    const float sampleV = texVf - 0.5f;
+-    const int u0 = static_cast<int>(std::floor(sampleU));
+-    const int v0 = static_cast<int>(std::floor(sampleV));
+-    const int u1 = u0 + 1;
+-    const int v1 = v0 + 1;
+-    const float fx = sampleU - static_cast<float>(u0);
+-    const float fy = sampleV - static_cast<float>(v0);
+-
+-    const uint32_t c00 = samplePoint(u0, v0);
+-    const uint32_t c10 = samplePoint(u1, v0);
+-    const uint32_t c01 = samplePoint(u0, v1);
+-    const uint32_t c11 = samplePoint(u1, v1);
+-
 -    const uint8_t r = lerpChannel(static_cast<uint8_t>(c00 & 0xFFu),
 -                                  static_cast<uint8_t>(c10 & 0xFFu),
 -                                  static_cast<uint8_t>(c01 & 0xFFu),
@@ -5655,7 +6256,8 @@ index f0ad507..4727aa7 100644
 -           (static_cast<uint32_t>(g) << 8) |
 -           (static_cast<uint32_t>(b) << 16) |
 -           (static_cast<uint32_t>(a) << 24);
-+    return bilinearBlend(c00, c10, c01, c11, fx, fy);
++    const TexelSampler samplePoint{*this, state, clut, tex, texW, texH, wrapU, wrapV, minU, maxU, minV, maxV};
++    return filterTexture(samplePoint, state.linearFilter, texUf, texVf);
  }
  
 -void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
@@ -5663,7 +6265,7 @@ index f0ad507..4727aa7 100644
  {
      const GSDrawState &state = batch.state;
      const GSVertex &v0 = batch.vertices[0];
-@@ -1196,6 +1644,11 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1196,6 +1811,11 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
      const int drawY0 = clampInt(unclippedY0, ctx.scissor.y0, ctx.scissor.y1);
      const int drawX1 = clampInt(unclippedX1, ctx.scissor.x0, ctx.scissor.x1);
      const int drawY1 = clampInt(unclippedY1, ctx.scissor.y0, ctx.scissor.y1);
@@ -5675,7 +6277,7 @@ index f0ad507..4727aa7 100644
  
      const uint64_t alphaReg = ctx.alpha;
      const uint8_t alphaMode = static_cast<uint8_t>(alphaReg & 0xFFu);
-@@ -1227,6 +1680,12 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1227,6 +1847,12 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
              v1f = (v1.t / q1) * static_cast<float>(texH);
          }
  
@@ -5688,7 +6290,7 @@ index f0ad507..4727aa7 100644
          float spriteW = static_cast<float>(spanX);
          float spriteH = static_cast<float>(spanY);
          if (spriteW < 1.0f)
-@@ -1236,6 +1695,8 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1236,6 +1862,8 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
  
          for (int y = drawY0; y <= drawY1; ++y)
          {
@@ -5697,7 +6299,7 @@ index f0ad507..4727aa7 100644
              float ty = (static_cast<float>(y - unclippedY0) + 0.5f) / spriteH;
              float texVf = v0f + (v1f - v0f) * ty;
  
-@@ -1250,11 +1711,11 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1250,11 +1878,11 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
                      const int fixedV = static_cast<int>((texVf * 16.0f) + 0.5f);
                      const uint16_t sampleU = static_cast<uint16_t>(clampInt(fixedU, 0, 0xFFFF));
                      const uint16_t sampleV = static_cast<uint16_t>(clampInt(fixedV, 0, 0xFFFF));
@@ -5711,7 +6313,7 @@ index f0ad507..4727aa7 100644
                  }
  
                  uint8_t tr = static_cast<uint8_t>(texel & 0xFF);
-@@ -1264,18 +1725,30 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1264,18 +1892,30 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
  
                  const TextureCombineResult color = combineTexture(tex, r, g, b, a, tr, tg, tb, ta);
                  WritePixel(state, x, y, z1, color.r, color.g, color.b, color.a, v1.fog);
@@ -5743,7 +6345,7 @@ index f0ad507..4727aa7 100644
  {
      const GSDrawState &state = batch.state;
      const GSVertex &v0 = batch.vertices[0];
-@@ -1310,11 +1783,50 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1310,11 +1950,50 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
      const float winding = (denom < 0.0f) ? -1.0f : 1.0f;
      const float invAbsDenom = 1.0f / std::fabs(denom);
      constexpr float kEdgeEpsilon = 1.0e-4f;
@@ -5795,7 +6397,7 @@ index f0ad507..4727aa7 100644
          {
              float px = static_cast<float>(x) + 0.5f;
  
-@@ -1325,6 +1837,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1325,6 +2004,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
              if (w0 < -kEdgeEpsilon || w1 < -kEdgeEpsilon || w2 < -kEdgeEpsilon)
                  continue;
  
@@ -5803,7 +6405,7 @@ index f0ad507..4727aa7 100644
              double z = v0.z * w0 + v1.z * w1 + v2.z * w2;
  
              uint8_t r, g, b, a;
-@@ -1367,7 +1880,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1367,7 +2047,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
                      iv = 0;
                  }
  
@@ -5812,7 +6414,7 @@ index f0ad507..4727aa7 100644
  
                  uint8_t tr = static_cast<uint8_t>(texel & 0xFF);
                  uint8_t tg = static_cast<uint8_t>((texel >> 8) & 0xFF);
-@@ -1391,9 +1904,10 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1391,9 +2071,10 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
              WritePixel(state, x, y, static_cast<u32>(z + 0.5), r, g, b, a, fog);
          }
      }
@@ -5824,7 +6426,7 @@ index f0ad507..4727aa7 100644
  {
      const GSDrawState &state = batch.state;
      const GSVertex &v0 = batch.vertices[0];
-@@ -1440,7 +1954,8 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
+@@ -1440,7 +2121,8 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
  
          double z = (v0.z + (v1.z - v0.z) * t);
          const uint8_t fog = clampU8(static_cast<int>(v0.fog + (v1.fog - v0.fog) * t));
@@ -5834,7 +6436,7 @@ index f0ad507..4727aa7 100644
  
          if (x0 == x1 && y0 == y1)
              break;
-@@ -1463,6 +1978,8 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
+@@ -1463,6 +2145,8 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
  void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
  {
      std::lock_guard<std::mutex> lock(m_mutex);
@@ -5843,7 +6445,7 @@ index f0ad507..4727aa7 100644
      m_transfer = command;
      m_transferState.x = command.trxpos.dsax;
      m_transferState.y = command.trxpos.dsay;
-@@ -1471,6 +1988,20 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
+@@ -1471,6 +2155,20 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
      m_transferState.direction = command.direction;
      m_transferState.localToHostPendingBytes = 0u;
  
@@ -5864,7 +6466,7 @@ index f0ad507..4727aa7 100644
      if (command.direction == 2u)
          PerformLocalToLocalTransfer();
      else if (command.direction == 1u)
-@@ -1480,8 +2011,30 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
+@@ -1480,8 +2178,30 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
  void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
  {
      std::lock_guard<std::mutex> lock(m_mutex);
@@ -5895,7 +6497,7 @@ index f0ad507..4727aa7 100644
      if (m_transfer.trxreg.rrw == 0u || m_transfer.trxreg.rrh == 0u || m_transferState.totalPixels == 0u)
          return;
  
-@@ -1492,6 +2045,42 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+@@ -1492,6 +2212,42 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
      const uint32_t dsax = m_transfer.trxpos.dsax;
      uint32_t offset = 0u;
  
@@ -5938,7 +6540,69 @@ index f0ad507..4727aa7 100644
      auto advancePixel = [&](uint32_t count)
      {
          const uint32_t totalPixels = m_transferState.totalPixels;
-@@ -1586,6 +2175,7 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+@@ -1509,6 +2265,9 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+         m_transferState.y = m_transfer.trxpos.dsay + (m_transferState.copiedPixels / rrw);
+     };
+ 
++    // the format's write, looked up once (m_vram is set: checked above); WriteVramUnlocked's inlined format switch in
++    // this per-pixel loop made uploads slower
++    const auto writeUpload = m_writeVramFuncs[dpsm & 0x3Fu];
+     while (offset < sizeBytes && m_transferState.direction == 0u)
+     {
+         switch (dpsm)
+@@ -1520,7 +2279,7 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+                 return;
+             uint32_t value = 0u;
+             std::memcpy(&value, data + offset, sizeof(value));
+-            WriteVramUnlocked(dpsm, dbp, dbw, m_transferState.x, m_transferState.y, value);
++            writeUpload(m_vram, dbp, dbw, m_transferState.x, m_transferState.y, value);
+             offset += 4u;
+             advancePixel(1u);
+             break;
+@@ -1533,7 +2292,7 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+             const uint32_t value = static_cast<uint32_t>(data[offset]) |
+                                    (static_cast<uint32_t>(data[offset + 1u]) << 8u) |
+                                    (static_cast<uint32_t>(data[offset + 2u]) << 16u);
+-            WriteVramUnlocked(dpsm, dbp, dbw, m_transferState.x, m_transferState.y, value);
++            writeUpload(m_vram, dbp, dbw, m_transferState.x, m_transferState.y, value);
+             offset += 3u;
+             advancePixel(1u);
+             break;
+@@ -1547,14 +2306,14 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+                 return;
+             uint16_t value = 0u;
+             std::memcpy(&value, data + offset, sizeof(value));
+-            WriteVramUnlocked(dpsm, dbp, dbw, m_transferState.x, m_transferState.y, value);
++            writeUpload(m_vram, dbp, dbw, m_transferState.x, m_transferState.y, value);
+             offset += 2u;
+             advancePixel(1u);
+             break;
+         }
+         case GS_PSM_T8:
+         case GS_PSM_T8H:
+-            WriteVramUnlocked(dpsm, dbp, dbw, m_transferState.x, m_transferState.y, data[offset++]);
++            writeUpload(m_vram, dbp, dbw, m_transferState.x, m_transferState.y, data[offset++]);
+             advancePixel(1u);
+             break;
+         case GS_PSM_T4:
+@@ -1563,14 +2322,14 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+         {
+             const uint8_t packed = data[offset++];
+             const uint32_t firstPixel = m_transferState.copiedPixels;
+-            WriteVramUnlocked(dpsm, dbp, dbw,
++            writeUpload(m_vram, dbp, dbw,
+                               dsax + (firstPixel % rrw),
+                               m_transfer.trxpos.dsay + (firstPixel / rrw),
+                               packed & 0x0Fu);
+             if (firstPixel + 1u < m_transferState.totalPixels)
+             {
+                 const uint32_t secondPixel = firstPixel + 1u;
+-                WriteVramUnlocked(dpsm, dbp, dbw,
++                writeUpload(m_vram, dbp, dbw,
+                                   dsax + (secondPixel % rrw),
+                                   m_transfer.trxpos.dsay + (secondPixel / rrw),
+                                   (packed >> 4u) & 0x0Fu);
+@@ -1586,6 +2345,7 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
  
  void GSCpuBackend::PerformLocalToLocalTransfer()
  {
@@ -5946,7 +6610,7 @@ index f0ad507..4727aa7 100644
      if (!m_vram)
          return;
  
-@@ -1697,6 +2287,7 @@ void GSCpuBackend::PerformLocalToHostTransfer()
+@@ -1697,6 +2457,7 @@ void GSCpuBackend::PerformLocalToHostTransfer()
  uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
  {
      std::lock_guard<std::mutex> lock(m_mutex);
@@ -5954,7 +6618,7 @@ index f0ad507..4727aa7 100644
      if (!dst || maxBytes == 0u || m_localToHostReadPos >= m_localToHostBuffer.size())
          return 0u;
      const size_t count = std::min<size_t>(maxBytes, m_localToHostBuffer.size() - m_localToHostReadPos);
-@@ -1706,9 +2297,18 @@ uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
+@@ -1706,9 +2467,18 @@ uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
      return static_cast<uint32_t>(count);
  }
  
@@ -5973,7 +6637,7 @@ index f0ad507..4727aa7 100644
      if (!m_vram || context.frame.fbw == 0u)
          return false;
  
-@@ -1852,18 +2452,104 @@ PresentationFrame GSCpuBackend::Present(const GSPresentationRequest &request)
+@@ -1852,18 +2622,104 @@ PresentationFrame GSCpuBackend::Present(const GSPresentationRequest &request)
      if (snapshot.empty())
          return {};
  
@@ -6081,7 +6745,7 @@ index f0ad507..4727aa7 100644
      const GSFrameReg displayFrame1 = decodeDisplayFrame(request.dispfb1);
      const GSFrameReg displayFrame2 = decodeDisplayFrame(request.dispfb2);
      const GSDisplayReadOrigin origin1 = decodeDisplayReadOrigin(request.dispfb1);
-@@ -1871,6 +2557,15 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1871,6 +2727,15 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
      uint32_t width1 = 0u, height1 = 0u, width2 = 0u, height2 = 0u;
      decodeDisplaySize(request.display1, width1, height1);
      decodeDisplaySize(request.display2, width2, height2);
@@ -6097,7 +6761,7 @@ index f0ad507..4727aa7 100644
      const bool valid1 = pmode.enableCrt1 && hasDisplaySetup(request.display1, displayFrame1);
      const bool valid2 = pmode.enableCrt2 && hasDisplaySetup(request.display2, displayFrame2);
      if (!valid1 && !valid2)
-@@ -1918,13 +2613,42 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1918,13 +2783,42 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
          return true;
      };
  
@@ -6142,7 +6806,7 @@ index f0ad507..4727aa7 100644
          {
              result.width = std::max(width1, width2);
              result.height = std::max(height1, height2);
-@@ -1956,8 +2680,6 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1956,8 +2850,6 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
                      dst[3] = pmode.amod ? dst[3] : src[3];
                  }
              normalizePresentationAlpha(result.pixels, result.width, result.height);
@@ -6151,7 +6815,7 @@ index f0ad507..4727aa7 100644
              result.displayFbp = displayFrame1.fbp;
              result.sourceFbp = selected1.fbp;
              return result;
-@@ -1969,10 +2691,8 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1969,10 +2861,8 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
      result.width = valid1 ? width1 : width2;
      result.height = valid1 ? height1 : height2;
      GSFrameReg selected = displayFrame;
@@ -7714,6 +8378,32 @@ index c289ba0..7adf0ae 100644
          }
      }
      m_queue.clear();
+diff --git a/ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp b/ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp
+index a8f9fa8..34aad62 100644
+--- a/ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp
++++ b/ps2xRuntime/src/lib/gs/ps2_gs_memory.cpp
+@@ -192,14 +192,14 @@ namespace GSMem
+     }};
+ 
+     // this is going to be massive (an entire page of addess lookups)
+-    static C32PageLookupTable  PageTableC32{ };
+-    static Z32PageLookupTableT PageTableZ32{ };
+-    static C16PageLookupTable  PageTableC16{ };
+-    static C16SPageLookupTable PageTableC16S{ };
+-    static Z16PageLookupTable  PageTableZ16{ };
++    C32PageLookupTable  PageTableC32{ }; // (these five are shared: ps2_gs_memory.h)
++    Z32PageLookupTableT PageTableZ32{ };
++    C16PageLookupTable  PageTableC16{ };
++    C16SPageLookupTable PageTableC16S{ };
++    Z16PageLookupTable  PageTableZ16{ };
+     static Z16SPageLookupTable PageTableZ16S{ };
+-    static P8PageLookupTable   PageTableP8{ };
+-    static P4PageLookupTable   PageTableP4{ };
++    P8PageLookupTable   PageTableP8{ };
++    P4PageLookupTable   PageTableP4{ };
+ 
+     void InitLookupTables()
+     {
 diff --git a/ps2xRuntime/src/lib/ps2_audio.cpp b/ps2xRuntime/src/lib/ps2_audio.cpp
 index 6bb6494..d6c2011 100644
 --- a/ps2xRuntime/src/lib/ps2_audio.cpp

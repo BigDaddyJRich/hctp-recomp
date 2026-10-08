@@ -8,10 +8,10 @@
 #   $env:VENDETTA_HOSTPROF='1' (or '2' = + code-address profile), VENDETTA_VU1_VERIFY=1, VENDETTA_IOP_VERIFY=1,
 #   VENDETTA_THREADS=1, VENDETTA_AUDIOLOG=1.
 # -Close: at -Stop, close the window like the user would (not kill the process) and report how long the exit took.
-param([string]$Name, [string]$Seconds = '', [int]$Stop = 120, [switch]$Close)
+param([string]$Name, [string]$Seconds = '', [int]$Stop = 120, [switch]$Close, [string]$Build = 'fast')  # -Build runtime = the full-speed build
 $times = @($Seconds -split '[ ;,]+' | Where-Object { $_ -ne '' } | ForEach-Object { [int]$_ })
 $r = Split-Path -Parent $PSScriptRoot
-$p = Start-Process -FilePath "$r\PS2Recomp\out\fast\ps2xRuntime\ps2EntryRunner.exe" -ArgumentList "`"$r\game\SLUS_206.39`"" -WorkingDirectory $r -RedirectStandardOutput "$r\shots\$Name.log" -RedirectStandardError "$r\shots\$Name.log.err" -PassThru
+$p = Start-Process -FilePath "$r\PS2Recomp\out\$Build\ps2xRuntime\ps2EntryRunner.exe" -ArgumentList "`"$r\game\SLUS_206.39`"" -WorkingDirectory $r -RedirectStandardOutput "$r\shots\$Name.log" -RedirectStandardError "$r\shots\$Name.log.err" -PassThru
 "started pid $($p.Id)"
 $start = Get-Date
 foreach ($s in $times) {

@@ -9,6 +9,8 @@
 # The timing bookkeeping is kept cheap: the cycle lives in a local (written through at every advance, reloaded after a
 # stall), a pair's ready-cycle reads are a test of "any read lane not ready" (one 256-bit compare per register row
 # with AVX2; the interpreter's own stall loop still does the stalling), and its write marks are whole-row stores.
+# The VU maths runs on all four lanes at once (vu1v:: in ps2_vu1_compiled.h: per lane the same operations as the
+# scalar vu1fast:: rules, in the same order) and every register is written whole.
 # The output is made from the game's code: it goes to generated\ (never committed).
 # Usage: python tools\vu1_recomp.py [elf] [out.cpp]   (recomp.bat runs it)
 import os
@@ -448,41 +450,22 @@ def emit_upper(e, address, upper):
             return                                                      # NOP
         if 0x14 <= sp <= 0x17:                                          # FTOI0 / 4 / 12 / 15 -> vt
             scale = ['1.0f', '16.0f', '4096.0f', '32768.0f'][sp & 3]
-            ls = lanes_of(dest)
-            if not ls:
+            if not lanes_of(dest):
                 return
-            e.lines.append('{')
-            for c in ls:
-                e.lines.append(f'    const int32_t o{c} = vu1fast::floatToInt(vu1fast::operand(s.vf[{fs}][{c}]), {scale});')
-            for c in ls:
-                e.lines.append(f'    std::memcpy(&s.vf[{ft}][{c}], &o{c}, 4);')
-            e.lines.append('}')
+            e.lines.append(f'vu1v::store<0x{components(dest):x}u>(s.vf[{ft}], vu1v::floatToInt(vu1v::operand(vu1v::load(s.vf[{fs}])), {scale}));')
             e.writes_vf0 |= ft == 0
             return
         if 0x10 <= sp <= 0x13:                                          # ITOF0 / 4 / 12 / 15 -> vt (execUpper)
-            div = ['', ' / 16.0f', ' / 4096.0f', ' / 32768.0f'][sp & 3]
-            ls = lanes_of(dest)
-            if not ls:
+            div = ['', ', 16.0f', ', 4096.0f', ', 32768.0f'][sp & 3]
+            if not lanes_of(dest):
                 return
-            e.lines.append('{')
-            for c in ls:
-                e.lines.append(f'    int32_t i{c}; std::memcpy(&i{c}, &s.vf[{fs}][{c}], 4);')
-                e.lines.append(f'    const float r{c} = static_cast<float>(i{c}){div};')
-            for c in ls:
-                e.lines.append(f'    s.vf[{ft}][{c}] = r{c};')
-            e.lines.append('}')
+            e.lines.append(f'vu1v::store<0x{components(dest):x}u>(s.vf[{ft}], vu1v::intToFloat(vu1v::load(s.vf[{fs}]){div}));')
             e.writes_vf0 |= ft == 0
             return
         if sp == 0x1D:                                                  # ABS -> vt (execUpper)
-            ls = lanes_of(dest)
-            if not ls:
+            if not lanes_of(dest):
                 return
-            e.lines.append('{')
-            for c in ls:
-                e.lines.append(f'    const float r{c} = std::fabs(vu1fast::operand(s.vf[{fs}][{c}]));')
-            for c in ls:
-                e.lines.append(f'    s.vf[{ft}][{c}] = r{c};')
-            e.lines.append('}')
+            e.lines.append(f'vu1v::store<0x{components(dest):x}u>(s.vf[{ft}], vu1v::abs(vu1v::operand(vu1v::load(s.vf[{fs}]))));')
             e.writes_vf0 |= ft == 0
             return
         if sp == 0x1F:                                                  # CLIP (execUpper)
@@ -500,34 +483,28 @@ def emit_upper(e, address, upper):
         e.generic = upper_name(upper)
         e.writes_vf0 = True
         return
-    ls = lanes_of(dest)
-    if not ls:
+    if not lanes_of(dest):
         return
+    mask = components(dest)
     e.lines.append('{')
+    e.lines.append(f'    const vu1v::V a = vu1v::operand(vu1v::load(s.vf[{fs}]));')
     if source == 'bc':
-        e.lines.append(f'    const float b = vu1fast::operand(s.vf[{ft}][{bc}]);')
+        e.lines.append(f'    const vu1v::V b = vu1v::splat(vu1fast::operand(s.vf[{ft}][{bc}]));')
     elif source == 'q':
-        e.lines.append('    const float b = vu1fast::operand(s.q);')
+        e.lines.append('    const vu1v::V b = vu1v::splat(vu1fast::operand(s.q));')
     elif source == 'i':
-        e.lines.append('    const float b = vu1fast::operand(s.i);')
-    for c in ls:
-        b = f'vu1fast::operand(s.vf[{ft}][{c}])' if source == 'lane' else 'b'
-        a = f'vu1fast::operand(s.vf[{fs}][{c}])'
-        if kind in ('add', 'sub', 'mul'):
-            sym = {'add': '+', 'sub': '-', 'mul': '*'}[kind]
-            e.lines.append(f'    const float r{c} = vu1fast::plainResult({a} {sym} {b});')
-        elif kind in ('max', 'mini'):
-            cmp = '>' if kind == 'max' else '<'
-            e.lines.append(f'    const float a{c} = {a}, b{c} = {b};')
-            e.lines.append(f'    const float r{c} = (a{c} {cmp} b{c}) ? a{c} : b{c};')
-        else:
-            sym = '+' if kind == 'madd' else '-'
-            e.lines.append(f'    const float a{c} = {a}, b{c} = {b}, c{c} = vu1fast::operand(s.acc[{c}]);')
-            e.lines.append(f'    const float r{c} = vu1fast::exactResult(c{c} {sym} a{c} * b{c}, static_cast<double>(c{c}) {sym} '
-                           f'static_cast<double>(a{c}) * static_cast<double>(b{c}));')
+        e.lines.append('    const vu1v::V b = vu1v::splat(vu1fast::operand(s.i));')
+    else:
+        e.lines.append(f'    const vu1v::V b = vu1v::operand(vu1v::load(s.vf[{ft}]));')
+    if kind in ('add', 'sub', 'mul'):
+        result = f'vu1v::operand(vu1v::{kind}(a, b))'
+    elif kind in ('max', 'mini'):
+        result = f'vu1v::{"max" if kind == "max" else "min"}(a, b)'
+    else:
+        result = (f'vu1v::fused<0x{mask:x}u, {"false" if kind == "madd" else "true"}>'
+                  f'(vu1v::operand(vu1v::load(s.acc)), a, b)')
     target = 's.acc' if to_acc else f's.vf[{fd}]'
-    for c in ls:
-        e.lines.append(f'    {target}[{c}] = r{c};')
+    e.lines.append(f'    vu1v::store<0x{mask:x}u>({target}, {result});')
     e.lines.append('}')
     if not to_acc:
         e.writes_vf0 |= fd == 0
@@ -537,9 +514,8 @@ def load_lanes(e, reg, dest, src):
     ls = lanes_of(dest)
     if ls == [0, 1, 2, 3]:
         e.lines.append(f'    std::memcpy(s.vf[{reg}], {src}, 16);')
-    else:
-        for c in ls:
-            e.lines.append(f'    std::memcpy(&s.vf[{reg}][{c}], {src} + {4 * c}, 4);')
+    elif ls:
+        e.lines.append(f'    vu1v::store<0x{components(dest):x}u>(s.vf[{reg}], vu1v::loadBytes({src}));')
     e.writes_vf0 |= reg == 0 and bool(ls)
 
 
@@ -647,19 +623,11 @@ def emit_lower(e, address, lower, upper):
         sp = lower_special(lower)
         if sp == 0x30:                                                  # MOVE
             if lanes_of(dest):
-                L.append('{')
-                L.append(f'    float t[4]; std::memcpy(t, s.vf[{vfs}], 16);')
-                for c in lanes_of(dest):
-                    L.append(f'    s.vf[{vft}][{c}] = t[{c}];')
-                L.append('}')
+                L.append(f'vu1v::store<0x{components(dest):x}u>(s.vf[{vft}], vu1v::load(s.vf[{vfs}]));')
                 e.writes_vf0 |= vft == 0
         elif sp == 0x31:                                                # MR32
             if lanes_of(dest):
-                L.append('{')
-                L.append(f'    const float t[4] = {{s.vf[{vfs}][1], s.vf[{vfs}][2], s.vf[{vfs}][3], s.vf[{vfs}][0]}};')
-                for c in lanes_of(dest):
-                    L.append(f'    s.vf[{vft}][{c}] = t[{c}];')
-                L.append('}')
+                L.append(f'vu1v::store<0x{components(dest):x}u>(s.vf[{vft}], vu1v::rotate(vu1v::load(s.vf[{vfs}])));')
                 e.writes_vf0 |= vft == 0
         elif sp in (0x34, 0x36):                                        # LQI / LQD
             L.append('{')
@@ -696,12 +664,8 @@ def emit_lower(e, address, lower, upper):
                 L.append('}')
         elif sp == 0x3D:                                                # MFIR
             if lanes_of(dest):
-                L.append('{')
-                L.append(f'    const int32_t v = static_cast<int32_t>(static_cast<int16_t>(s.vi[{vis}] & 0xFFFF));')
-                L.append('    float f; std::memcpy(&f, &v, 4);')
-                for c in lanes_of(dest):
-                    L.append(f'    s.vf[{vft}][{c}] = f;')
-                L.append('}')
+                L.append(f'vu1v::store<0x{components(dest):x}u>(s.vf[{vft}], '
+                         f'vu1v::splatBits(static_cast<int32_t>(static_cast<int16_t>(s.vi[{vis}] & 0xFFFF))));')
                 e.writes_vf0 |= vft == 0
         elif sp == 0x3E:                                                # ILWR
             if vit:
@@ -825,7 +789,7 @@ def pair_work(prog, p, exit_stmt):
     if backup:
         out.append(f'bkValue = oldVi; bkReg = {p.lower_vi_write}; bkValid = true;')
     if e_up.writes_vf0 or e_lo.writes_vf0:
-        out.append('s.vf[0][0] = 0.0f; s.vf[0][1] = 0.0f; s.vf[0][2] = 0.0f; s.vf[0][3] = 1.0f;')
+        out.append('{ static const float vf0[4] = {0.0f, 0.0f, 0.0f, 1.0f}; std::memcpy(s.vf[0], vf0, 16); }')
     if e_up.writes_vi0 or e_lo.writes_vi0:
         out.append('s.vi[0] = 0;')
     branch = e_lo.branch
