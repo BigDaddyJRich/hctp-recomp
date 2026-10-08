@@ -8,12 +8,23 @@
 #   $env:VENDETTA_HOSTPROF='1' (or '2' = + code-address profile), VENDETTA_VU1_VERIFY=1, VENDETTA_IOP_VERIFY=1,
 #   VENDETTA_THREADS=1, VENDETTA_AUDIOLOG=1.
 # -Close: at -Stop, close the window like the user would (not kill the process) and report how long the exit took.
-param([string]$Name, [string]$Seconds = '', [int]$Stop = 120, [switch]$Close, [string]$Build = 'fast')  # -Build runtime = the full-speed build
+# -Burst 'start count intervalMs': instead, a burst of pictures from start seconds (shots\<Name>-burst-NN.png).
+param([string]$Name, [string]$Seconds = '', [int]$Stop = 120, [switch]$Close, [string]$Build = 'fast', [string]$Burst = '')  # -Build runtime = the full-speed build
 $times = @($Seconds -split '[ ;,]+' | Where-Object { $_ -ne '' } | ForEach-Object { [int]$_ })
 $r = Split-Path -Parent $PSScriptRoot
+# the real keyboard / controllers are ignored in test runs (only a pad script drives the game): Enter typed elsewhere
+# while the game window had focus skipped the intro movie
+$env:VENDETTA_NO_HOST_INPUT = '1'
 $p = Start-Process -FilePath "$r\PS2Recomp\out\$Build\ps2xRuntime\ps2EntryRunner.exe" -ArgumentList "`"$r\game\SLUS_206.39`"" -WorkingDirectory $r -RedirectStandardOutput "$r\shots\$Name.log" -RedirectStandardError "$r\shots\$Name.log.err" -PassThru
 "started pid $($p.Id)"
 $start = Get-Date
+if ($Burst -ne '') {
+  $b = @($Burst -split '[ ;,]+' | Where-Object { $_ -ne '' })
+  $at = [double]::Parse($b[0], [Globalization.CultureInfo]::InvariantCulture); $count = [int]$b[1]; $every = [int]$b[2]
+  while (((Get-Date) - $start).TotalSeconds -lt $at -and -not $p.HasExited) { Start-Sleep -Milliseconds 20 }
+  $c = Start-Process powershell -ArgumentList "-ExecutionPolicy Bypass -File `"$PSScriptRoot\cap_window.ps1`" -Out `"$r\shots\$Name-burst.png`" -Count $count -IntervalMs $every" -WindowStyle Hidden -PassThru
+  if (-not $c.WaitForExit($count * $every + 20000)) { Stop-Process -Id $c.Id -Confirm:$false; "burst gave up" } else { "burst of $count from $at s" }
+}
 foreach ($s in $times) {
   while (((Get-Date) - $start).TotalSeconds -lt $s) { Start-Sleep -Milliseconds 250; if ($p.HasExited) { break } }
   if ($p.HasExited) { break }

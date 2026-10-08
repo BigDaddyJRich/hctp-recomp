@@ -220,6 +220,8 @@ namespace
                         using namespace ps2_host_profile;
                         uint32_t counts[Count] = {}, gsCounts[Count] = {}, chainCounts[Count] = {};
                         uint32_t samples = 0, lastFrames = 0;
+                        // the longest stretch without a new game frame (a pause on screen), in ms
+                        uint32_t seenFrames = 0, msSinceFrame = 0, longestGap = 0;
                         auto next = std::chrono::steady_clock::now();
                         auto report = next + std::chrono::seconds(5);
                         auto share = [&samples](uint32_t count) { return std::to_string(samples ? (count * 100u + samples / 2u) / samples : 0u) + "%"; };
@@ -237,6 +239,16 @@ namespace
                             if (chainPhase < Count)
                                 ++chainCounts[chainPhase];
                             ++samples;
+                            uint32_t nowFrames;
+                            std::memcpy(&nowFrames, rt->memory().getRDRAM() + 0x258134u, 4);
+                            if (nowFrames != seenFrames)
+                            {
+                                seenFrames = nowFrames;
+                                longestGap = std::max(longestGap, msSinceFrame);
+                                msSinceFrame = 0;
+                            }
+                            else
+                                ++msSinceFrame;
                             if (samplePcs)
                             {
                                 // one thread per tick (a sample stops that thread for a moment): ~333 a second each
@@ -248,7 +260,9 @@ namespace
                             report += std::chrono::seconds(5);
                             uint32_t frames;
                             std::memcpy(&frames, rt->memory().getRDRAM() + 0x258134u, 4);
-                            std::string line = "[hostprof] frames/s=" + std::to_string((frames - lastFrames) / 5u);
+                            std::string line = "[hostprof] frames/s=" + std::to_string((frames - lastFrames) / 5u) +
+                                               " longest-frame-gap=" + std::to_string(std::max(longestGap, msSinceFrame)) + "ms";
+                            longestGap = 0;
                             for (uint8_t i = 0; i < Count; ++i)
                                 if (counts[i] != 0u)
                                     line += std::string(" ") + name(i) + "=" + share(counts[i]);
