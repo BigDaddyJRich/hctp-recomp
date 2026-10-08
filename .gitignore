@@ -1,0 +1,29 @@
+# The game — never commit anything from the disc or made from the game's code
+/disc/
+/game/
+/generated/
+*.chd
+*.iso
+*.bin
+*.elf
+SLUS_*
+*.p2s
+# memory cards the runtime creates, pictures of the game
+/mc0/
+/mc1/
+/shots/
+
+# generated config (tools/make_config.py) — the inputs in config/ are committed
+config/vendetta.toml
+config/vendetta_functions.csv
+
+# logs, runtime UI state, caches
+/logs/
+*.log
+imgui.ini
+__pycache__/
+*.pyc
+
+# OS
+Thumbs.db
+.DS_Store

@@ -1,0 +1,5 @@
+# keep patches and shell scripts byte-exact (git apply / bash), Windows scripts with CRLF
+*.diff  -text
+*.sh    text eol=lf
+*.bat   text eol=crlf
+*.ps1   text eol=crlf

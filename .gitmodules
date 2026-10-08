@@ -1,0 +1,4 @@
+[submodule "PS2Recomp"]
+	path = PS2Recomp
+	url = https://github.com/ran-j/PS2Recomp
+	ignore = dirty

@@ -1,0 +1,31 @@
+# Sony library routines the analyzer didn't recognise, found by hand (Ghidra), bound to PS2Recomp's runtime versions.
+# name@address — one per line; tools\make_config.py adds these to config\vendetta.toml. "-name@address" = never
+# bind it (the game's own code runs), even when Ghidra or the analyzer recognised it.
+# libcdvd: RPC 0x8000059A, returns 2 (ready) / 6 (not ready); the game's file code waits on it (at 0x1FD948)
+sceCdDiskReady@0x001FD8A8
+# libcdvd: 28 bytes, = sceCdLayerSearchFile(fp, name, 0) (0x1FCE08); the disc is single-layer
+sceCdSearchFile@0x001FD120
+# libmpeg: 8 bytes, return **(mp + 0x40) — sceMpegIsEnd (between GetDecodeMode 0x1FFE80 and Reset 0x1FFEC0; the movie
+# loop 0x1BDBA0 runs "while (!IsEnd)"). Unbound it read libmpeg's internal state, which PS2Recomp's MPEG layer never
+# builds.
+sceMpegIsEnd@0x001FFEA0
+# libgraph sceGsResetGraph: left to the game's own code ("-" = never bind). It keeps interlace / video mode / FIELD-FRAME
+# in the game's gparam (0x275620, via 0x1F7820) that its display env reads every frame; the runtime's version kept a
+# private copy, so the movies' FIELD mode never reached SMODE2.
+-sceGsResetGraph@0x001F7690
+# The C library's maths routines: left to the game's own code. Bound by name, the runtime's versions are
+# single-float (args f12 / f14, result f0), but this game's sqrt / atan2 / atan / fabs are the DOUBLE versions
+# (soft-float: the 64-bit value in a0 / a1, result in v0) — every call returned garbage (the fight's camera). The
+# float helpers (__kernel_sinf / cosf, __ieee754_rem_pio2f) were approximations (rem_pio2f's low part always 0).
+-atan2@0x001F7F48
+-sqrt@0x001F8060
+-__ieee754_rem_pio2f@0x001F9208
+-__kernel_cosf@0x001F9720
+-__kernel_sinf@0x001FA1C8
+-atan@0x001FA568
+-fabs@0x001FA978
+# The C library's rand: left to the game's own code. The runtime's version returns the host's 0..32767, but
+# the game's (newlib: x = x * 1103515245 + 12345, 31 bits, state in the game's reent struct) gives 0..2^31-1 and the
+# game scales it by 1/2^31 (0x131078) — so every "random below n" (0x131160) came out 0 and the fight logic's
+# "pick a different move" loop (0x10F498: do { list[random(n)] } while (== current)) could spin for ever.
+-rand@0x0020ECA8
