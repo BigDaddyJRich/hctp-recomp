@@ -1,3 +1,15 @@
+diff --git a/ps2xIOP/CMakeLists.txt b/ps2xIOP/CMakeLists.txt
+index f8d3e44..e707569 100644
+--- a/ps2xIOP/CMakeLists.txt
++++ b/ps2xIOP/CMakeLists.txt
+@@ -12,6 +12,7 @@ add_library(ps2_iop STATIC
+     src/emulator/core/iop_cpu.cpp
+     src/emulator/core/iop_kernel.cpp
+     src/emulator/core/iop_memory.cpp
++    src/emulator/core/spu2.cpp
+     src/emulator/services/iop_module_loader.cpp
+     src/emulator/services/iop_rpc.cpp
+     src/emulator/imports/iop_cdvd.cpp
 diff --git a/ps2xIOP/include/ps2x/iop/iop_host.h b/ps2xIOP/include/ps2x/iop/iop_host.h
 index 1eceb08..e105dc2 100644
 --- a/ps2xIOP/include/ps2x/iop/iop_host.h
@@ -142,20 +154,119 @@ index 4977102..3014183 100644
      };
  }
 diff --git a/ps2xIOP/src/emulator/core/iop_memory.cpp b/ps2xIOP/src/emulator/core/iop_memory.cpp
-index 25e9b36..96d1095 100644
+index 25e9b36..969428b 100644
 --- a/ps2xIOP/src/emulator/core/iop_memory.cpp
 +++ b/ps2xIOP/src/emulator/core/iop_memory.cpp
-@@ -1,7 +1,9 @@
+@@ -1,7 +1,10 @@
  #include "iop_memory.h"
  
  #include <algorithm>
++#include <chrono>
 +#include <cstdlib>
  #include <cstring>
 +#include <iostream>
  
  namespace ps2x::iop::detail
  {
-@@ -196,6 +198,12 @@ namespace ps2x::iop::detail
+@@ -13,6 +16,12 @@ namespace ps2x::iop::detail
+         constexpr int kDmaSpu0Irq = 0x24;
+         constexpr int kDmaSpu1Irq = 0x28;
+ 
++        // the SPU2's registers (0x1F900000-0x1F9007FF), handled by Spu2 in 16-bit units
++        bool isSpu2Register(uint32_t phys)
++        {
++            return phys >= IopMemory::Spu2Base && phys < IopMemory::Spu2Base + Spu2::kRegisterBytes;
++        }
++
+         uint32_t alignUp(uint32_t value, uint32_t alignment)
+         {
+             return (value + alignment - 1u) & ~(alignment - 1u);
+@@ -37,6 +46,7 @@ namespace ps2x::iop::detail
+         m_interruptMask = 0;
+         m_interruptControl = 1;
+         m_dmaStart.reset();
++        m_spu2.reset();
+     }
+ 
+     uint32_t IopMemory::physicalAddress(uint32_t address) noexcept
+@@ -51,6 +61,8 @@ namespace ps2x::iop::detail
+             return m_ram[phys];
+         if (phys >= ScratchBase && phys < ScratchBase + ScratchSize)
+             return m_scratch[phys - ScratchBase];
++        if (isSpu2Register(phys))
++            return static_cast<uint8_t>(const_cast<Spu2 &>(m_spu2).read16((phys - Spu2Base) & ~1u) >> ((phys & 1u) * 8u));
+         const uint32_t value = readHardware32(phys & ~3u);
+         return static_cast<uint8_t>(value >> ((phys & 3u) * 8u));
+     }
+@@ -64,6 +76,8 @@ namespace ps2x::iop::detail
+             std::memcpy(&value, m_ram.data() + phys, sizeof(value));
+             return value;
+         }
++        if ((phys & 1u) == 0u && isSpu2Register(phys))
++            return const_cast<Spu2 &>(m_spu2).read16(phys - Spu2Base);
+         return static_cast<uint16_t>(read8(address) | (static_cast<uint16_t>(read8(address + 1u)) << 8u));
+     }
+ 
+@@ -82,6 +96,8 @@ namespace ps2x::iop::detail
+             std::memcpy(&value, m_scratch.data() + (phys - ScratchBase), sizeof(value));
+             return value;
+         }
++        if ((phys & 3u) == 0u && isSpu2Register(phys))
++            return static_cast<uint32_t>(read16(address)) | (static_cast<uint32_t>(read16(address + 2u)) << 16u);
+         if ((phys & 3u) == 0u && isHardwareAddress(phys))
+             return readHardware32(phys);
+ 
+@@ -105,6 +121,14 @@ namespace ps2x::iop::detail
+             m_scratch[phys - ScratchBase] = value;
+             return;
+         }
++        if (isSpu2Register(phys))
++        {
++            const uint32_t half = (phys - Spu2Base) & ~1u;
++            const uint32_t shift = (phys & 1u) * 8u;
++            const uint16_t current = m_spu2.read16(half);
++            m_spu2.write16(half, static_cast<uint16_t>((current & ~(0xFFu << shift)) | (static_cast<uint32_t>(value) << shift)));
++            return;
++        }
+         const uint32_t aligned = phys & ~3u;
+         uint32_t current = readHardware32(aligned);
+         const uint32_t shift = (phys & 3u) * 8u;
+@@ -121,6 +145,21 @@ namespace ps2x::iop::detail
+             markOwned(phys, sizeof(value));
+             return;
+         }
++        if (phys >= Spu2Base && phys < Spu2Base + 0x800u && std::getenv("VENDETTA_SPUREGLOG"))
++        {
++            static uint32_t logged = 0u;
++            if (logged++ < 20000u && (phys & 0x7FFu) != 0x1ACu && (phys & 0x7FFu) != 0x5ACu)
++            {
++                static const auto start = std::chrono::steady_clock::now();
++                const long long ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start).count();
++                std::cerr << "[spureg] " << ms << " 0x" << std::hex << (phys & 0x7FFu) << " = 0x" << value << std::dec << std::endl;
++            }
++        }
++        if ((phys & 1u) == 0u && isSpu2Register(phys))
++        {
++            m_spu2.write16(phys - Spu2Base, value);
++            return;
++        }
+         write8(address, static_cast<uint8_t>(value));
+         write8(address + 1u, static_cast<uint8_t>(value >> 8u));
+     }
+@@ -139,6 +178,12 @@ namespace ps2x::iop::detail
+             std::memcpy(m_scratch.data() + (phys - ScratchBase), &value, sizeof(value));
+             return;
+         }
++        if ((phys & 3u) == 0u && isSpu2Register(phys))
++        {
++            write16(address, static_cast<uint16_t>(value));
++            write16(address + 2u, static_cast<uint16_t>(value >> 16u));
++            return;
++        }
+         if ((phys & 3u) == 0u)
+         {
+             writeHardware32(phys, value);
+@@ -196,6 +241,12 @@ namespace ps2x::iop::detail
                             { return value != 0u; });
      }
  
@@ -168,7 +279,26 @@ index 25e9b36..96d1095 100644
      void IopMemory::markOwned(uint32_t address, size_t size)
      {
          if (address > RamSize || size > RamSize - address)
-@@ -269,15 +277,72 @@ namespace ps2x::iop::detail
+@@ -251,16 +302,9 @@ namespace ps2x::iop::detail
+             return;
+ 
+         const bool secondCore = address == kDmaSpu1Chcr;
++        const int core = secondCore ? 1 : 0;
+         m_hardware[address] = value & ~kDmaStart;
+-
+-        const uint32_t statusAddress = 0x1F900344u + (secondCore ? 0x400u : 0u);
+-        const uint32_t alignedStatus = statusAddress & ~3u;
+-        const uint32_t shift = (statusAddress & 2u) * 8u;
+-        uint32_t status = 0u;
+-        if (const auto current = m_hardware.find(alignedStatus); current != m_hardware.end())
+-            status = current->second;
+-        status |= 0x80u << shift;
+-        m_hardware[alignedStatus] = status;
++        m_spu2.markDmaReady(core);
+ 
+         const uint32_t blockControlAddress = address - sizeof(uint32_t);
+         uint32_t blockControl = 0u;
+@@ -269,15 +313,83 @@ namespace ps2x::iop::detail
          const uint32_t wordsPerBlock = std::max<uint32_t>(blockControl & 0xFFFFu, 1u);
          const uint32_t blockCount = std::max<uint32_t>(blockControl >> 16u, 1u);
          const uint64_t transferWords = static_cast<uint64_t>(wordsPerBlock) * blockCount;
@@ -180,11 +310,7 @@ index 25e9b36..96d1095 100644
 +            if (logged++ < 400u)
 +            {
 +                const auto reg = [this](uint32_t a)
-+                {
-+                    const auto it = m_hardware.find(a & ~3u);
-+                    const uint32_t v = it == m_hardware.end() ? 0u : it->second;
-+                    return (a & 2u) ? (v >> 16) : (v & 0xFFFFu);
-+                };
++                { return static_cast<uint32_t>(m_spu2.read16(a - Spu2Base)); };
 +                const uint32_t madr = m_hardware.count(address - 8u) ? m_hardware[address - 8u] : 0u;
 +                std::cerr << "[spulog] core" << (secondCore ? 1 : 0) << " DMA chcr=0x" << std::hex << value
 +                          << " madr=0x" << madr << " bcr=0x" << blockControl << std::dec << " bytes=" << transferWords * 4u
@@ -198,14 +324,29 @@ index 25e9b36..96d1095 100644
 +        // per frame at 36.864 MHz). Finishing it at once made a sound driver that refills on this interrupt mix
 +        // hundreds of times faster than real time.
 +        constexpr uint64_t kIopCyclesPerSpuFrame = 768u;
-+        const uint32_t admaAddress = 0x1F9001B0u + (secondCore ? 0x400u : 0u);
-+        const auto adma = m_hardware.find(admaAddress & ~3u);
-+        const uint32_t admaValue = adma == m_hardware.end() ? 0u : adma->second;
-+        const bool autoDma = ((admaAddress & 2u) ? (admaValue >> 16) : (admaValue & 0xFFFFu)) != 0u;
++        const bool autoDma = m_spu2.autoDmaEnabled(core);
 +        DmaStart start{
              secondCore ? kDmaSpu1Irq : kDmaSpu0Irq,
++            core,
              std::max<uint64_t>(transferWords * 2u, 64u),
          };
++        if (!autoDma)
++        {
++            // a plain transfer to / from sound memory at the core's transfer address (CHCR bit 0: 1 = to the SPU2)
++            const auto madr = m_hardware.find(address - 8u);
++            const uint32_t memoryAddress = physicalAddress(madr == m_hardware.end() ? 0u : madr->second);
++            const uint32_t bytes = static_cast<uint32_t>(transferWords * 4u);
++            if (memoryAddress < RamSize && bytes <= RamSize - memoryAddress)
++            {
++                if ((value & 1u) != 0u)
++                    m_spu2.dmaWrite(core, m_ram.data() + memoryAddress, bytes);
++                else
++                {
++                    m_spu2.dmaRead(core, m_ram.data() + memoryAddress, bytes);
++                    markOwned(memoryAddress, bytes);
++                }
++            }
++        }
 +        if (autoDma)
 +        {
 +            const uint32_t madrAddress = address - 8u;
@@ -244,18 +385,29 @@ index 25e9b36..96d1095 100644
          return result;
      }
 diff --git a/ps2xIOP/src/emulator/core/iop_memory.h b/ps2xIOP/src/emulator/core/iop_memory.h
-index a932a5d..063a1bf 100644
+index a932a5d..0296a8e 100644
 --- a/ps2xIOP/src/emulator/core/iop_memory.h
 +++ b/ps2xIOP/src/emulator/core/iop_memory.h
-@@ -35,6 +35,7 @@ namespace ps2x::iop::detail
+@@ -8,6 +8,8 @@
+ #include <unordered_map>
+ #include <vector>
+ 
++#include "spu2.h"
++
+ namespace ps2x::iop::detail
+ {
+     class IopMemory
+@@ -34,7 +36,9 @@ namespace ps2x::iop::detail
+         struct DmaStart
          {
              int irq = 0;
++            int core = 0; // the SPU2 core (AutoDMA: whose input the pcm feeds)
              uint64_t delayCycles = 0;
 +            std::vector<int16_t> pcm; // AutoDMA: the stereo frames (L, R interleaved, 48 kHz) the SPU2 plays
          };
  
          IopMemory();
-@@ -52,6 +53,8 @@ namespace ps2x::iop::detail
+@@ -52,6 +56,8 @@ namespace ps2x::iop::detail
          [[nodiscard]] bool writeRam(uint32_t address, const void *source, size_t size);
          [[nodiscard]] bool zeroRam(uint32_t address, size_t size);
          [[nodiscard]] bool ownsRamRange(uint32_t address, size_t size) const;
@@ -264,8 +416,695 @@ index a932a5d..063a1bf 100644
          [[nodiscard]] bool isHardwareAddress(uint32_t address) const;
          [[nodiscard]] std::string readString(uint32_t address, size_t limit = 1024u) const;
  
+@@ -69,6 +75,7 @@ namespace ps2x::iop::detail
+ 
+         [[nodiscard]] std::optional<DmaStart> takeDmaStart() noexcept;
+         [[nodiscard]] std::span<const uint8_t> ram() const noexcept { return m_ram; }
++        [[nodiscard]] Spu2 &spu2() noexcept { return m_spu2; }
+ 
+         [[nodiscard]] static uint32_t physicalAddress(uint32_t address) noexcept;
+ 
+@@ -87,5 +94,6 @@ namespace ps2x::iop::detail
+         uint32_t m_interruptMask = 0;
+         uint32_t m_interruptControl = 1;
+         std::optional<DmaStart> m_dmaStart;
++        Spu2 m_spu2;
+     };
+ }
+diff --git a/ps2xIOP/src/emulator/core/spu2.cpp b/ps2xIOP/src/emulator/core/spu2.cpp
+new file mode 100644
+index 0000000..8c46add
+--- /dev/null
++++ b/ps2xIOP/src/emulator/core/spu2.cpp
+@@ -0,0 +1,542 @@
++#include "spu2.h"
++
++#include <algorithm>
++#include <cstdio>
++#include <cstdlib>
++
++namespace ps2x::iop::detail
++{
++    namespace
++    {
++        constexpr uint32_t kAddressMask = Spu2::kRamHalfwords - 1u;
++        constexpr uint32_t kVolumeBlock = 0x760u; // core 0's MVOL / EVOL / AVOL / BVOL; core 1's at +0x28
++        constexpr uint32_t kVolumeStride = 0x28u;
++        constexpr size_t kInputStartFrames = 512u; // AutoDMA frames held before the input plays (one transfer)
++
++        bool voiceLogEnabled()
++        {
++            static const bool enabled = std::getenv("VENDETTA_SPULOG") != nullptr;
++            return enabled;
++        }
++
++        int32_t clamp16(int32_t value)
++        {
++            return std::clamp(value, -32768, 32767);
++        }
++
++        // The envelope step the voices' ADSR and the volume sweeps share: a rate is a shift (0-31, fast..slow) and
++        // a step (+7..+4 rising, -8..-5 falling); the level moves by step << (11 - shift) every 1 << (shift - 11)
++        // samples; exponential rising slows to a quarter above 0x6000, exponential falling scales by the level.
++        void envelopeStep(int32_t &level, uint32_t &counter, bool exponential, bool decrease, uint32_t shift, uint32_t stepCode)
++        {
++            int32_t step = decrease ? -8 + static_cast<int32_t>(stepCode) : 7 - static_cast<int32_t>(stepCode);
++            uint32_t cycles = 1u << (shift > 11u ? shift - 11u : 0u);
++            if (shift < 11u)
++                step *= 1 << (11u - shift);
++            if (exponential && !decrease && level > 0x6000)
++                cycles *= 4u;
++            if (exponential && decrease)
++                step = (step * level) >> 15;
++            if (++counter < cycles)
++                return;
++            counter = 0u;
++            level = std::clamp(level + step, 0, 0x7FFF);
++        }
++
++        uint32_t composeAddress(uint16_t high, uint16_t low)
++        {
++            return ((static_cast<uint32_t>(high) << 16u) | low) & kAddressMask;
++        }
++    }
++
++    void Spu2::Volume::set(uint16_t value)
++    {
++        const bool wasSweep = (reg & 0x8000u) != 0u;
++        reg = value;
++        if ((value & 0x8000u) == 0u)
++        {
++            level = static_cast<int16_t>(static_cast<uint16_t>(value << 1u)); // fixed: 0x3FFF = full, bit 14 = inverted
++            return;
++        }
++        if (!wasSweep)
++            level = std::min(std::abs(level), 0x7FFF); // a sweep starts from the current level
++        counter = 0u;
++    }
++
++    void Spu2::Volume::step()
++    {
++        if ((reg & 0x8000u) == 0u)
++            return;
++        envelopeStep(level, counter, (reg & 0x4000u) != 0u, (reg & 0x2000u) != 0u, (reg >> 2u) & 0x1Fu, reg & 3u);
++    }
++
++    int32_t Spu2::Volume::value() const
++    {
++        if ((reg & 0x8000u) == 0u)
++            return level;
++        return (reg & 0x1000u) != 0u ? -level : level;
++    }
++
++    Spu2::Spu2()
++        : m_ram(kRamHalfwords)
++    {
++        reset();
++    }
++
++    void Spu2::reset()
++    {
++        std::fill(m_ram.begin(), m_ram.end(), uint16_t{0});
++        m_regs.fill(0u);
++        for (Core &core : m_cores)
++            core = Core{};
++        m_nextSampleCycle = kIopCyclesPerSample;
++    }
++
++    uint16_t Spu2::read16(uint32_t offset) const
++    {
++        offset &= kRegisterBytes - 2u;
++        if (offset >= kVolumeBlock && offset < kVolumeBlock + 2u * kVolumeStride)
++        {
++            const Core &core = m_cores[(offset - kVolumeBlock) / kVolumeStride];
++            const uint32_t field = (offset - kVolumeBlock) % kVolumeStride;
++            if (field == 0x10u)
++                return static_cast<uint16_t>(core.masterLeft.value());
++            if (field == 0x12u)
++                return static_cast<uint16_t>(core.masterRight.value());
++            return reg(offset);
++        }
++        const Core &core = m_cores[(offset >> 10u) & 1u];
++        const uint32_t local = offset & 0x3FFu;
++        if (local < 0x180u)
++        {
++            const Voice &voice = core.voices[local >> 4u];
++            switch (local & 0xFu)
++            {
++            case 0xAu: return static_cast<uint16_t>(voice.phase == Phase::Off ? 0 : voice.envelope); // ENVX
++            case 0xCu: return static_cast<uint16_t>(voice.left.value());                             // VOLXL
++            case 0xEu: return static_cast<uint16_t>(voice.right.value());                            // VOLXR
++            default: return reg(offset);
++            }
++        }
++        if (local >= 0x1C0u && local < 0x1C0u + kVoices * 12u)
++        {
++            const Voice &voice = core.voices[(local - 0x1C0u) / 12u];
++            const uint32_t now = voice.blockLoaded ? voice.blockAddress : voice.nextAddress;
++            switch ((local - 0x1C0u) % 12u)
++            {
++            case 8u: return static_cast<uint16_t>(now >> 16u); // NAX
++            case 10u: return static_cast<uint16_t>(now);
++            default: return reg(offset);
++            }
++        }
++        if (local == 0x340u)
++            return static_cast<uint16_t>(core.endFlags); // ENDX
++        if (local == 0x342u)
++            return static_cast<uint16_t>(core.endFlags >> 16u);
++        return reg(offset);
++    }
++
++    void Spu2::write16(uint32_t offset, uint16_t value)
++    {
++        offset &= kRegisterBytes - 2u;
++        m_regs[offset >> 1u] = value;
++        if (offset >= kVolumeBlock && offset < kVolumeBlock + 2u * kVolumeStride)
++        {
++            Core &core = m_cores[(offset - kVolumeBlock) / kVolumeStride];
++            const uint32_t field = (offset - kVolumeBlock) % kVolumeStride;
++            if (field == 0u)
++                core.masterLeft.set(value);
++            else if (field == 2u)
++                core.masterRight.set(value);
++            return;
++        }
++        const int coreIndex = static_cast<int>((offset >> 10u) & 1u);
++        Core &core = m_cores[coreIndex];
++        const uint32_t base = static_cast<uint32_t>(coreIndex) * 0x400u;
++        const uint32_t local = offset & 0x3FFu;
++        if (local < 0x180u)
++        {
++            Voice &voice = core.voices[local >> 4u];
++            switch (local & 0xFu)
++            {
++            case 0x0u: voice.left.set(value); break;
++            case 0x2u: voice.right.set(value); break;
++            case 0xAu: voice.envelope = value & 0x7FFFu; break;
++            default: break;
++            }
++            return;
++        }
++        if (local >= 0x1C0u && local < 0x1C0u + kVoices * 12u)
++        {
++            const uint32_t index = (local - 0x1C0u) / 12u;
++            const uint32_t field = (local - 0x1C0u) % 12u;
++            Voice &voice = core.voices[index];
++            const uint32_t fieldBase = base + 0x1C0u + index * 12u;
++            if (field == 4u || field == 6u) // LSAX: the loop address the block flags must not move
++            {
++                voice.loopAddress = composeAddress(reg(fieldBase + 4u), reg(fieldBase + 6u));
++                voice.loopWritten = true;
++                if (voice.phase != Phase::Off)
++                    voice.loopLocked = true;
++            }
++            else if (field == 8u || field == 10u) // NAX
++            {
++                voice.nextAddress = composeAddress(reg(fieldBase + 8u), reg(fieldBase + 10u));
++                voice.blockLoaded = false;
++                voice.position = 28u;
++            }
++            return;
++        }
++        switch (local)
++        {
++        case 0x1A0u: keyOn(coreIndex, value); break;
++        case 0x1A2u: keyOn(coreIndex, static_cast<uint32_t>(value & 0xFFu) << 16u); break;
++        case 0x1A4u: keyOff(coreIndex, value); break;
++        case 0x1A6u: keyOff(coreIndex, static_cast<uint32_t>(value & 0xFFu) << 16u); break;
++        case 0x1A8u:
++        case 0x1AAu:
++            core.transferAddress = composeAddress(reg(base + 0x1A8u), reg(base + 0x1AAu));
++            break;
++        case 0x1ACu: // the data port: a manual transfer into sound memory
++            m_ram[core.transferAddress] = value;
++            core.transferAddress = (core.transferAddress + 1u) & kAddressMask;
++            break;
++        case 0x340u: core.endFlags &= 0xFF0000u; break;
++        case 0x342u: core.endFlags &= 0xFFFFu; break;
++        default: break;
++        }
++    }
++
++    void Spu2::keyOn(int coreIndex, uint32_t mask)
++    {
++        Core &core = m_cores[coreIndex];
++        const uint32_t base = static_cast<uint32_t>(coreIndex) * 0x400u;
++        for (int index = 0; index < kVoices; ++index)
++        {
++            if ((mask & (1u << index)) == 0u)
++                continue;
++            Voice &voice = core.voices[index];
++            const uint32_t fieldBase = base + 0x1C0u + static_cast<uint32_t>(index) * 12u;
++            voice.nextAddress = composeAddress(reg(fieldBase), reg(fieldBase + 2u)); // SSA
++            voice.phase = Phase::Attack;
++            voice.envelope = 0;
++            voice.envelopeCounter = 0u;
++            voice.blockLoaded = false;
++            voice.position = 28u;
++            voice.history1 = voice.history2 = 0;
++            voice.previous = voice.current = 0;
++            voice.counter = 0u;
++            voice.loopLocked = voice.loopWritten;
++            voice.loopWritten = false;
++            voice.playedSamples = 0u;
++            voice.peak = 0;
++            core.endFlags &= ~(1u << index);
++            if (voiceLogEnabled())
++                std::fprintf(stderr, "[spu] at sample %llu core %d voice %d key on: start 0x%05X loop 0x%05X%s pitch 0x%04X adsr 0x%04X/0x%04X vol 0x%04X/0x%04X\n",
++                             static_cast<unsigned long long>(m_nextSampleCycle / kIopCyclesPerSample),
++                             coreIndex, index, voice.nextAddress, voice.loopAddress, voice.loopLocked ? " (set)" : "",
++                             reg(base + static_cast<uint32_t>(index) * 0x10u + 4u), reg(base + static_cast<uint32_t>(index) * 0x10u + 6u),
++                             reg(base + static_cast<uint32_t>(index) * 0x10u + 8u), voice.left.reg, voice.right.reg);
++        }
++    }
++
++    void Spu2::keyOff(int coreIndex, uint32_t mask)
++    {
++        Core &core = m_cores[coreIndex];
++        if (voiceLogEnabled() && mask != 0u)
++            std::fprintf(stderr, "[spu] core %d key off 0x%06X at sample %llu\n", coreIndex, mask,
++                         static_cast<unsigned long long>(m_nextSampleCycle / kIopCyclesPerSample));
++        for (int index = 0; index < kVoices; ++index)
++        {
++            Voice &voice = core.voices[index];
++            if ((mask & (1u << index)) != 0u && voice.phase != Phase::Off)
++            {
++                voice.phase = Phase::Release;
++                voice.envelopeCounter = 0u;
++            }
++        }
++    }
++
++    // One 16-byte PS-ADPCM block: a header halfword (shift | filter << 4, flags << 8: 1 = loop end, 2 = repeat,
++    // 4 = loop start), then 28 4-bit samples, each shifted and predicted from the two before it.
++    void Spu2::decodeBlock(Voice &voice)
++    {
++        static constexpr int32_t kFilter0[5] = {0, 60, 115, 98, 122};
++        static constexpr int32_t kFilter1[5] = {0, 0, -52, -55, -60};
++        const uint32_t address = voice.nextAddress & kAddressMask;
++        const uint16_t header = m_ram[address];
++        voice.blockAddress = address;
++        voice.blockFlags = static_cast<uint8_t>(header >> 8u);
++        if ((voice.blockFlags & 4u) != 0u && !voice.loopLocked)
++            voice.loopAddress = address;
++        uint32_t shift = header & 0xFu;
++        if (shift > 12u)
++            shift = 9u;
++        const uint32_t filter = std::min<uint32_t>((header >> 4u) & 7u, 4u);
++        for (uint32_t i = 0; i < 28u; ++i)
++        {
++            const uint16_t word = m_ram[(address + 1u + i / 4u) & kAddressMask];
++            const uint32_t nibble = (word >> ((i & 3u) * 4u)) & 0xFu;
++            int32_t sample = static_cast<int16_t>(static_cast<uint16_t>(nibble << 12u)) >> shift;
++            sample += (voice.history1 * kFilter0[filter] + voice.history2 * kFilter1[filter] + 32) >> 6;
++            sample = clamp16(sample);
++            voice.history2 = voice.history1;
++            voice.history1 = sample;
++            voice.samples[i] = static_cast<int16_t>(sample);
++        }
++        voice.position = 0u;
++        voice.blockLoaded = true;
++        voice.nextAddress = (address + 8u) & kAddressMask;
++    }
++
++    // The voice's sample for this output tick: the pitch (0x1000 = 48 kHz) moves through the decoded samples; a
++    // block's loop-end flag sets ENDX and jumps to the loop address (repeat) or ends the voice.
++    int32_t Spu2::nextSample(Core &core, int index, Voice &voice, uint32_t pitch)
++    {
++        voice.counter += pitch;
++        while (voice.counter >= 0x1000u)
++        {
++            voice.counter -= 0x1000u;
++            voice.previous = voice.current;
++            if (voice.position >= 28u)
++            {
++                if (voice.blockLoaded && (voice.blockFlags & 1u) != 0u)
++                {
++                    core.endFlags |= 1u << index;
++                    if ((voice.blockFlags & 2u) == 0u)
++                    {
++                        voice.phase = Phase::Off;
++                        voice.envelope = 0;
++                        voice.blockLoaded = false;
++                        voice.previous = voice.current = 0;
++                        return 0;
++                    }
++                    voice.nextAddress = voice.loopAddress;
++                }
++                decodeBlock(voice);
++            }
++            voice.current = voice.samples[voice.position++];
++        }
++        return voice.previous + (((voice.current - voice.previous) * static_cast<int32_t>(voice.counter)) >> 12);
++    }
++
++    // ADSR: attack to the top, decay to the sustain level, sustain (rising or falling) until key off, release to 0
++    void Spu2::stepEnvelope(int coreIndex, int index, Voice &voice)
++    {
++        const uint32_t voiceBase = static_cast<uint32_t>(coreIndex) * 0x400u + static_cast<uint32_t>(index) * 0x10u;
++        const uint16_t adsr1 = reg(voiceBase + 6u);
++        const uint16_t adsr2 = reg(voiceBase + 8u);
++        switch (voice.phase)
++        {
++        case Phase::Attack:
++            envelopeStep(voice.envelope, voice.envelopeCounter, (adsr1 & 0x8000u) != 0u, false, (adsr1 >> 10u) & 0x1Fu, (adsr1 >> 8u) & 3u);
++            if (voice.envelope >= 0x7FFF)
++            {
++                voice.envelope = 0x7FFF;
++                voice.phase = Phase::Decay;
++                voice.envelopeCounter = 0u;
++            }
++            break;
++        case Phase::Decay:
++        {
++            envelopeStep(voice.envelope, voice.envelopeCounter, true, true, (adsr1 >> 4u) & 0xFu, 0u);
++            const int32_t sustain = std::min<int32_t>(0x7FFF, static_cast<int32_t>((adsr1 & 0xFu) + 1u) << 11u);
++            if (voice.envelope <= sustain)
++            {
++                voice.phase = Phase::Sustain;
++                voice.envelopeCounter = 0u;
++            }
++            break;
++        }
++        case Phase::Sustain:
++            envelopeStep(voice.envelope, voice.envelopeCounter, (adsr2 & 0x8000u) != 0u, (adsr2 & 0x4000u) != 0u, (adsr2 >> 8u) & 0x1Fu, (adsr2 >> 6u) & 3u);
++            break;
++        case Phase::Release:
++            envelopeStep(voice.envelope, voice.envelopeCounter, (adsr2 & 0x20u) != 0u, true, adsr2 & 0x1Fu, 0u);
++            if (voice.envelope <= 0)
++            {
++                voice.envelope = 0;
++                voice.phase = Phase::Off;
++            }
++            break;
++        case Phase::Off:
++            break;
++        }
++    }
++
++    void Spu2::mixCore(int coreIndex, int32_t extLeft, int32_t extRight)
++    {
++        Core &core = m_cores[coreIndex];
++        const uint32_t base = static_cast<uint32_t>(coreIndex) * 0x400u;
++        const auto pair = [this, base](uint32_t low)
++        { return static_cast<uint32_t>(reg(base + low)) | (static_cast<uint32_t>(reg(base + low + 2u) & 0xFFu) << 16u); };
++        const uint32_t pitchModulation = pair(0x180u);
++        const uint32_t noise = pair(0x184u);
++        const uint32_t dryLeft = pair(0x188u);
++        const uint32_t dryRight = pair(0x190u);
++
++        // the noise generator (for voices with their NON bit): clock from ATTR bits 8-13
++        {
++            const uint16_t attr = reg(base + 0x19Au);
++            const int32_t noiseStep = static_cast<int32_t>((attr >> 8u) & 3u) + 4;
++            const uint32_t noiseShift = (attr >> 10u) & 0xFu;
++            const int32_t parity = ((core.noiseLevel >> 15) ^ (core.noiseLevel >> 12) ^ (core.noiseLevel >> 11) ^
++                                    (core.noiseLevel >> 10) ^ 1) & 1;
++            core.noiseTimer -= noiseStep;
++            if (core.noiseTimer < 0)
++            {
++                core.noiseLevel = (core.noiseLevel * 2 + parity) & 0xFFFF;
++                core.noiseTimer += static_cast<int32_t>(0x20000u >> noiseShift);
++                if (core.noiseTimer < 0)
++                    core.noiseTimer += static_cast<int32_t>(0x20000u >> noiseShift);
++            }
++        }
++
++        int32_t left = 0;
++        int32_t right = 0;
++        int32_t previousOutput = 0;
++        for (int index = 0; index < kVoices; ++index)
++        {
++            Voice &voice = core.voices[index];
++            if (voice.phase == Phase::Off)
++            {
++                voice.output = 0;
++                previousOutput = 0;
++                continue;
++            }
++            uint32_t pitch = reg(base + static_cast<uint32_t>(index) * 0x10u + 4u);
++            if (index > 0 && (pitchModulation & (1u << index)) != 0u)
++                pitch = static_cast<uint32_t>(std::max(0, (static_cast<int32_t>(pitch) * (0x8000 + previousOutput)) >> 15));
++            pitch = std::min<uint32_t>(pitch, 0x3FFFu);
++            int32_t sample = nextSample(core, index, voice, pitch);
++            if (voice.phase == Phase::Off)
++            {
++                if (voiceLogEnabled())
++                    std::fprintf(stderr, "[spu] core %d voice %d ended (sample end) after %.1f ms, peak %d\n", coreIndex, index,
++                                 voice.playedSamples / 48.0, voice.peak);
++                voice.output = 0;
++                previousOutput = 0;
++                continue;
++            }
++            if ((noise & (1u << index)) != 0u)
++                sample = static_cast<int16_t>(static_cast<uint16_t>(core.noiseLevel));
++            stepEnvelope(coreIndex, index, voice);
++            if (voice.phase == Phase::Off && voiceLogEnabled())
++                std::fprintf(stderr, "[spu] core %d voice %d ended (released) after %.1f ms, peak %d\n", coreIndex, index,
++                             voice.playedSamples / 48.0, voice.peak);
++            sample = (sample * voice.envelope) >> 15;
++            voice.output = sample;
++            ++voice.playedSamples;
++            voice.peak = std::max(voice.peak, std::abs(sample));
++            previousOutput = sample;
++            voice.left.step();
++            voice.right.step();
++            if ((dryLeft & (1u << index)) != 0u)
++                left += (sample * voice.left.value()) >> 15;
++            if ((dryRight & (1u << index)) != 0u)
++                right += (sample * voice.right.value()) >> 15;
++        }
++
++        // the sound-data input (AutoDMA), held back one transfer so a refill that comes a little late does not gap
++        int32_t inputLeft = 0;
++        int32_t inputRight = 0;
++        const size_t pending = core.input.size() - core.inputRead;
++        if (!core.inputPlaying && pending >= kInputStartFrames * 2u)
++            core.inputPlaying = true;
++        if (core.inputPlaying)
++        {
++            if (pending >= 2u)
++            {
++                inputLeft = core.input[core.inputRead];
++                inputRight = core.input[core.inputRead + 1u];
++                core.inputRead += 2u;
++            }
++            else
++            {
++                core.inputPlaying = false;
++            }
++        }
++        if (core.inputRead >= 1u << 16u)
++        {
++            core.input.erase(core.input.begin(), core.input.begin() + static_cast<std::ptrdiff_t>(core.inputRead));
++            core.inputRead = 0u;
++        }
++
++        // MMIX: bits 11 / 10 voices (dry) L / R, 7 / 6 the sound-data input, 3 / 2 the external input (core 0's out)
++        const uint32_t volumes = kVolumeBlock + static_cast<uint32_t>(coreIndex) * kVolumeStride;
++        const uint16_t mmix = reg(base + 0x198u);
++        int32_t outLeft = 0;
++        int32_t outRight = 0;
++        if ((mmix & 0x800u) != 0u)
++            outLeft += left;
++        if ((mmix & 0x400u) != 0u)
++            outRight += right;
++        if ((mmix & 0x80u) != 0u)
++            outLeft += (inputLeft * static_cast<int16_t>(reg(volumes + 0xCu))) >> 15;   // BVOLL
++        if ((mmix & 0x40u) != 0u)
++            outRight += (inputRight * static_cast<int16_t>(reg(volumes + 0xEu))) >> 15; // BVOLR
++        if ((mmix & 0x8u) != 0u)
++            outLeft += (extLeft * static_cast<int16_t>(reg(volumes + 0x8u))) >> 15;     // AVOLL
++        if ((mmix & 0x4u) != 0u)
++            outRight += (extRight * static_cast<int16_t>(reg(volumes + 0xAu))) >> 15;   // AVOLR
++        core.masterLeft.step();
++        core.masterRight.step();
++        core.outLeft = clamp16((clamp16(outLeft) * core.masterLeft.value()) >> 15);
++        core.outRight = clamp16((clamp16(outRight) * core.masterRight.value()) >> 15);
++    }
++
++    void Spu2::advanceTo(uint64_t iopCycle, std::vector<int16_t> &out)
++    {
++        if (iopCycle >= m_nextSampleCycle + kIopCyclesPerSample * 48000u)
++            m_nextSampleCycle = iopCycle - iopCycle % kIopCyclesPerSample + kIopCyclesPerSample; // over a second behind: resync
++        while (m_nextSampleCycle <= iopCycle)
++        {
++            m_nextSampleCycle += kIopCyclesPerSample;
++            mixCore(0, 0, 0);
++            mixCore(1, m_cores[0].outLeft, m_cores[0].outRight);
++            out.push_back(static_cast<int16_t>(m_cores[1].outLeft));
++            out.push_back(static_cast<int16_t>(m_cores[1].outRight));
++        }
++    }
++
++    void Spu2::dmaWrite(int coreIndex, const uint8_t *data, size_t bytes)
++    {
++        Core &core = m_cores[coreIndex & 1];
++        for (size_t i = 0; i + 1u < bytes; i += 2u)
++        {
++            m_ram[core.transferAddress] = static_cast<uint16_t>(data[i] | (data[i + 1u] << 8u));
++            core.transferAddress = (core.transferAddress + 1u) & kAddressMask;
++        }
++    }
++
++    void Spu2::dmaRead(int coreIndex, uint8_t *data, size_t bytes)
++    {
++        Core &core = m_cores[coreIndex & 1];
++        for (size_t i = 0; i + 1u < bytes; i += 2u)
++        {
++            const uint16_t value = m_ram[core.transferAddress];
++            data[i] = static_cast<uint8_t>(value);
++            data[i + 1u] = static_cast<uint8_t>(value >> 8u);
++            core.transferAddress = (core.transferAddress + 1u) & kAddressMask;
++        }
++    }
++
++    void Spu2::markDmaReady(int coreIndex)
++    {
++        m_regs[(0x344u + static_cast<uint32_t>(coreIndex & 1) * 0x400u) >> 1u] |= 0x80u;
++    }
++
++    bool Spu2::autoDmaEnabled(int coreIndex) const
++    {
++        return reg(0x1B0u + static_cast<uint32_t>(coreIndex & 1) * 0x400u) != 0u;
++    }
++
++    void Spu2::queueInput(int coreIndex, const int16_t *frames, size_t frameCount)
++    {
++        Core &core = m_cores[coreIndex & 1];
++        core.input.insert(core.input.end(), frames, frames + frameCount * 2u);
++        const size_t pending = core.input.size() - core.inputRead;
++        if (pending > 48000u * 2u) // over a second queued (the input stopped being played): keep the newest
++            core.inputRead = core.input.size() - 48000u * 2u;
++    }
++}
+diff --git a/ps2xIOP/src/emulator/core/spu2.h b/ps2xIOP/src/emulator/core/spu2.h
+new file mode 100644
+index 0000000..446991b
+--- /dev/null
++++ b/ps2xIOP/src/emulator/core/spu2.h
+@@ -0,0 +1,118 @@
++#pragma once
++
++#include <array>
++#include <cstddef>
++#include <cstdint>
++#include <vector>
++
++namespace ps2x::iop::detail
++{
++    // The PS2's sound chip (SPU2): two cores of 24 voices that play PS-ADPCM samples from its 2 MB sound memory, each
++    // core mixing its voices with its inputs (the AutoDMA sound-data stream; on core 1 also core 0's output) into a
++    // 48 kHz stereo output (core 1's is what the console plays). Registers at 0x1F900000-0x1F9007FF, 16 bits each,
++    // core 1's at +0x400; the per-core volumes at 0x760 (core 0) / 0x788 (core 1). Reverb is not modelled (a game that
++    // routes voices to it loses only that wet part).
++    class Spu2
++    {
++    public:
++        static constexpr uint32_t kRegisterBytes = 0x800u;
++        static constexpr uint32_t kRamHalfwords = 1u << 20u; // 2 MB
++        static constexpr uint64_t kIopCyclesPerSample = 768u; // 36.864 MHz / 48 kHz
++        static constexpr int kVoices = 24;
++
++        Spu2();
++        void reset();
++
++        // register access; offset = address - 0x1F900000 (0 .. 0x7FF), halfword aligned
++        [[nodiscard]] uint16_t read16(uint32_t offset) const;
++        void write16(uint32_t offset, uint16_t value);
++
++        // a DMA (not AutoDMA) to / from sound memory at the core's transfer address (TSA), which then moves on
++        void dmaWrite(int core, const uint8_t *data, size_t bytes);
++        void dmaRead(int core, uint8_t *data, size_t bytes);
++        void markDmaReady(int core); // STATX bit 7, what a sound library waits for after a transfer
++        [[nodiscard]] bool autoDmaEnabled(int core) const;
++        // AutoDMA: the core's sound-data input, 48 kHz stereo frames (L, R interleaved)
++        void queueInput(int core, const int16_t *frames, size_t frameCount);
++
++        // plays up to the IOP cycle count, appending the output frames (L, R interleaved)
++        void advanceTo(uint64_t iopCycle, std::vector<int16_t> &out);
++        [[nodiscard]] uint64_t nextSampleCycle() const noexcept { return m_nextSampleCycle; }
++
++    private:
++        enum class Phase : uint8_t
++        {
++            Off,
++            Attack,
++            Decay,
++            Sustain,
++            Release,
++        };
++
++        // a volume register: fixed (bit 15 clear) or a sweep (bit 15 set) that moves the level each sample
++        struct Volume
++        {
++            uint16_t reg = 0;
++            int32_t level = 0; // 0 .. 0x7FFF (a sweep's magnitude) or the fixed value (signed)
++            uint32_t counter = 0;
++            void set(uint16_t value);
++            void step();
++            [[nodiscard]] int32_t value() const;
++        };
++
++        struct Voice
++        {
++            Phase phase = Phase::Off;
++            int32_t envelope = 0;
++            uint32_t envelopeCounter = 0;
++            uint32_t nextAddress = 0; // halfwords: the next block to decode
++            uint32_t loopAddress = 0;
++            uint32_t blockAddress = 0;
++            bool loopLocked = false;   // the loop address came from the register, not a block's loop-start flag
++            bool loopWritten = false;  // LSAX written since the last key-on
++            bool blockLoaded = false;
++            uint8_t blockFlags = 0;
++            uint8_t position = 28;     // the next of the 28 decoded samples
++            std::array<int16_t, 28> samples{};
++            int32_t history1 = 0;
++            int32_t history2 = 0;
++            int32_t previous = 0;      // the last two samples played, for interpolation
++            int32_t current = 0;
++            uint32_t counter = 0;      // the pitch counter's 12-bit fraction
++            int32_t output = 0;        // after the envelope, before the volume (pitch modulation of the next voice)
++            uint32_t playedSamples = 0; // VENDETTA_SPULOG: how long it played and its loudest output
++            int32_t peak = 0;
++            Volume left;
++            Volume right;
++        };
++
++        struct Core
++        {
++            std::array<Voice, kVoices> voices{};
++            uint32_t endFlags = 0;          // ENDX
++            uint32_t transferAddress = 0;   // halfwords, where the data port / a DMA writes next
++            std::vector<int16_t> input;     // AutoDMA frames not yet played
++            size_t inputRead = 0;
++            bool inputPlaying = false;
++            Volume masterLeft;
++            Volume masterRight;
++            int32_t outLeft = 0;
++            int32_t outRight = 0;
++            int32_t noiseLevel = 1;
++            int32_t noiseTimer = 0;
++        };
++
++        [[nodiscard]] uint16_t reg(uint32_t offset) const { return m_regs[(offset & 0x7FFu) >> 1u]; }
++        void keyOn(int core, uint32_t mask);
++        void keyOff(int core, uint32_t mask);
++        void decodeBlock(Voice &voice);
++        int32_t nextSample(Core &core, int index, Voice &voice, uint32_t pitch);
++        void stepEnvelope(int core, int index, Voice &voice);
++        void mixCore(int core, int32_t extLeft, int32_t extRight);
++
++        std::vector<uint16_t> m_ram;
++        std::array<uint16_t, kRegisterBytes / 2u> m_regs{};
++        std::array<Core, 2> m_cores{};
++        uint64_t m_nextSampleCycle = kIopCyclesPerSample;
++    };
++}
 diff --git a/ps2xIOP/src/emulator/iop_emulator.cpp b/ps2xIOP/src/emulator/iop_emulator.cpp
-index e5f63a9..0377497 100644
+index e5f63a9..56d174f 100644
 --- a/ps2xIOP/src/emulator/iop_emulator.cpp
 +++ b/ps2xIOP/src/emulator/iop_emulator.cpp
 @@ -19,7 +19,11 @@
@@ -302,7 +1141,7 @@ index e5f63a9..0377497 100644
 +                dmaDueFloor = std::min(dmaDueFloor, totalCycles + dma->delayCycles);
 +                idleKnown = false;
 +                if (!dma->pcm.empty())
-+                    host.submitAudio(dma->pcm.data(), dma->pcm.size() / 2u);
++                    memory.spu2().queueInput(dma->core, dma->pcm.data(), dma->pcm.size() / 2u);
 +            }
          }
  
@@ -482,7 +1321,7 @@ index e5f63a9..0377497 100644
                  return;
  
              std::vector<ScheduledGuestCallback> callbacks;
-@@ -553,28 +666,68 @@ namespace ps2x::iop::detail
+@@ -553,28 +666,89 @@ namespace ps2x::iop::detail
              servicingGuestCallbacks = false;
          }
  
@@ -505,14 +1344,35 @@ index e5f63a9..0377497 100644
 +                ++idleSkips;
 +                static const bool verify = std::getenv("VENDETTA_IOP_VERIFY") != nullptr;
 +                if (!verify)
-+                {
 +                    totalCycles = target;
-+                    return;
-+                }
-+                verifyIdleSkip(target);
-+                return;
++                else
++                    verifyIdleSkip(target);
 +            }
-+            runCyclesFull(target);
++            else
++            {
++                runCyclesFull(target);
++            }
++            if (totalCycles >= memory.spu2().nextSampleCycle())
++                runSoundChip();
++        }
++
++        // The SPU2 plays up to the IOP's cycle (a 48 kHz sample every 768 cycles); its output goes to the host in
++        // blocks of 256 frames (~5 ms).
++        void runSoundChip() noexcept
++        {
++            try
++            {
++                memory.spu2().advanceTo(totalCycles, soundOutput);
++                if (soundOutput.size() >= 512u)
++                {
++                    host.submitAudio(soundOutput.data(), soundOutput.size() / 2u);
++                    soundOutput.clear();
++                }
++            }
++            catch (...)
++            {
++                soundOutput.clear();
++            }
 +        }
 +
 +        void runCyclesFull(uint64_t target) noexcept
@@ -558,7 +1418,7 @@ index e5f63a9..0377497 100644
                      const uint64_t before = totalCycles;
                      runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
                      kernel.endTimeslice(*next, kThreadReturnSentinel);
-@@ -588,6 +741,44 @@ namespace ps2x::iop::detail
+@@ -588,6 +762,44 @@ namespace ps2x::iop::detail
              }
          }
  
@@ -603,7 +1463,7 @@ index e5f63a9..0377497 100644
          ModuleLoadResult loadImage(std::string path, std::span<const uint8_t> image, const void *arguments, uint32_t argumentSize)
          {
              ModuleLoadResult result{true, -1, -1};
-@@ -664,6 +855,7 @@ namespace ps2x::iop::detail
+@@ -664,6 +876,7 @@ namespace ps2x::iop::detail
  
          bool stopModule(int32_t moduleId, int32_t *result)
          {
@@ -611,7 +1471,7 @@ index e5f63a9..0377497 100644
              auto it = modules.find(moduleId);
              if (it == modules.end())
                  return false;
-@@ -696,7 +888,29 @@ namespace ps2x::iop::detail
+@@ -696,10 +909,33 @@ namespace ps2x::iop::detail
          IopLoadcore loadcore;
          std::map<int, Module> modules;
          std::map<int, uint64_t> pendingDmaInterrupts;
@@ -641,7 +1501,11 @@ index e5f63a9..0377497 100644
          uint32_t nextModuleId = 1;
          uint32_t moduleCursor = kModuleLoadBase;
          uint64_t totalCycles = 0;
-@@ -724,18 +938,23 @@ namespace ps2x::iop::detail
++        std::vector<int16_t> soundOutput; // SPU2 frames not yet handed to the host
+         uint64_t totalInstructions = 0;
+         uint64_t eeCycleCarry = 0;
+         CpuState *activeCpu = nullptr;
+@@ -724,18 +960,23 @@ namespace ps2x::iop::detail
          m_impl->reset();
      }
  
@@ -665,7 +1529,7 @@ index e5f63a9..0377497 100644
          return m_impl->stopModule(moduleId, result);
      }
  
-@@ -744,15 +963,32 @@ namespace ps2x::iop::detail
+@@ -744,15 +985,32 @@ namespace ps2x::iop::detail
          const uint64_t total = m_impl->eeCycleCarry + eeCycles;
          const uint64_t iopCycles = total / 8u;
          m_impl->eeCycleCarry = total % 8u;
@@ -699,7 +1563,7 @@ index e5f63a9..0377497 100644
      bool IopEmulator::hasRpcServer(uint32_t sid) const noexcept
      {
          return m_impl->rpc.hasServer(sid);
-@@ -760,16 +996,19 @@ namespace ps2x::iop::detail
+@@ -760,16 +1018,19 @@ namespace ps2x::iop::detail
  
      void IopEmulator::onSifTransfer(const SifTransfer &transfer)
      {
@@ -719,7 +1583,7 @@ index e5f63a9..0377497 100644
          return m_impl->memory.freeAllocation(address);
      }
  
-@@ -781,12 +1020,14 @@ namespace ps2x::iop::detail
+@@ -781,12 +1042,14 @@ namespace ps2x::iop::detail
  
      bool IopEmulator::writeMemory(uint32_t address, const void *source, size_t size)
      {
@@ -1159,7 +2023,7 @@ index 4b9242c..3bee601 100644
      std::atomic<uint32_t> m_missingFunctionPolicy{static_cast<uint32_t>(MissingFunctionPolicy::ContinueToTarget)};
      std::atomic<bool> m_missingFunctionReported{false};
 diff --git a/ps2xRuntime/include/runtime/ee_scheduler.h b/ps2xRuntime/include/runtime/ee_scheduler.h
-index f247ff9..8aaf5b7 100644
+index f247ff9..51ce2e5 100644
 --- a/ps2xRuntime/include/runtime/ee_scheduler.h
 +++ b/ps2xRuntime/include/runtime/ee_scheduler.h
 @@ -91,6 +91,10 @@ enum class GuestInvocationKind : uint8_t
@@ -1183,15 +2047,16 @@ index f247ff9..8aaf5b7 100644
  };
  
  struct EeIrqHandler
-@@ -279,6 +286,7 @@ public:
+@@ -279,6 +286,8 @@ public:
      void requestStop();
      void postEvent(EeEvent event);
      [[nodiscard]] bool checkpointDue(uint32_t cycles = kGeneratedCheckpointCycles) noexcept;
 +    void catchUpWithHostClock() noexcept;
++    void catchUpBeforeDeadline() noexcept;
      void accountCycles(uint32_t cycles) noexcept;
      [[nodiscard]] bool isExecutingGuest() const noexcept;
  
-@@ -313,7 +321,8 @@ public:
+@@ -313,7 +322,8 @@ public:
      int pollEventFlag(int id, uint32_t bits, uint32_t mode, uint32_t &observedBits);
      void waitEventFlag(int id, uint32_t bits, uint32_t mode, uint32_t resultAddress);
  
@@ -1201,7 +2066,7 @@ index f247ff9..8aaf5b7 100644
      int cancelAlarm(int id);
      void queueInvocation(GuestInvocation invocation);
      [[noreturn]] void invokeCurrent(GuestInvocation invocation);
-@@ -390,6 +399,7 @@ private:
+@@ -390,6 +400,7 @@ private:
      static int waitObjectId(const EeWaitState &wait);
      void writeGuestU32(uint32_t address, uint32_t value);
      void waitForEvent();
@@ -1209,7 +2074,7 @@ index f247ff9..8aaf5b7 100644
      void scheduleEvent(uint64_t deadlineCycle, std::chrono::steady_clock::time_point hostDeadline, EeEvent event);
      void updateNextDeadline();
      [[nodiscard]] bool hasReadyAtOrAbovePriority(int priority) const;
-@@ -426,6 +436,10 @@ private:
+@@ -426,6 +437,10 @@ private:
      bool m_insideInterrupt = false;
      uint32_t m_pendingEeTimerInterrupts = 0;
      uint64_t m_eeCycle = 0;
@@ -1220,7 +2085,7 @@ index f247ff9..8aaf5b7 100644
      uint64_t m_sliceEndCycle = kDefaultTimeSliceCycles;
      std::thread::id m_executorThread{};
      std::atomic<bool> m_running{false};
-@@ -447,6 +461,19 @@ private:
+@@ -447,6 +462,19 @@ private:
      uint32_t m_gsVSyncCallback = 0;
      uint32_t m_gsVSyncCallbackGp = 0;
      uint32_t m_gsVSyncCallbackSp = 0;
@@ -2116,10 +2981,10 @@ index 0000000..4ceb82c
 +};
 diff --git a/ps2xRuntime/include/runtime/ps2_host_profile.h b/ps2xRuntime/include/runtime/ps2_host_profile.h
 new file mode 100644
-index 0000000..394b22d
+index 0000000..3a3a8f2
 --- /dev/null
 +++ b/ps2xRuntime/include/runtime/ps2_host_profile.h
-@@ -0,0 +1,172 @@
+@@ -0,0 +1,178 @@
 +#pragma once
 +
 +#include <atomic>
@@ -2150,6 +3015,7 @@ index 0000000..394b22d
 +        Idle,      // the GS thread / the chain worker with nothing to do
 +        ChainWait, // the game thread blocked on the chain worker (a fence, the ring full, the throttle)
 +        ChainCmd,  // the chain worker handling a record (not in VU1 / the GS front end)
++        Pace,      // the game thread held at a checkpoint until an event's real-time moment (EE time ahead of the clock)
 +        Count
 +    };
 +
@@ -2186,6 +3052,11 @@ index 0000000..394b22d
 +    // source line (Kernel/HostProfiler.cpp).
 +    bool samplePc(Track track, uint8_t phase) noexcept;
 +    std::string pcReport(uint32_t topOverall, uint32_t topPerPhase);
++    // The stall report (VENDETTA_HOSTPROF): a rough host call stack of a track's thread — its instruction pointer, then
++    // the words on its stack that point just after a call instruction in this exe (no unwinding while it is stopped,
++    // nothing allocated) — and the names of such a stack, innermost first.
++    size_t stackScan(Track track, uint64_t *out, size_t maxOut) noexcept;
++    std::string describeStack(const uint64_t *pcs, size_t count);
 +
 +    struct Scope
 +    {
@@ -2288,7 +3159,7 @@ index 0000000..394b22d
 +    inline const char *name(uint8_t phase) noexcept
 +    {
 +        static const char *const names[Count] = {"game", "iop", "gs", "gs-lock", "gs-draw", "gs-upload", "vu1", "mpeg", "wait",
-+                                                 "gs-submit", "gs-wait", "gs-present", "gs-cmd", "idle", "chain-wait", "chain-cmd"};
++                                                 "gs-submit", "gs-wait", "gs-present", "gs-cmd", "idle", "chain-wait", "chain-cmd", "pace"};
 +        return phase < Count ? names[phase] : "?";
 +    }
 +}
@@ -3122,7 +3993,7 @@ index 0000000..d84c38b
 +
 +#endif
 diff --git a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-index c5e31c4..90ec506 100644
+index c5e31c4..fc886c6 100644
 --- a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 @@ -1,10 +1,17 @@
@@ -3143,7 +4014,74 @@ index c5e31c4..90ec506 100644
  #include <cstring>
  #include <limits>
  #include <stdexcept>
-@@ -124,6 +131,14 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
+@@ -33,6 +40,8 @@ namespace
+     constexpr uint32_t WEF_CLEAR_ALL = 0x20u;
+     constexpr auto kVBlankPeriod = std::chrono::microseconds(16667);
+     constexpr auto kVBlankDuration = std::chrono::microseconds(500);
++    // how far the VBlank schedule may fall behind real time before it restarts from now (see processDueDeadlines)
++    constexpr auto kVBlankResync = std::chrono::milliseconds(100);
+     constexpr uint64_t kAlarmTickMicroseconds = 64u;
+     constexpr uint32_t kDebugPublishDispatchInterval = 4096u;
+ 
+@@ -51,6 +60,57 @@ namespace
+     }
+ 
+     constexpr uint64_t kVBlankPeriodCycles = microsecondsToEeCycles(16667u);
++
++    // VENDETTA_HOSTPROF: when the scheduler is about to sleep 30 ms or more, print why — every pending deadline with how
++    // far away it is in EE time and in real time ("[sleep]"); a sleep that long holds a vblank up (a hitch on screen)
++    bool sleepLogEnabled()
++    {
++        static const bool enabled = std::getenv("VENDETTA_HOSTPROF") != nullptr;
++        return enabled;
++    }
++
++    const char *eventTypeName(EeEventType type)
++    {
++        switch (type)
++        {
++        case EeEventType::Stop: return "stop";
++        case EeEventType::VBlankStart: return "vblank";
++        case EeEventType::VBlankEnd: return "vblank-end";
++        case EeEventType::Dmac: return "dmac";
++        case EeEventType::ExternalWake: return "wake";
++        case EeEventType::Alarm: return "alarm";
++        }
++        return "?";
++    }
++
++    struct SleepDiary
++    {
++        std::vector<std::string> entries;
++        std::chrono::steady_clock::time_point lastVBlank{};
++    };
++
++    SleepDiary &sleepDiary()
++    {
++        static SleepDiary diary;
++        return diary;
++    }
++
++    template <typename Deadlines>
++    std::string describeDeadlines(const Deadlines &deadlines, uint64_t eeCycle, std::chrono::steady_clock::time_point now)
++    {
++        std::string text;
++        char item[128];
++        for (const auto &scheduled : deadlines)
++        {
++            const double eeMs = static_cast<double>(static_cast<int64_t>(scheduled.deadlineCycle - eeCycle)) /
++                                static_cast<double>(EeScheduler::kEeClockHz / 1000u);
++            const double realMs = std::chrono::duration<double, std::milli>(scheduled.hostDeadline - now).count();
++            std::snprintf(item, sizeof(item), " | %s %u: EE %+.1f ms, real %+.1f ms", eventTypeName(scheduled.event.type),
++                          static_cast<unsigned>(scheduled.event.id), eeMs, realMs);
++            text += item;
++        }
++        return text;
++    }
+     constexpr uint64_t kVBlankDurationCycles = microsecondsToEeCycles(500u);
+     constexpr uint64_t kAlarmTickCycles = microsecondsToEeCycles(kAlarmTickMicroseconds);
+ 
+@@ -124,6 +184,14 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
      }
      m_eventSequence = 0;
      m_invocationSequence = 0;
@@ -3158,7 +4096,7 @@ index c5e31c4..90ec506 100644
      m_vsyncTick = 0;
      m_vsyncFlagAddress = 0;
      m_vsyncTickAddress = 0;
-@@ -152,6 +167,9 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
+@@ -152,6 +220,9 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
      publishSnapshot();
  }
  
@@ -3168,7 +4106,7 @@ index c5e31c4..90ec506 100644
  void EeScheduler::run()
  {
      assertExecutor();
-@@ -160,6 +178,7 @@ void EeScheduler::run()
+@@ -160,6 +231,7 @@ void EeScheduler::run()
      while (!m_stopRequested.load(std::memory_order_acquire))
      {
          processPendingEvents();
@@ -3176,7 +4114,7 @@ index c5e31c4..90ec506 100644
          if (m_stopRequested.load(std::memory_order_acquire))
          {
              break;
-@@ -244,8 +263,34 @@ void EeScheduler::run()
+@@ -244,8 +316,34 @@ void EeScheduler::run()
                      {
                      }
                  }
@@ -3211,7 +4149,7 @@ index c5e31c4..90ec506 100644
              makeDormant(*running);
              m_currentThreadId = 0;
              copyMainContextToRuntime();
-@@ -254,7 +299,9 @@ void EeScheduler::run()
+@@ -254,7 +352,9 @@ void EeScheduler::run()
              continue;
          }
  
@@ -3222,7 +4160,7 @@ index c5e31c4..90ec506 100644
          {
              GuestInvocation invocation = std::move(m_pendingInvocations.front());
              m_pendingInvocations.pop_front();
-@@ -296,6 +343,7 @@ void EeScheduler::run()
+@@ -296,6 +396,7 @@ void EeScheduler::run()
          {
              m_insideInterrupt = !running->invocations.empty() && running->invocations.back().kind == GuestInvocationKind::Interrupt;
              m_guestExecuting.store(true, std::memory_order_release);
@@ -3230,7 +4168,7 @@ index c5e31c4..90ec506 100644
              function(m_rdram, &context, &m_runtime);
              m_guestExecuting.store(false, std::memory_order_release);
              m_insideInterrupt = false;
-@@ -354,9 +402,52 @@ void EeScheduler::postEvent(EeEvent event)
+@@ -354,9 +455,116 @@ void EeScheduler::postEvent(EeEvent event)
      m_eventCv.notify_one();
  }
  
@@ -3276,6 +4214,70 @@ index c5e31c4..90ec506 100644
 +    accountCycles(static_cast<uint32_t>(std::min(behind, kMaxStepCycles)));
 +}
 +
++// Before a new deadline is set from EE time (an alarm): if EE time has fallen behind the real clock — the guest kept
++// waiting on host work its cycle count does not show — catch it up. Behind = a pending event whose real-time moment has
++// passed while its EE deadline has not (or EE time behind the host-clock anchor of catchUpWithHostClock). EE time moves
++// up to the latest such deadline, but never past an event not yet due in real time, nor past a timer compare (they keep
++// their order, and a handler that re-arms with "target += period - count" its one period), and not across a stall of
++// over 100 ms (re-anchor instead, as catchUpWithHostClock). catchUpWithHostClock alone needs 1024 checkpoints per
++// millisecond, and a guest that mostly waits makes too few. Def Jam Vendetta reads its loads one 2 KB sector at a time,
++// each read opening the disc image on the PC (~1 ms of real time) against the 0.25 ms its completion alarm adds to EE
++// time: EE time crawled at a quarter of real speed through a load, and the next vblank, due in EE time, came 60-90 ms
++// late — a hitch on screen as a match loads and starts (and, with the old vblank catch-up, a fast-forward after it).
++void EeScheduler::catchUpBeforeDeadline() noexcept
++{
++    constexpr uint64_t kResyncCycles = EeScheduler::kEeClockHz / 10u; // 100 ms
++    const auto now = std::chrono::steady_clock::now();
++    uint64_t target = m_eeCycle;
++    if (m_hostClockOrigin != std::chrono::steady_clock::time_point{})
++    {
++        const uint64_t elapsedNs = static_cast<uint64_t>(
++            std::chrono::duration_cast<std::chrono::nanoseconds>(now - m_hostClockOrigin).count());
++        const uint64_t hostCycle = m_hostClockOriginCycle + elapsedNs / 1000u * (EeScheduler::kEeClockHz / 1000000u);
++        if (hostCycle > m_eeCycle)
++        {
++            if (hostCycle - m_eeCycle > kResyncCycles)
++            {
++                m_hostClockOrigin = now;
++                m_hostClockOriginCycle = m_eeCycle;
++            }
++            else
++            {
++                target = hostCycle;
++            }
++        }
++    }
++    uint64_t barrier = m_eeCycle + m_runtime.memory().cyclesUntilNextEeTimerInterrupt();
++    if (barrier < m_eeCycle)
++    {
++        barrier = std::numeric_limits<uint64_t>::max(); // no timer compare pending (the sum wrapped)
++    }
++    {
++        std::lock_guard lock(m_eventMutex);
++        for (const ScheduledEvent &scheduled : m_deadlines)
++        {
++            if (scheduled.deadlineCycle <= m_eeCycle)
++            {
++                continue;
++            }
++            if (scheduled.hostDeadline <= now)
++            {
++                target = std::max(target, scheduled.deadlineCycle); // overdue in real time: EE time is behind
++            }
++            else
++            {
++                barrier = std::min(barrier, scheduled.deadlineCycle); // not due yet: do not pass it
++            }
++        }
++    }
++    target = std::min({target, barrier, m_eeCycle + kResyncCycles});
++    while (target > m_eeCycle)
++    {
++        const uint32_t chunk = static_cast<uint32_t>(std::min<uint64_t>(target - m_eeCycle, std::numeric_limits<uint32_t>::max()));
++        accountCycles(chunk);
++    }
++}
++
  bool EeScheduler::checkpointDue(uint32_t cycles) noexcept
  {
      accountCycles(cycles);
@@ -3283,7 +4285,7 @@ index c5e31c4..90ec506 100644
  
      if (m_checkpointPending.load(std::memory_order_acquire) ||
          m_stopRequested.load(std::memory_order_acquire))
-@@ -1061,7 +1152,8 @@ int EeScheduler::setAlarm(uint16_t ticks,
+@@ -1061,7 +1269,8 @@ int EeScheduler::setAlarm(uint16_t ticks,
                            uint32_t handler,
                            uint32_t argument,
                            uint32_t gp,
@@ -3293,16 +4295,17 @@ index c5e31c4..90ec506 100644
  {
      assertExecutor();
      if (handler == 0u || !m_runtime.hasFunction(handler))
-@@ -1073,7 +1165,7 @@ int EeScheduler::setAlarm(uint16_t ticks,
+@@ -1073,7 +1282,8 @@ int EeScheduler::setAlarm(uint16_t ticks,
      {
          return KE_ERROR;
      }
 -    m_alarms.emplace(id, EeAlarm{id, ticks, handler, argument, gp, sp});
 +    m_alarms.emplace(id, EeAlarm{id, ticks, handler, argument, gp, sp, argumentInA0});
++    catchUpBeforeDeadline();
      const uint64_t tickCount = ticks == 0u ? 1u : static_cast<uint64_t>(ticks);
      scheduleEvent(m_eeCycle + tickCount * kAlarmTickCycles,
                    std::chrono::steady_clock::now() + std::chrono::microseconds(tickCount * kAlarmTickMicroseconds),
-@@ -1170,13 +1262,15 @@ uint32_t EeScheduler::invocationStackTop()
+@@ -1170,13 +1380,15 @@ uint32_t EeScheduler::invocationStackTop()
      {
          return existing->second;
      }
@@ -3319,7 +4322,7 @@ index c5e31c4..90ec506 100644
      return top;
  }
  
-@@ -1258,6 +1352,9 @@ void EeScheduler::dispatchIrq(bool dmac, uint32_t cause)
+@@ -1258,6 +1470,9 @@ void EeScheduler::dispatchIrq(bool dmac, uint32_t cause)
      const uint32_t mask = dmac ? m_enabledDmacMask : m_enabledIntcMask;
      if (cause < 32u && (mask & (1u << cause)) == 0u)
      {
@@ -3329,7 +4332,7 @@ index c5e31c4..90ec506 100644
          return;
      }
      const auto &handlers = dmac ? m_dmacHandlers : m_intcHandlers;
-@@ -1680,10 +1777,69 @@ void EeScheduler::removeFromWaitObject(GuestThread &item)
+@@ -1680,10 +1895,69 @@ void EeScheduler::removeFromWaitObject(GuestThread &item)
      item.wait = {};
  }
  
@@ -3399,7 +4402,7 @@ index c5e31c4..90ec506 100644
      self->wait = std::move(wait);
      self->status = self->suspendCount == 0 ? EeThreadStatus::Waiting : EeThreadStatus::WaitingSuspended;
      m_currentThreadId = 0;
-@@ -1693,6 +1849,24 @@ void EeScheduler::blockCurrent(EeWaitState wait)
+@@ -1693,6 +1967,24 @@ void EeScheduler::blockCurrent(EeWaitState wait)
  
  void EeScheduler::makeReady(GuestThread &item, int result, bool interruptSafe)
  {
@@ -3424,7 +4427,73 @@ index c5e31c4..90ec506 100644
      auto completion = std::move(item.wait.completion);
      item.wait = {};
      setReturnS32(&item.activeContext(), result);
-@@ -1867,6 +2041,7 @@ void EeScheduler::processEvent(const EeEvent &event)
+@@ -1800,6 +2092,13 @@ void EeScheduler::processDueDeadlines()
+ 
+             if (now < pacingDeadline)
+             {
++                if (sleepLogEnabled() && sleepDiary().entries.size() < 64u)
++                {
++                    char head[64];
++                    std::snprintf(head, sizeof(head), "pace hold %.1f ms:", std::chrono::duration<double, std::milli>(pacingDeadline - now).count());
++                    sleepDiary().entries.push_back(head + describeDeadlines(m_deadlines, m_eeCycle, now));
++                }
++                ps2_host_profile::Scope pace(ps2_host_profile::Pace);
+                 m_eventCv.wait_until(lock, pacingDeadline, [this]()
+                                      { return !m_events.empty() ||
+                                               m_stopRequested.load(std::memory_order_acquire); });
+@@ -1847,11 +2146,49 @@ void EeScheduler::processDueDeadlines()
+         {
+             if (scheduled.event.type == EeEventType::VBlankStart)
+             {
++                // A VBlank comes every 16.7 ms of real time whatever the game is doing. When the runtime has fallen
++                // far behind (a stall of over 100 ms: a long load step, the drawing thread busy with a big upload),
++                // the missed VBlanks must not be delivered afterwards at full speed: the game ran fast-forward until
++                // the schedule caught up with the clock (Def Jam Vendetta: about a second at up to double speed after
++                // loading a match, and again as the match starts). The schedule restarts from now instead, as the EE
++                // clock does (catchUpWithHostClock); a smaller lag still catches up, so the rate stays 60 Hz.
++                // VENDETTA_VBLANK_CATCHUP=1 restores the old catch-up.
++                if (sleepLogEnabled())
++                {
++                    SleepDiary &diary = sleepDiary();
++                    const auto at = std::chrono::steady_clock::now();
++                    if (diary.lastVBlank != std::chrono::steady_clock::time_point{} && at - diary.lastVBlank > std::chrono::milliseconds(50))
++                    {
++                        std::string text;
++                        for (const std::string &entry : diary.entries)
++                            text += "\n[sleep]   " + entry;
++                        std::fprintf(stderr, "[sleep] %.1f ms between vblanks %llu and %llu (%zu sleeps):%s\n",
++                                     std::chrono::duration<double, std::milli>(at - diary.lastVBlank).count(),
++                                     static_cast<unsigned long long>(m_vsyncTick), static_cast<unsigned long long>(m_vsyncTick + 1u),
++                                     diary.entries.size(), text.c_str());
++                    }
++                    diary.lastVBlank = at;
++                    diary.entries.clear();
++                }
++                static const bool catchUp = std::getenv("VENDETTA_VBLANK_CATCHUP") != nullptr;
++                auto hostDeadline = scheduled.hostDeadline;
++                const auto now = std::chrono::steady_clock::now();
++                if (!catchUp && now - hostDeadline > kVBlankResync)
++                {
++                    static const bool log = std::getenv("VENDETTA_HOSTPROF") != nullptr;
++                    if (log)
++                    {
++                        std::fprintf(stderr, "[vblank] %lld ms behind real time at tick %llu: the schedule restarts from now\n",
++                                     static_cast<long long>(std::chrono::duration_cast<std::chrono::milliseconds>(now - hostDeadline).count()),
++                                     static_cast<unsigned long long>(m_vsyncTick));
++                    }
++                    hostDeadline = now;
++                }
+                 scheduleEvent(scheduled.deadlineCycle + kVBlankDurationCycles,
+-                              scheduled.hostDeadline + kVBlankDuration,
++                              hostDeadline + kVBlankDuration,
+                               EeEvent{EeEventType::VBlankEnd, 0, m_vsyncTick + 1u});
+                 scheduleEvent(scheduled.deadlineCycle + kVBlankPeriodCycles,
+-                              scheduled.hostDeadline + kVBlankPeriod,
++                              hostDeadline + kVBlankPeriod,
+                               EeEvent{EeEventType::VBlankStart, 0, 0});
+             }
+             processEvent(scheduled.event);
+@@ -1867,6 +2204,7 @@ void EeScheduler::processEvent(const EeEvent &event)
          requestStop();
          break;
      case EeEventType::VBlankStart:
@@ -3432,7 +4501,7 @@ index c5e31c4..90ec506 100644
          ++m_vsyncTick;
          m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);
          if ((m_vsyncTick & 1u) != 0u)
-@@ -1889,6 +2064,7 @@ void EeScheduler::processEvent(const EeEvent &event)
+@@ -1889,6 +2227,7 @@ void EeScheduler::processEvent(const EeEvent &event)
          m_vsyncFlagAddress = 0u;
          m_vsyncTickAddress = 0u;
          completeVSync(m_vsyncTick);
@@ -3440,7 +4509,7 @@ index c5e31c4..90ec506 100644
          if (m_gsVSyncCallback != 0u && m_runtime.hasFunction(m_gsVSyncCallback))
          {
              GuestInvocation invocation{};
-@@ -1901,7 +2077,18 @@ void EeScheduler::processEvent(const EeEvent &event)
+@@ -1901,7 +2240,18 @@ void EeScheduler::processEvent(const EeEvent &event)
              queueInvocation(std::move(invocation));
          }
          dispatchIrq(false, 2u);
@@ -3459,7 +4528,7 @@ index c5e31c4..90ec506 100644
      case EeEventType::ExternalWake:
          completeExternalWait(event.id, event.value, KE_OK);
          break;
-@@ -1922,9 +2109,9 @@ void EeScheduler::processEvent(const EeEvent &event)
+@@ -1922,9 +2272,9 @@ void EeScheduler::processEvent(const EeEvent &event)
          GuestInvocation invocation{};
          invocation.kind = GuestInvocationKind::Alarm;
          invocation.context.pc = alarm.handler;
@@ -3472,7 +4541,7 @@ index c5e31c4..90ec506 100644
          SET_GPR_U32(&invocation.context, 28, alarm.gp);
          SET_GPR_U32(&invocation.context, 29, 0u);
          SET_GPR_U32(&invocation.context, 31, 0u);
-@@ -1994,8 +2181,39 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
+@@ -1994,8 +2344,39 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
      std::memcpy(m_rdram + physical, &value, sizeof(value));
  }
  
@@ -3512,7 +4581,7 @@ index c5e31c4..90ec506 100644
      std::unique_lock lock(m_eventMutex);
      if (!m_events.empty() || m_stopRequested.load(std::memory_order_acquire))
      {
-@@ -2028,12 +2246,18 @@ void EeScheduler::waitForEvent()
+@@ -2028,14 +2409,35 @@ void EeScheduler::waitForEvent()
      }
      if (hasTimerDeadline)
      {
@@ -3533,7 +4602,24 @@ index c5e31c4..90ec506 100644
 +        hostDeadline = std::min(hostDeadline, timerHostDeadline);
      }
  
++    if (sleepLogEnabled())
++    {
++        const auto now = std::chrono::steady_clock::now();
++        if (sleepDiary().entries.size() < 64u)
++        {
++            char head[96];
++            std::snprintf(head, sizeof(head), "idle %.1f ms (to EE %+.1f ms; timer in EE %+.1f ms):",
++                          hostDeadline == std::chrono::steady_clock::time_point::max()
++                              ? -1.0
++                              : std::chrono::duration<double, std::milli>(hostDeadline - now).count(),
++                          static_cast<double>(static_cast<int64_t>(deadlineCycle - m_eeCycle)) / static_cast<double>(kEeClockHz / 1000u),
++                          hasTimerDeadline ? static_cast<double>(timerCycles) / static_cast<double>(kEeClockHz / 1000u) : -1.0);
++            sleepDiary().entries.push_back(head + describeDeadlines(m_deadlines, m_eeCycle, now));
++        }
++    }
      const bool signaled = m_eventCv.wait_until(lock, hostDeadline, [this]()
+                                                { return !m_events.empty() ||
+                                                         m_stopRequested.load(std::memory_order_acquire); });
 diff --git a/ps2xRuntime/src/lib/Kernel/HostPower.cpp b/ps2xRuntime/src/lib/Kernel/HostPower.cpp
 new file mode 100644
 index 0000000..618ec69
@@ -3619,10 +4705,10 @@ index 0000000..618ec69
 +}
 diff --git a/ps2xRuntime/src/lib/Kernel/HostProfiler.cpp b/ps2xRuntime/src/lib/Kernel/HostProfiler.cpp
 new file mode 100644
-index 0000000..b278ee2
+index 0000000..0dc6966
 --- /dev/null
 +++ b/ps2xRuntime/src/lib/Kernel/HostProfiler.cpp
-@@ -0,0 +1,252 @@
+@@ -0,0 +1,368 @@
 +// Host-side code-address sampling for the profiler (ps2_host_profile.h): which host function (and source line) each
 +// recording thread — the game thread, the GS thread, the chain worker — is in, sampled by the profiler's thread
 +// (VENDETTA_HOSTPROF=2). Windows only: a thread is suspended for a moment, its instruction pointer read, and resumed;
@@ -3725,6 +4811,68 @@ index 0000000..b278ee2
 +            return state.lines.emplace(pc, std::move(text)).first->second;
 +        }
 +
++        bool openTrackThread(TrackSampler &state, uint32_t track)
++        {
++            const uint32_t id = g_recordingThreadOsIds[track].load(std::memory_order_relaxed);
++            if (id == 0u)
++                return false;
++            if (state.threadId != id)
++            {
++                if (state.thread)
++                    CloseHandle(state.thread);
++                state.thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, id);
++                state.threadId = state.thread ? id : 0u;
++                if (!state.thread)
++                    return false;
++                state.samples.reserve(1u << 16);
++            }
++            return true;
++        }
++
++        // this exe's image, for telling return addresses from other stack words
++        struct ImageRange
++        {
++            uint64_t begin = 0;
++            uint64_t end = 0;
++        };
++
++        const ImageRange &exeImage()
++        {
++            static const ImageRange range = []
++            {
++                ImageRange r;
++                const auto *base = reinterpret_cast<const uint8_t *>(GetModuleHandleW(nullptr));
++                const auto *dos = reinterpret_cast<const IMAGE_DOS_HEADER *>(base);
++                const auto *nt = reinterpret_cast<const IMAGE_NT_HEADERS *>(base + dos->e_lfanew);
++                r.begin = reinterpret_cast<uint64_t>(base) + 0x1000u;
++                r.end = reinterpret_cast<uint64_t>(base) + nt->OptionalHeader.SizeOfImage;
++                return r;
++            }();
++            return range;
++        }
++
++        // does the code just before this address end in a call (rel32, or indirect through a register / memory)?
++        bool followsCall(uint64_t address)
++        {
++            const ImageRange &image = exeImage();
++            if (address < image.begin + 8u || address >= image.end)
++                return false;
++            const auto *b = reinterpret_cast<const uint8_t *>(address);
++            if (b[-5] == 0xE8u)
++                return true; // call rel32
++            if (b[-6] == 0xFFu && (b[-5] & 0x38u) == 0x10u && ((b[-5] & 0xC0u) == 0x80u || (b[-5] & 0xC7u) == 0x05u))
++                return true; // call [rip+disp32] / [reg+disp32]
++            if (b[-2] == 0xFFu && (b[-1] & 0xF8u) == 0xD0u)
++                return true; // call reg
++            if (b[-3] == 0xFFu && (b[-2] & 0xF8u) == 0x50u)
++                return true; // call [reg+disp8]
++            if (b[-3] == 0xFFu && (b[-2] & 0xF8u) == 0x10u)
++                return true; // call [reg] (+ a REX prefix before)
++            if (b[-4] == 0xFFu && (b[-3] & 0x38u) == 0x10u && (b[-3] & 0xC7u) == 0x44u)
++                return true; // call [reg+index+disp8]
++            return false;
++        }
++
 +        const char *trackName(uint32_t track)
 +        {
 +            static const char *const names[TrackCount] = {"game thread", "GS thread", "chain worker"};
@@ -3743,19 +4891,8 @@ index 0000000..b278ee2
 +        if (track >= TrackCount)
 +            return false;
 +        TrackSampler &state = sampler().tracks[track];
-+        const uint32_t id = g_recordingThreadOsIds[track].load(std::memory_order_relaxed);
-+        if (id == 0u)
++        if (!openTrackThread(state, track))
 +            return false;
-+        if (state.threadId != id)
-+        {
-+            if (state.thread)
-+                CloseHandle(state.thread);
-+            state.thread = OpenThread(THREAD_SUSPEND_RESUME | THREAD_GET_CONTEXT | THREAD_QUERY_INFORMATION, FALSE, id);
-+            state.threadId = state.thread ? id : 0u;
-+            if (!state.thread)
-+                return false;
-+            state.samples.reserve(1u << 16);
-+        }
 +        if (state.samples.size() >= state.samples.capacity())
 +            return false; // never allocate while sampling
 +        if (SuspendThread(state.thread) == static_cast<DWORD>(-1))
@@ -3774,6 +4911,69 @@ index 0000000..b278ee2
 +        state.samples.push_back({context.Eip, phase});
 +#endif
 +        return true;
++    }
++
++    size_t stackScan(Track track, uint64_t *out, size_t maxOut) noexcept
++    {
++        if (track >= TrackCount || maxOut == 0u)
++            return 0u;
++        TrackSampler &state = sampler().tracks[track];
++        if (!openTrackThread(state, track))
++            return 0u;
++        static uint64_t copy[8192]; // 64 KB of the stack, read while the thread is stopped (only the profiler thread scans)
++        (void)exeImage();
++        if (SuspendThread(state.thread) == static_cast<DWORD>(-1))
++            return 0u;
++        CONTEXT context{};
++        context.ContextFlags = CONTEXT_CONTROL;
++        size_t words = 0u;
++        uint64_t pc = 0u;
++        if (GetThreadContext(state.thread, &context))
++        {
++#if defined(_M_X64) || defined(__x86_64__)
++            pc = context.Rip;
++            const uint64_t sp = context.Rsp;
++            MEMORY_BASIC_INFORMATION region{};
++            if (VirtualQuery(reinterpret_cast<const void *>(sp), &region, sizeof(region)) == sizeof(region))
++            {
++                const uint64_t regionEnd = reinterpret_cast<uint64_t>(region.BaseAddress) + region.RegionSize;
++                words = static_cast<size_t>(std::min<uint64_t>((regionEnd - sp) / 8u, sizeof(copy) / 8u));
++                std::memcpy(copy, reinterpret_cast<const void *>(sp), words * 8u);
++            }
++#endif
++        }
++        ResumeThread(state.thread);
++        if (pc == 0u)
++            return 0u;
++        size_t count = 0u;
++        out[count++] = pc;
++        for (size_t i = 0; i < words && count < maxOut; ++i)
++            if (followsCall(copy[i]))
++                out[count++] = copy[i];
++        return count;
++    }
++
++    std::string describeStack(const uint64_t *pcs, size_t count)
++    {
++        PcSampler &state = sampler();
++        if (!state.symbolsReady)
++        {
++            SymSetOptions(SYMOPT_UNDNAME | SYMOPT_DEFERRED_LOADS | SYMOPT_LOAD_LINES);
++            state.symbolsReady = SymInitialize(GetCurrentProcess(), nullptr, TRUE) != 0;
++        }
++        std::string out;
++        std::string previous;
++        for (size_t i = 0; i < count; ++i)
++        {
++            const std::string &name = nameOf(state, pcs[i]);
++            if (name == previous)
++                continue;
++            previous = name;
++            if (!out.empty())
++                out += " <- ";
++            out += name;
++        }
++        return out;
 +    }
 +
 +    std::string pcReport(uint32_t topOverall, uint32_t topPerPhase)
@@ -3871,6 +5071,8 @@ index 0000000..b278ee2
 +{
 +    void noteRecordingThread(Track) noexcept {}
 +    bool samplePc(Track, uint8_t) noexcept { return false; }
++    size_t stackScan(Track, uint64_t *, size_t) noexcept { return 0u; }
++    std::string describeStack(const uint64_t *, size_t) { return {}; }
 +    std::string pcReport(uint32_t, uint32_t) { return "[pcprof] not available on this platform\n"; }
 +}
 +

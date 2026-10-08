@@ -14,8 +14,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <iostream>
+#include <map>
 #include <string>
 #include <thread>
+#include <vector>
 
 namespace
 {
@@ -222,6 +224,18 @@ namespace
                         uint32_t samples = 0, lastFrames = 0;
                         // the longest stretch without a new game frame (a pause on screen), in ms
                         uint32_t seenFrames = 0, msSinceFrame = 0, longestGap = 0;
+                        // the most game frames / vblanks in any 250 ms (15 at a steady 60): more = running fast-forward
+                        constexpr uint32_t kWindow = 250;
+                        uint32_t frameRing[kWindow] = {}, vblankRing[kWindow] = {};
+                        uint32_t fastestFrames = 0, fastestVblanks = 0;
+                        // the stall report: no vblank for 40 ms = the runtime behind real time (a hitch on screen)
+                        constexpr size_t kMaxStacks = 64, kStackDepth = 24;
+                        uint64_t stacks[kMaxStacks][kStackDepth];
+                        size_t stackLens[kMaxStacks] = {};
+                        size_t stackSamples = 0;
+                        uint32_t stallPhases[TrackCount][Count] = {};
+                        uint64_t stallTick = 0;
+                        uint32_t stallMs = 0;
                         auto next = std::chrono::steady_clock::now();
                         auto report = next + std::chrono::seconds(5);
                         auto share = [&samples](uint32_t count) { return std::to_string(samples ? (count * 100u + samples / 2u) / samples : 0u) + "%"; };
@@ -249,6 +263,71 @@ namespace
                             }
                             else
                                 ++msSinceFrame;
+                            {
+                                const uint32_t nowVblanks = static_cast<uint32_t>(rt->memory().gs().vsyncTick.load(std::memory_order_acquire));
+                                const uint32_t slot = samples % kWindow;
+                                if (samples > kWindow)
+                                {
+                                    fastestFrames = std::max(fastestFrames, nowFrames - frameRing[slot]);
+                                    fastestVblanks = std::max(fastestVblanks, nowVblanks - vblankRing[slot]);
+                                }
+                                frameRing[slot] = nowFrames;
+                                vblankRing[slot] = nowVblanks;
+                            }
+                            {
+                                // while no vblank has come for 40 ms, count what the three threads do and take a rough
+                                // call stack of the game thread every 5 ms; when the vblanks resume after 60 ms or more,
+                                // print it: "[stall] N ms without a vblank" (the runtime fell behind real time)
+                                const uint64_t vblankNow = rt->memory().gs().vsyncTick.load(std::memory_order_acquire);
+                                if (vblankNow != stallTick)
+                                {
+                                    if (stallMs >= 60u)
+                                    {
+                                        std::string text = "[stall] " + std::to_string(stallMs) + " ms without a vblank (after tick " +
+                                                           std::to_string(stallTick) + ")";
+                                        static const char *const trackNames[TrackCount] = {"game thread", "GS thread", "chain worker"};
+                                        for (uint32_t t = 0; t < TrackCount; ++t)
+                                        {
+                                            uint32_t total = 0;
+                                            for (uint8_t i = 0; i < Count; ++i)
+                                                total += stallPhases[t][i];
+                                            text += std::string(t == 0 ? ": " : "; ") + trackNames[t];
+                                            for (uint8_t i = 0; i < Count; ++i)
+                                                if (stallPhases[t][i] != 0u)
+                                                    text += std::string(" ") + name(i) + "=" + std::to_string((stallPhases[t][i] * 100u + total / 2u) / total) + "%";
+                                        }
+                                        std::map<std::string, uint32_t> seen;
+                                        for (size_t i = 0; i < stackSamples; ++i)
+                                            ++seen[describeStack(stacks[i], stackLens[i])];
+                                        std::vector<std::pair<uint32_t, std::string>> ranked;
+                                        for (auto &[stack, count] : seen)
+                                            ranked.emplace_back(count, stack);
+                                        std::sort(ranked.rbegin(), ranked.rend());
+                                        for (size_t i = 0; i < ranked.size() && i < 3u; ++i)
+                                            text += "\n[stall]   " + std::to_string(ranked[i].first) + "/" + std::to_string(stackSamples) +
+                                                    " game thread: " + ranked[i].second;
+                                        std::fprintf(stderr, "%s\n", text.c_str());
+                                    }
+                                    stallTick = vblankNow;
+                                    stallMs = 0;
+                                    stackSamples = 0;
+                                    std::memset(stallPhases, 0, sizeof(stallPhases));
+                                }
+                                else if (++stallMs >= 40u)
+                                {
+                                    if (phase < Count)
+                                        ++stallPhases[GameTrack][phase];
+                                    if (gsPhase < Count)
+                                        ++stallPhases[GsTrack][gsPhase];
+                                    if (chainPhase < Count)
+                                        ++stallPhases[ChainTrack][chainPhase];
+                                    if (stallMs % 5u == 0u && stackSamples < kMaxStacks)
+                                    {
+                                        stackLens[stackSamples] = stackScan(GameTrack, stacks[stackSamples], kStackDepth);
+                                        ++stackSamples;
+                                    }
+                                }
+                            }
                             if (samplePcs)
                             {
                                 // one thread per tick (a sample stops that thread for a moment): ~333 a second each
@@ -261,8 +340,10 @@ namespace
                             uint32_t frames;
                             std::memcpy(&frames, rt->memory().getRDRAM() + 0x258134u, 4);
                             std::string line = "[hostprof] frames/s=" + std::to_string((frames - lastFrames) / 5u) +
-                                               " longest-frame-gap=" + std::to_string(std::max(longestGap, msSinceFrame)) + "ms";
+                                               " longest-frame-gap=" + std::to_string(std::max(longestGap, msSinceFrame)) + "ms" +
+                                               " most-in-250ms=" + std::to_string(fastestFrames) + "/" + std::to_string(fastestVblanks) + "vbl";
                             longestGap = 0;
+                            fastestFrames = fastestVblanks = 0;
                             for (uint8_t i = 0; i < Count; ++i)
                                 if (counts[i] != 0u)
                                     line += std::string(" ") + name(i) + "=" + share(counts[i]);
