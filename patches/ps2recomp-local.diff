@@ -6507,7 +6507,7 @@ index 9614016..7d8d39c 100644
          else if (stack != 0u)
          {
 diff --git a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
-index f0ad507..8f554f5 100644
+index f0ad507..d26795c 100644
 --- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 @@ -1,3 +1,8 @@
@@ -6519,9 +6519,12 @@ index f0ad507..8f554f5 100644
  #include "runtime/gs/gs_cpu_backend.h"
  #include "runtime/gs/ps2_gs_common.h"
  #include "runtime/gs/ps2_gs_psmct16.h"
-@@ -9,6 +14,9 @@
+@@ -8,7 +13,12 @@
+ #include "ps2_log.h"
  #include <atomic>
  #include <algorithm>
++#include <chrono>
++#include <mutex>
  #include <cmath>
 +#if defined(__AVX2__)
 +#include <immintrin.h>
@@ -6529,7 +6532,7 @@ index f0ad507..8f554f5 100644
  #include <cstdio>
  #include <cstring>
  #include <fstream>
-@@ -17,14 +25,22 @@
+@@ -17,14 +27,22 @@
  
  using namespace GSInternal;
  
@@ -6554,7 +6557,7 @@ index f0ad507..8f554f5 100644
      {
          uint32_t r = ((c >> 0) & 0xFF) >> 3;
          uint32_t g = ((c >> 8) & 0xFF) >> 3;
-@@ -34,7 +50,7 @@ namespace
+@@ -34,7 +52,7 @@ namespace
          return (r | (g << 5) | (b << 10) | (a << 15));
      }
  
@@ -6563,7 +6566,7 @@ index f0ad507..8f554f5 100644
      {
          u32 r = ((c >> 0) & 0x1F) << 3;
          u32 g = ((c >> 5) & 0x1F) << 3;
-@@ -44,12 +60,12 @@ namespace
+@@ -44,12 +62,12 @@ namespace
          return (r | (g << 8) | (b << 16) | (a << 24));
      }
  
@@ -6578,7 +6581,7 @@ index f0ad507..8f554f5 100644
      {
          if (psm == GS_PSM_CT32)
              return texel;
-@@ -101,7 +117,7 @@ namespace
+@@ -101,7 +119,7 @@ namespace
      std::atomic<uint32_t> s_debugContext1PrimitiveCount{0};
      std::atomic<uint32_t> s_debugFbp150PixelCount{0};
  
@@ -6587,7 +6590,7 @@ index f0ad507..8f554f5 100644
                                int textureSize,
                                uint8_t mode,
                                uint16_t regionMin,
-@@ -122,7 +138,7 @@ namespace
+@@ -122,7 +140,7 @@ namespace
          }
      }
  
@@ -6596,7 +6599,7 @@ index f0ad507..8f554f5 100644
      {
          if ((testReg & 0x1u) == 0u)
              return true;
-@@ -225,7 +241,7 @@ namespace
+@@ -225,7 +243,7 @@ namespace
          uint8_t a;
      };
  
@@ -6605,7 +6608,7 @@ index f0ad507..8f554f5 100644
                                          uint8_t vr,
                                          uint8_t vg,
                                          uint8_t vb,
-@@ -275,28 +291,72 @@ namespace
+@@ -275,28 +293,72 @@ namespace
          return out;
      }
  
@@ -6683,7 +6686,7 @@ index f0ad507..8f554f5 100644
      }
  }
  
-@@ -320,9 +380,10 @@ namespace
+@@ -320,9 +382,10 @@ namespace
          const uint32_t dw = static_cast<uint32_t>((display64 >> 32) & 0x0FFFu);
          const uint32_t dh = static_cast<uint32_t>((display64 >> 44) & 0x07FFu);
          const uint32_t magh = static_cast<uint32_t>((display64 >> 23) & 0x0Fu);
@@ -6695,7 +6698,7 @@ index f0ad507..8f554f5 100644
          if (outWidth < 64u || outHeight < 64u)
          {
              outWidth = kDefaultDisplayWidth;
-@@ -394,22 +455,6 @@ namespace
+@@ -394,22 +457,6 @@ namespace
          return {(smode2 & 0x1ull) != 0ull, ((smode2 >> 1) & 0x1ull) != 0ull};
      }
  
@@ -6718,7 +6721,7 @@ index f0ad507..8f554f5 100644
      void normalizePresentationAlpha(std::vector<uint8_t> &pixels, uint32_t width, uint32_t height)
      {
          for (uint32_t y = 0; y < height; ++y)
-@@ -442,7 +487,43 @@ namespace
+@@ -442,7 +489,43 @@ namespace
      }
  }
  
@@ -6763,7 +6766,7 @@ index f0ad507..8f554f5 100644
  {
      using namespace GSMem;
      static std::once_flag lookupTablesOnce;
-@@ -511,6 +592,306 @@ GSCpuBackend::GSCpuBackend()
+@@ -511,6 +594,306 @@ GSCpuBackend::GSCpuBackend()
          }
      }
      Reset();
@@ -7070,7 +7073,7 @@ index f0ad507..8f554f5 100644
  }
  
  void GSCpuBackend::Initialize(uint8_t *vram, uint32_t vramSize)
-@@ -519,6 +900,7 @@ void GSCpuBackend::Initialize(uint8_t *vram, uint32_t vramSize)
+@@ -519,6 +902,7 @@ void GSCpuBackend::Initialize(uint8_t *vram, uint32_t vramSize)
          throw std::invalid_argument("GS CPU backend requires at least 4 MiB of VRAM");
  
      std::lock_guard<std::mutex> lock(m_mutex);
@@ -7078,7 +7081,7 @@ index f0ad507..8f554f5 100644
      m_vram = vram;
      m_vramSize = vramSize;
      ResetUnlocked();
-@@ -527,12 +909,14 @@ void GSCpuBackend::Initialize(uint8_t *vram, uint32_t vramSize)
+@@ -527,12 +911,14 @@ void GSCpuBackend::Initialize(uint8_t *vram, uint32_t vramSize)
  void GSCpuBackend::Reset()
  {
      std::lock_guard<std::mutex> lock(m_mutex);
@@ -7093,7 +7096,7 @@ index f0ad507..8f554f5 100644
      m_clutCbp.fill(0u);
      m_texturePageCache.Invalidate();
      m_transfer = {};
-@@ -548,12 +932,25 @@ void GSCpuBackend::Submit(const GSPrimitiveBatch &batch)
+@@ -548,12 +934,25 @@ void GSCpuBackend::Submit(const GSPrimitiveBatch &batch)
      std::lock_guard<std::mutex> lock(m_mutex);
      if (!m_vram || batch.vertexCount == 0u)
          return;
@@ -7120,7 +7123,7 @@ index f0ad507..8f554f5 100644
      if (!m_vram || (!isFourBitIndexedPsm(tex0.psm) && !isEightBitIndexedPsm(tex0.psm)))
          return;
  
-@@ -585,7 +982,23 @@ void GSCpuBackend::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
+@@ -585,7 +984,23 @@ void GSCpuBackend::LoadClut(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
          return;
      }
  
@@ -7144,7 +7147,7 @@ index f0ad507..8f554f5 100644
  }
  
  void GSCpuBackend::LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &texclut)
-@@ -609,7 +1022,15 @@ void GSCpuBackend::LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &t
+@@ -609,7 +1024,15 @@ void GSCpuBackend::LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &t
          uint32_t sourceY = 0u;
          uint32_t sourceWidth = 1u;
  
@@ -7161,7 +7164,7 @@ index f0ad507..8f554f5 100644
          {
              const uint32_t sourceIndex = swizzleClutIndexCSM1(entry);
              sourceX = sourceIndex & 0x0Fu;
-@@ -638,11 +1059,14 @@ void GSCpuBackend::LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &t
+@@ -638,11 +1061,14 @@ void GSCpuBackend::LoadClutUnlocked(const GSTex0Reg &tex0, const GSTexClutReg &t
  
  void GSCpuBackend::Flush()
  {
@@ -7177,7 +7180,7 @@ index f0ad507..8f554f5 100644
      std::lock_guard<std::mutex> lock(m_mutex);
      m_texturePageCache.Invalidate();
  }
-@@ -655,40 +1079,114 @@ void GSCpuBackend::Sync(GSSyncReason)
+@@ -655,40 +1081,114 @@ void GSCpuBackend::Sync(GSSyncReason)
  uint32_t GSCpuBackend::ReadVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y) const
  {
      std::lock_guard<std::mutex> lock(m_mutex);
@@ -7296,15 +7299,135 @@ index f0ad507..8f554f5 100644
      if (!m_vram || m_vramSize == 0u)
      {
          out.clear();
-@@ -708,10 +1206,37 @@ GSTransferSnapshot GSCpuBackend::GetTransferSnapshot() const
+@@ -708,10 +1208,157 @@ GSTransferSnapshot GSCpuBackend::GetTransferSnapshot() const
      return result;
  }
  
 -void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
++namespace
++{
++    // VENDETTA_SPRITELOG's order stream: runs of S (sprites) / T (other primitives) per frame buffer, and P (a
++    // presentation: the GS memory copied for the screen) — from the drawing and the presenting threads, in order
++    struct SpriteOrderLog
++    {
++        std::mutex mutex;
++        std::string text;
++        char runKind = 0;
++        uint32_t runFbp = 0xFFFFFFFFu;
++        uint32_t runLength = 0u;
++
++        void note(char kind, uint32_t fbp)
++        {
++            std::lock_guard<std::mutex> lock(mutex);
++            if (kind == runKind && fbp == runFbp && kind != 'P')
++            {
++                ++runLength;
++                return;
++            }
++            flushRun();
++            runKind = kind;
++            runFbp = fbp;
++            runLength = 1u;
++        }
++
++        void flushRun()
++        {
++            if (runKind == 0)
++                return;
++            char item[48];
++            if (runKind == 'P')
++                std::snprintf(item, sizeof(item), " P(tick %u)", runFbp);
++            else
++                std::snprintf(item, sizeof(item), " %c%u@%x", runKind, runLength, runFbp);
++            text += item;
++            runKind = 0;
++        }
++    };
++
++    SpriteOrderLog &spriteOrderLog()
++    {
++        static SpriteOrderLog log;
++        return log;
++    }
++
++    double spriteLogAt()
++    {
++        static const double at = []
++        {
++            const char *value = std::getenv("VENDETTA_SPRITELOG");
++            return value ? std::atof(value) : -1.0;
++        }();
++        return at;
++    }
++
++    double secondsSinceStart()
++    {
++        static const auto processStart = std::chrono::steady_clock::now();
++        return std::chrono::duration<double>(std::chrono::steady_clock::now() - processStart).count();
++    }
++}
++
 +void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch, const RowBand &band, const uint16_t *clut)
  {
      const GSDrawState &state = batch.state;
      const auto &ctx = state.context;
++    {
++        // VENDETTA_SPRITELOG=<seconds>: for ~50 ms from that many seconds after start, every sprite drawn and a count
++        // of the other primitives by type, with the drawing state (where a 2-D layer goes and why it may not show)
++        const double logAt = spriteLogAt();
++        if (logAt >= 0.0 && band.index == 0u)
++        {
++            const double spriteLogAt = logAt;
++            const double now = secondsSinceStart();
++            thread_local uint32_t otherCounts[8] = {};
++            thread_local bool reported = false;
++            const auto noteOrder = [&](char kind)
++            { spriteOrderLog().note(kind, ctx.frame.fbp); };
++            if (now >= spriteLogAt && now < spriteLogAt + 0.05)
++            {
++                noteOrder(state.prim.type == GS_PRIM_SPRITE ? 'S' : 'T');
++                if (state.prim.type == GS_PRIM_SPRITE)
++                {
++                    uint32_t maxAlpha = 0u, nonZero = 0u;
++                    if (state.prim.tme)
++                    {
++                        for (uint32_t ty = 0; ty < 32u; ty += 2u)
++                            for (uint32_t tx = 0; tx < 32u; tx += 2u)
++                            {
++                                const uint32_t texel = SampleTexture(state, clut, 0.0f, 0.0f, 1.0f, static_cast<uint16_t>(tx * 16u + 8u), static_cast<uint16_t>(ty * 16u + 8u));
++                                maxAlpha = std::max(maxAlpha, texel >> 24u);
++                                nonZero += (texel != 0u) ? 1u : 0u;
++                            }
++                    }
++                    std::fprintf(stderr, "[sprite]   texels: max alpha %u, %u of 256 non-zero\n", maxAlpha, nonZero);
++                    const GSVertex &v0 = batch.vertices[0];
++                    const GSVertex &v1 = batch.vertices[batch.vertexCount > 1 ? 1 : 0];
++                    std::fprintf(stderr, "[sprite] %.3f tme=%u fst=%u abe=%u ctxt=%u fbp=0x%x fbw=%u fpsm=0x%x fbmsk=0x%x zbp=0x%x zpsm=0x%x zmsk=%u test=0x%llx alpha=0x%llx xy=(%.1f,%.1f)-(%.1f,%.1f) z=%.0f uv=(%u,%u)-(%u,%u) st=(%.3f,%.3f)-(%.3f,%.3f) rgba=%u,%u,%u,%u tex=tbp0x%x/tbw%u/psm0x%x/%ux%u/tcc%u/tfx%u/cbp0x%x sc=%u-%u,%u-%u off=%u,%u\n",
++                                 now, state.prim.tme, state.prim.fst, state.prim.abe, state.prim.ctxt, ctx.frame.fbp, ctx.frame.fbw, ctx.frame.psm, ctx.frame.fbmsk,
++                                 ctx.zbuf.zbp, ctx.zbuf.psm, ctx.zbuf.zmask ? 1u : 0u,
++                                 static_cast<unsigned long long>(ctx.test), static_cast<unsigned long long>(ctx.alpha),
++                                 v0.x, v0.y, v1.x, v1.y, v1.z, v0.u, v0.v, v1.u, v1.v, v0.s, v0.t, v1.s, v1.t, v1.r, v1.g, v1.b, v1.a,
++                                 ctx.tex0.tbp0, ctx.tex0.tbw, ctx.tex0.psm, 1u << ctx.tex0.tw, 1u << ctx.tex0.th, ctx.tex0.tcc, ctx.tex0.tfx, ctx.tex0.cbp,
++                                 ctx.scissor.x0, ctx.scissor.x1, ctx.scissor.y0, ctx.scissor.y1, ctx.xyoffset.ofx, ctx.xyoffset.ofy);
++                }
++                else
++                {
++                    ++otherCounts[state.prim.type & 7u];
++                }
++            }
++            else if (now >= spriteLogAt + 0.05 && !reported)
++            {
++                reported = true;
++                std::fprintf(stderr, "[sprite] other primitives in the window, by type 0-7: %u %u %u %u %u %u %u %u\n",
++                             otherCounts[0], otherCounts[1], otherCounts[2], otherCounts[3], otherCounts[4], otherCounts[5], otherCounts[6], otherCounts[7]);
++                SpriteOrderLog &orderLog = spriteOrderLog();
++                std::lock_guard<std::mutex> lock(orderLog.mutex);
++                orderLog.flushRun();
++                std::fprintf(stderr, "[sprite] order (S = sprites, T = other primitives, @ frame buffer; P = a presentation):%s\n",
++                             orderLog.text.c_str());
++            }
++        }
++    }
 +    {
 +        // VENDETTA_GSLOG=1: draws that use the menu font's one-glyph texture cache (TBP 0x3FBD)
 +        static const bool drawLog = std::getenv("VENDETTA_GSLOG") != nullptr;
@@ -7335,7 +7458,7 @@ index f0ad507..8f554f5 100644
      PS2_IF_AGRESSIVE_LOGS({
          const uint32_t primitiveIndex = s_debugPrimitiveCount.fetch_add(1u, std::memory_order_relaxed);
          if (primitiveIndex < 64u)
-@@ -821,16 +1346,16 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
+@@ -821,16 +1468,16 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
      switch (state.prim.type)
      {
      case GS_PRIM_SPRITE:
@@ -7355,7 +7478,7 @@ index f0ad507..8f554f5 100644
          break;
      case GS_PRIM_POINT:
      {
-@@ -838,7 +1363,8 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
+@@ -838,7 +1485,8 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
          const auto &ctx = state.context;
          int px = static_cast<int>(v.x) - (ctx.xyoffset.ofx >> 4);
          int py = static_cast<int>(v.y) - (ctx.xyoffset.ofy >> 4);
@@ -7365,7 +7488,19 @@ index f0ad507..8f554f5 100644
          break;
      }
      default:
-@@ -1012,12 +1538,16 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
+@@ -877,7 +1525,10 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
+         return;
+     }
+ 
+-    const uint32_t ztestMethod = static_cast<uint32_t>((ctx.test >> 17) & 3u);
++    // TEST.ZTE (bit 16) clear = no depth test: every pixel passes (the GS manual calls ZTE 0 "prohibited", but games
++    // draw 2-D layers that way and the hardware / PCSX2 pass them all). Reading only ZTST, whose 0 is NEVER, dropped
++    // every such pixel — Def Jam Vendetta's whole in-match HUD (life bars, timer, names, FIGHT!, the pause menu).
++    const uint32_t ztestMethod = ((ctx.test >> 16) & 1u) != 0u ? static_cast<uint32_t>((ctx.test >> 17) & 3u) : 1u;
+     const bool alphaBlendEnabled = state.prim.abe;
+     const bool preserveDestinationAlpha = writeMask.writeRgb && !writeMask.writeAlpha && fpsm == GS_PSM_CT32;
+     const bool destinationAlphaTestNeedsRead = ((ctx.test >> 14) & 0x1u) != 0u && (fpsm == GS_PSM_CT32 || fpsm == GS_PSM_CT16 || fpsm == GS_PSM_CT16S);
+@@ -1012,12 +1663,16 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
      }
  }
  
@@ -7388,7 +7523,7 @@ index f0ad507..8f554f5 100644
  {
      const bool sixteenBit = cpsm == GS_PSM_CT16 || cpsm == GS_PSM_CT16S;
      const uint32_t csaMask = sixteenBit ? 0x1Fu : 0x0Fu;
-@@ -1037,17 +1567,17 @@ uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
+@@ -1037,17 +1692,17 @@ uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
      {
      case GS_PSM_CT32:
      {
@@ -7409,7 +7544,7 @@ index f0ad507..8f554f5 100644
      default:
          break;
      }
-@@ -1055,7 +1585,93 @@ uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
+@@ -1055,7 +1710,93 @@ uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
      return 0xFFFF00FFu;
  }
  
@@ -7504,7 +7639,7 @@ index f0ad507..8f554f5 100644
  {
      const auto &ctx = state.context;
      const auto &tex = ctx.tex0;
-@@ -1083,83 +1699,82 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
+@@ -1083,83 +1824,82 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
          texVf = t * invQ * static_cast<float>(texH);
      }
  
@@ -7521,15 +7656,15 @@ index f0ad507..8f554f5 100644
 +        int texW, texH;
 +        uint8_t wrapU, wrapV;
 +        uint16_t minU, maxU, minV, maxV;
-+
+ 
+-        u32 out = ReadTextureVramUnlocked(tex.psm, tex.tbp0, tex.tbw, sampleU, sampleV);
 +        GS_FORCEINLINE uint32_t operator()(int sampleU, int sampleV) const
 +        {
 +            sampleU = wrapTextureCoordinate(sampleU, texW, wrapU, minU, maxU);
 +            sampleV = wrapTextureCoordinate(sampleV, texH, wrapV, minV, maxV);
  
--        u32 out = ReadTextureVramUnlocked(tex.psm, tex.tbp0, tex.tbw, sampleU, sampleV);
 +            u32 out = self.ReadTextureVramUnlocked(tex.psm, tex.tbp0, tex.tbw, sampleU, sampleV);
- 
++
 +            switch (tex.psm)
 +            {
 +            case GS_PSM_CT32:
@@ -7649,7 +7784,7 @@ index f0ad507..8f554f5 100644
  {
      const GSDrawState &state = batch.state;
      const GSVertex &v0 = batch.vertices[0];
-@@ -1196,6 +1811,11 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1196,6 +1936,11 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
      const int drawY0 = clampInt(unclippedY0, ctx.scissor.y0, ctx.scissor.y1);
      const int drawX1 = clampInt(unclippedX1, ctx.scissor.x0, ctx.scissor.x1);
      const int drawY1 = clampInt(unclippedY1, ctx.scissor.y0, ctx.scissor.y1);
@@ -7661,7 +7796,7 @@ index f0ad507..8f554f5 100644
  
      const uint64_t alphaReg = ctx.alpha;
      const uint8_t alphaMode = static_cast<uint8_t>(alphaReg & 0xFFu);
-@@ -1227,6 +1847,12 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1227,6 +1972,12 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
              v1f = (v1.t / q1) * static_cast<float>(texH);
          }
  
@@ -7674,7 +7809,7 @@ index f0ad507..8f554f5 100644
          float spriteW = static_cast<float>(spanX);
          float spriteH = static_cast<float>(spanY);
          if (spriteW < 1.0f)
-@@ -1236,6 +1862,8 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1236,6 +1987,8 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
  
          for (int y = drawY0; y <= drawY1; ++y)
          {
@@ -7683,7 +7818,7 @@ index f0ad507..8f554f5 100644
              float ty = (static_cast<float>(y - unclippedY0) + 0.5f) / spriteH;
              float texVf = v0f + (v1f - v0f) * ty;
  
-@@ -1250,11 +1878,11 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1250,11 +2003,11 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
                      const int fixedV = static_cast<int>((texVf * 16.0f) + 0.5f);
                      const uint16_t sampleU = static_cast<uint16_t>(clampInt(fixedU, 0, 0xFFFF));
                      const uint16_t sampleV = static_cast<uint16_t>(clampInt(fixedV, 0, 0xFFFF));
@@ -7697,7 +7832,7 @@ index f0ad507..8f554f5 100644
                  }
  
                  uint8_t tr = static_cast<uint8_t>(texel & 0xFF);
-@@ -1264,18 +1892,30 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1264,18 +2017,30 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
  
                  const TextureCombineResult color = combineTexture(tex, r, g, b, a, tr, tg, tb, ta);
                  WritePixel(state, x, y, z1, color.r, color.g, color.b, color.a, v1.fog);
@@ -7729,7 +7864,7 @@ index f0ad507..8f554f5 100644
  {
      const GSDrawState &state = batch.state;
      const GSVertex &v0 = batch.vertices[0];
-@@ -1310,11 +1950,50 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1310,11 +2075,50 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
      const float winding = (denom < 0.0f) ? -1.0f : 1.0f;
      const float invAbsDenom = 1.0f / std::fabs(denom);
      constexpr float kEdgeEpsilon = 1.0e-4f;
@@ -7781,7 +7916,7 @@ index f0ad507..8f554f5 100644
          {
              float px = static_cast<float>(x) + 0.5f;
  
-@@ -1325,6 +2004,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1325,6 +2129,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
              if (w0 < -kEdgeEpsilon || w1 < -kEdgeEpsilon || w2 < -kEdgeEpsilon)
                  continue;
  
@@ -7789,7 +7924,7 @@ index f0ad507..8f554f5 100644
              double z = v0.z * w0 + v1.z * w1 + v2.z * w2;
  
              uint8_t r, g, b, a;
-@@ -1367,7 +2047,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1367,7 +2172,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
                      iv = 0;
                  }
  
@@ -7798,7 +7933,7 @@ index f0ad507..8f554f5 100644
  
                  uint8_t tr = static_cast<uint8_t>(texel & 0xFF);
                  uint8_t tg = static_cast<uint8_t>((texel >> 8) & 0xFF);
-@@ -1391,9 +2071,10 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1391,9 +2196,10 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
              WritePixel(state, x, y, static_cast<u32>(z + 0.5), r, g, b, a, fog);
          }
      }
@@ -7810,7 +7945,7 @@ index f0ad507..8f554f5 100644
  {
      const GSDrawState &state = batch.state;
      const GSVertex &v0 = batch.vertices[0];
-@@ -1440,7 +2121,8 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
+@@ -1440,7 +2246,8 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
  
          double z = (v0.z + (v1.z - v0.z) * t);
          const uint8_t fog = clampU8(static_cast<int>(v0.fog + (v1.fog - v0.fog) * t));
@@ -7820,7 +7955,7 @@ index f0ad507..8f554f5 100644
  
          if (x0 == x1 && y0 == y1)
              break;
-@@ -1463,6 +2145,8 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
+@@ -1463,6 +2270,8 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
  void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
  {
      std::lock_guard<std::mutex> lock(m_mutex);
@@ -7829,7 +7964,7 @@ index f0ad507..8f554f5 100644
      m_transfer = command;
      m_transferState.x = command.trxpos.dsax;
      m_transferState.y = command.trxpos.dsay;
-@@ -1471,6 +2155,20 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
+@@ -1471,6 +2280,20 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
      m_transferState.direction = command.direction;
      m_transferState.localToHostPendingBytes = 0u;
  
@@ -7850,7 +7985,7 @@ index f0ad507..8f554f5 100644
      if (command.direction == 2u)
          PerformLocalToLocalTransfer();
      else if (command.direction == 1u)
-@@ -1480,8 +2178,30 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
+@@ -1480,8 +2303,30 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
  void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
  {
      std::lock_guard<std::mutex> lock(m_mutex);
@@ -7881,7 +8016,7 @@ index f0ad507..8f554f5 100644
      if (m_transfer.trxreg.rrw == 0u || m_transfer.trxreg.rrh == 0u || m_transferState.totalPixels == 0u)
          return;
  
-@@ -1492,6 +2212,42 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+@@ -1492,6 +2337,42 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
      const uint32_t dsax = m_transfer.trxpos.dsax;
      uint32_t offset = 0u;
  
@@ -7924,7 +8059,7 @@ index f0ad507..8f554f5 100644
      auto advancePixel = [&](uint32_t count)
      {
          const uint32_t totalPixels = m_transferState.totalPixels;
-@@ -1509,6 +2265,9 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+@@ -1509,6 +2390,9 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
          m_transferState.y = m_transfer.trxpos.dsay + (m_transferState.copiedPixels / rrw);
      };
  
@@ -7934,7 +8069,7 @@ index f0ad507..8f554f5 100644
      while (offset < sizeBytes && m_transferState.direction == 0u)
      {
          switch (dpsm)
-@@ -1520,7 +2279,7 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+@@ -1520,7 +2404,7 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
                  return;
              uint32_t value = 0u;
              std::memcpy(&value, data + offset, sizeof(value));
@@ -7943,7 +8078,7 @@ index f0ad507..8f554f5 100644
              offset += 4u;
              advancePixel(1u);
              break;
-@@ -1533,7 +2292,7 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+@@ -1533,7 +2417,7 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
              const uint32_t value = static_cast<uint32_t>(data[offset]) |
                                     (static_cast<uint32_t>(data[offset + 1u]) << 8u) |
                                     (static_cast<uint32_t>(data[offset + 2u]) << 16u);
@@ -7952,7 +8087,7 @@ index f0ad507..8f554f5 100644
              offset += 3u;
              advancePixel(1u);
              break;
-@@ -1547,14 +2306,14 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+@@ -1547,14 +2431,14 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
                  return;
              uint16_t value = 0u;
              std::memcpy(&value, data + offset, sizeof(value));
@@ -7969,7 +8104,7 @@ index f0ad507..8f554f5 100644
              advancePixel(1u);
              break;
          case GS_PSM_T4:
-@@ -1563,14 +2322,14 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+@@ -1563,14 +2447,14 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
          {
              const uint8_t packed = data[offset++];
              const uint32_t firstPixel = m_transferState.copiedPixels;
@@ -7986,7 +8121,7 @@ index f0ad507..8f554f5 100644
                                    dsax + (secondPixel % rrw),
                                    m_transfer.trxpos.dsay + (secondPixel / rrw),
                                    (packed >> 4u) & 0x0Fu);
-@@ -1586,6 +2345,7 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+@@ -1586,6 +2470,7 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
  
  void GSCpuBackend::PerformLocalToLocalTransfer()
  {
@@ -7994,7 +8129,7 @@ index f0ad507..8f554f5 100644
      if (!m_vram)
          return;
  
-@@ -1697,6 +2457,7 @@ void GSCpuBackend::PerformLocalToHostTransfer()
+@@ -1697,6 +2582,7 @@ void GSCpuBackend::PerformLocalToHostTransfer()
  uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
  {
      std::lock_guard<std::mutex> lock(m_mutex);
@@ -8002,7 +8137,7 @@ index f0ad507..8f554f5 100644
      if (!dst || maxBytes == 0u || m_localToHostReadPos >= m_localToHostBuffer.size())
          return 0u;
      const size_t count = std::min<size_t>(maxBytes, m_localToHostBuffer.size() - m_localToHostReadPos);
-@@ -1706,9 +2467,18 @@ uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
+@@ -1706,9 +2592,18 @@ uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
      return static_cast<uint32_t>(count);
  }
  
@@ -8021,7 +8156,7 @@ index f0ad507..8f554f5 100644
      if (!m_vram || context.frame.fbw == 0u)
          return false;
  
-@@ -1852,18 +2622,104 @@ PresentationFrame GSCpuBackend::Present(const GSPresentationRequest &request)
+@@ -1852,18 +2747,110 @@ PresentationFrame GSCpuBackend::Present(const GSPresentationRequest &request)
      if (snapshot.empty())
          return {};
  
@@ -8037,6 +8172,12 @@ index f0ad507..8f554f5 100644
 +    {
 +        std::lock_guard<std::mutex> lock(m_mutex);
 +        FlushQueueUnlocked(ps2_host_profile::GsFlushPresent);
++        if (spriteLogAt() >= 0.0)
++        {
++            const double now = secondsSinceStart();
++            if (now >= spriteLogAt() && now < spriteLogAt() + 0.05)
++                spriteOrderLog().note('P', static_cast<uint32_t>(request.vsyncTick));
++        }
 +        ps2_host_profile::Scope profile(ps2_host_profile::GsPresent);
 +        if (m_vram && m_vramSize != 0u)
 +        {
@@ -8129,7 +8270,7 @@ index f0ad507..8f554f5 100644
      const GSFrameReg displayFrame1 = decodeDisplayFrame(request.dispfb1);
      const GSFrameReg displayFrame2 = decodeDisplayFrame(request.dispfb2);
      const GSDisplayReadOrigin origin1 = decodeDisplayReadOrigin(request.dispfb1);
-@@ -1871,6 +2727,15 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1871,6 +2858,15 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
      uint32_t width1 = 0u, height1 = 0u, width2 = 0u, height2 = 0u;
      decodeDisplaySize(request.display1, width1, height1);
      decodeDisplaySize(request.display2, width2, height2);
@@ -8145,7 +8286,7 @@ index f0ad507..8f554f5 100644
      const bool valid1 = pmode.enableCrt1 && hasDisplaySetup(request.display1, displayFrame1);
      const bool valid2 = pmode.enableCrt2 && hasDisplaySetup(request.display2, displayFrame2);
      if (!valid1 && !valid2)
-@@ -1918,13 +2783,42 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1918,13 +2914,42 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
          return true;
      };
  
@@ -8190,7 +8331,7 @@ index f0ad507..8f554f5 100644
          {
              result.width = std::max(width1, width2);
              result.height = std::max(height1, height2);
-@@ -1956,8 +2850,6 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1956,8 +2981,6 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
                      dst[3] = pmode.amod ? dst[3] : src[3];
                  }
              normalizePresentationAlpha(result.pixels, result.width, result.height);
@@ -8199,7 +8340,7 @@ index f0ad507..8f554f5 100644
              result.displayFbp = displayFrame1.fbp;
              result.sourceFbp = selected1.fbp;
              return result;
-@@ -1969,10 +2861,8 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1969,10 +2992,8 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
      result.width = valid1 ? width1 : width2;
      result.height = valid1 ? height1 : height2;
      GSFrameReg selected = displayFrame;
