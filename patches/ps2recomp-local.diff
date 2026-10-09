@@ -6591,7 +6591,7 @@ index 44eaef4..1c1ad02 100644
          const uint64_t currentTickQ32 = runtime != nullptr
                                              ? (runtime->eeScheduler().currentVSyncTick() << 32u)
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/MemoryCard.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/MemoryCard.cpp
-index 564d873..f255349 100644
+index 564d873..78877f4 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/MemoryCard.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/MemoryCard.cpp
 @@ -80,6 +80,10 @@ namespace ps2_stubs
@@ -6605,7 +6605,46 @@ index 564d873..f255349 100644
          };
  
          std::mutex g_mcStateMutex;
-@@ -877,7 +881,10 @@ namespace ps2_stubs
+@@ -360,8 +364,22 @@ namespace ps2_stubs
+             return patternPos == pattern.size();
+         }
+ 
++        // VENDETTA_MCLOG=1: every memory-card command, its result and the path it used, on stderr.
++        std::string g_mcLogPath;
++        void noteMcLogPath(const std::string &path) { g_mcLogPath = path; }
++
+         void setMcCommandResultLocked(int32_t cmd, int32_t result)
+         {
++            static const bool log = std::getenv("VENDETTA_MCLOG") != nullptr;
++            if (log)
++            {
++                static const char *const names[] = {"?", "GetInfo", "Open", "Close", "Seek", "Read", "Write", "?", "?", "?",
++                                                    "Flush", "Mkdir", "Chdir", "GetDir", "SetFileInfo", "Delete", "Format",
++                                                    "Unformat", "GetEntSpace", "Rename"};
++                std::fprintf(stderr, "[mc] %s (0x%x) -> %d%s%s\n", (cmd >= 0 && cmd <= 0x13) ? names[cmd] : "?", static_cast<unsigned>(cmd),
++                             result, g_mcLogPath.empty() ? "" : " path ", g_mcLogPath.c_str());
++            }
++            g_mcLogPath.clear();
+             g_mcLastCmd = cmd;
+             g_mcLastResult = result;
+             g_mcCommandPending = true;
+@@ -586,6 +604,7 @@ namespace ps2_stubs
+         const int32_t port = static_cast<int32_t>(getRegU32(ctx, 4));
+         const int32_t slot = static_cast<int32_t>(getRegU32(ctx, 5));
+         const std::string path = readPs2CStringBounded(rdram, getRegU32(ctx, 6), kMcMaxPathLen);
++        noteMcLogPath(path);
+ 
+         int32_t result = kMcResultNoEntry;
+         {
+@@ -699,6 +718,7 @@ namespace ps2_stubs
+         const int32_t port = static_cast<int32_t>(getRegU32(ctx, 4));
+         const int32_t slot = static_cast<int32_t>(getRegU32(ctx, 5));
+         const std::string rawPath = readPs2CStringBounded(rdram, getRegU32(ctx, 6), kMcMaxPathLen);
++        noteMcLogPath(rawPath);
+         const int32_t maxEntries = static_cast<int32_t>(getRegU32(ctx, 8));
+         const uint32_t tableAddr = getRegU32(ctx, 9);
+ 
+@@ -877,7 +897,10 @@ namespace ps2_stubs
                  cardType = kMcTypePs2;
                  freeBlocks = state.formatted ? kMcFreeClusters : 0;
                  format = state.formatted ? kMcFormatted : kMcUnformatted;
@@ -6617,7 +6656,7 @@ index 564d873..f255349 100644
              }
  
              setMcCommandResultLocked(kMcCmdGetInfo, result);
-@@ -929,6 +936,7 @@ namespace ps2_stubs
+@@ -929,6 +952,7 @@ namespace ps2_stubs
              {
                  state.currentDir = "/";
                  state.formatted = true;
@@ -6625,6 +6664,37 @@ index 564d873..f255349 100644
              }
          }
          ensureMcRootExists(0);
+@@ -941,6 +965,7 @@ namespace ps2_stubs
+         const int32_t port = static_cast<int32_t>(getRegU32(ctx, 4));
+         const int32_t slot = static_cast<int32_t>(getRegU32(ctx, 5));
+         const std::string path = readPs2CStringBounded(rdram, getRegU32(ctx, 6), kMcMaxPathLen);
++        noteMcLogPath(path);
+ 
+         int32_t result = kMcResultNoEntry;
+         {
+@@ -985,6 +1010,7 @@ namespace ps2_stubs
+         const int32_t port = static_cast<int32_t>(getRegU32(ctx, 4));
+         const int32_t slot = static_cast<int32_t>(getRegU32(ctx, 5));
+         const std::string path = readPs2CStringBounded(rdram, getRegU32(ctx, 6), kMcMaxPathLen);
++        noteMcLogPath(path);
+         const uint32_t flags = getRegU32(ctx, 7);
+ 
+         int32_t result = kMcResultNoEntry;
+@@ -1102,8 +1128,12 @@ namespace ps2_stubs
+                 {
+                     const std::filesystem::path oldHostPath =
+                         guestMcPathToHostPath(port, normalizeGuestMcPathLocked(port, oldPath));
+-                    const std::filesystem::path newHostPath =
+-                        guestMcPathToHostPath(port, normalizeGuestMcPathLocked(port, newPath));
++                    // libmc / MCMAN: the new name is a file name, not a path — the entry keeps its directory
++                    // (a game's "save to temporary.dat, then rename it to user00" swap stays inside its save folder).
++                    const size_t slash = newPath.find_last_of("/\\");
++                    const std::string newLeaf = slash == std::string::npos ? newPath : newPath.substr(slash + 1u);
++                    const std::filesystem::path newHostPath = oldHostPath.parent_path() / newLeaf;
++                    noteMcLogPath(oldPath + " -> " + newLeaf);
+                     std::error_code ec;
+                     if (std::filesystem::exists(oldHostPath, ec) && !ec &&
+                         std::filesystem::exists(newHostPath.parent_path(), ec) && !ec)
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
 index b50a4cf..a561998 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
