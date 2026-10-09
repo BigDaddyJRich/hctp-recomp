@@ -9,7 +9,7 @@
 #   VENDETTA_THREADS=1, VENDETTA_AUDIOLOG=1.
 # -Close: at -Stop, close the window like the user would (not kill the process) and report how long the exit took.
 # -Burst 'start count intervalMs': instead, a burst of pictures from start seconds (shots\<Name>-burst-NN.png).
-param([string]$Name, [string]$Seconds = '', [int]$Stop = 120, [switch]$Close, [string]$Build = 'fast', [string]$Burst = '')  # -Build runtime = the full-speed build
+param([string]$Name, [string]$Seconds = '', [int]$Stop = 120, [switch]$Close, [string]$Build = 'fast', [string]$Burst = '', [switch]$Max)  # -Build runtime = the full-speed build; -Max = maximised window
 $times = @($Seconds -split '[ ;,]+' | Where-Object { $_ -ne '' } | ForEach-Object { [int]$_ })
 $r = Split-Path -Parent $PSScriptRoot
 # the real keyboard / controllers are ignored in test runs (only a pad script drives the game): Enter typed elsewhere
@@ -17,6 +17,11 @@ $r = Split-Path -Parent $PSScriptRoot
 $env:VENDETTA_NO_HOST_INPUT = '1'
 $p = Start-Process -FilePath "$r\PS2Recomp\out\$Build\ps2xRuntime\ps2EntryRunner.exe" -ArgumentList "`"$r\game\SLUS_206.39`"" -WorkingDirectory $r -RedirectStandardOutput "$r\shots\$Name.log" -RedirectStandardError "$r\shots\$Name.log.err" -PassThru
 "started pid $($p.Id)"
+if ($Max) {
+  Add-Type 'using System; using System.Runtime.InteropServices; public static class WmMax { [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd); }'
+  for ($i = 0; $i -lt 100; $i++) { Start-Sleep -Milliseconds 100; $p.Refresh(); if ($p.MainWindowHandle -ne 0 -and $p.MainWindowTitle -like 'PS2-Recomp*') { break } }
+  [void][WmMax]::ShowWindow($p.MainWindowHandle, 3)
+}
 $start = Get-Date
 if ($Burst -ne '') {
   $b = @($Burst -split '[ ;,]+' | Where-Object { $_ -ne '' })
