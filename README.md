@@ -45,8 +45,8 @@ Set these before `run.bat` (e.g. `set VENDETTA_SSAA=16`):
 | `VENDETTA_GPU=<number or name>` | which graphics card, e.g. `nvidia` (default: the dedicated one) |
 | `VENDETTA_ASPECT=16:9` | stretch to widescreen |
 
-The same settings can be changed while playing in the **Graphics** tab of the debug panel (F1 shows / hides it;
-`VENDETTA_DEBUG_TAB=Graphics` opens that tab at start). The first start on a PC is slow for a minute while the graphics
+The same settings can be changed while playing in the **Graphics** tab of the debug panel (hidden at start; F1 shows /
+hides it; `VENDETTA_DEBUG_TAB=Graphics` opens it on that tab at start). The first start on a PC is slow for a minute while the graphics
 card prepares its shaders.
 
 ## What's in here

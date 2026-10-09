@@ -19,6 +19,8 @@
 #include <thread>
 #include <vector>
 
+void installVendettaAnimations(PS2Runtime &runtime); // vendetta_animations.cpp: body animations from mods\ (a folder)
+
 namespace
 {
     // The game reads the disc by raw sector number through sceCdRead (sector 16 = the ISO-9660 volume descriptor,
@@ -462,6 +464,7 @@ namespace
         startPadWatch(runtime);
         startHostProfile(runtime);
         startFreezeWatch(runtime);
+        installVendettaAnimations(runtime);
         PS2Runtime::IoPaths paths = PS2Runtime::getIoPaths();
         const std::filesystem::path image = paths.elfDirectory.parent_path() / "disc" / "SLUS-20639.iso";
         if (!std::filesystem::exists(image))

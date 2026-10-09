@@ -12,6 +12,8 @@ SLUS_*
 /mc0/
 /mc1/
 /shots/
+# mods: animations and other content converted from games (yours, never committed)
+/mods/
 
 # generated config (tools/make_config.py) — the inputs in config/ are committed
 config/vendetta.toml
