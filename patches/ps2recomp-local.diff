@@ -1872,15 +1872,16 @@ index 509fd07..71243e7 100644
  
      std::string CodeGenerator::translateVU_VMTIR(const Instruction &inst)
 diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
-index 589d768..c4cbc0c 100644
+index 589d768..0b9331a 100644
 --- a/ps2xRuntime/CMakeLists.txt
 +++ b/ps2xRuntime/CMakeLists.txt
-@@ -383,12 +383,15 @@ add_library(ps2_runtime STATIC
+@@ -383,12 +383,16 @@ add_library(ps2_runtime STATIC
      src/lib/gs/ps2_gs_memory.cpp
      src/lib/gs/gs_frontend.cpp
      src/lib/gs/gs_cpu_backend.cpp
 +    src/lib/gs/gs_threaded_backend.cpp
 +    src/lib/gs/gs_gpu.cpp
++    src/lib/gs/gs_gpu_backend.cpp
      src/lib/ps2_iop_host.cpp
      src/lib/ps2_memory.cpp
      src/lib/ps2_pad.cpp
@@ -1891,7 +1892,7 @@ index 589d768..c4cbc0c 100644
      src/lib/ps2_vif1_interpreter.cpp
      src/lib/vu/ps2_vu1_core.cpp
      src/lib/vu/ps2_vu1_upper.cpp
-@@ -396,6 +399,27 @@ add_library(ps2_runtime STATIC
+@@ -396,6 +400,27 @@ add_library(ps2_runtime STATIC
      src/lib/games_database.cpp
  )
  
@@ -1919,7 +1920,7 @@ index 589d768..c4cbc0c 100644
  if(PS2X_ENABLE_RUNTIME_LOGS)
      target_compile_definitions(ps2_runtime PUBLIC
          PS2_RUNTIME_LOGS=1
-@@ -429,6 +453,12 @@ target_compile_definitions(ps2_runtime PRIVATE
+@@ -429,6 +454,12 @@ target_compile_definitions(ps2_runtime PRIVATE
      PS2X_HAS_FFMPEG=$<BOOL:${PS2X_ENABLE_FFMPEG}>
  )
  
@@ -1932,7 +1933,7 @@ index 589d768..c4cbc0c 100644
  file(GLOB_RECURSE KERNEL_SRC_FILES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/Kernel/*.cpp"
  )
-@@ -462,6 +492,17 @@ else()
+@@ -462,6 +493,17 @@ else()
      )
  endif()
  
@@ -2349,7 +2350,7 @@ index 2421f9e..53d30c7 100644
 +    bool m_stopWorkers = false;
  };
 diff --git a/ps2xRuntime/include/runtime/gs/gs_frontend.h b/ps2xRuntime/include/runtime/gs/gs_frontend.h
-index 4c3f641..a0c6a9d 100644
+index 4c3f641..8cff0f0 100644
 --- a/ps2xRuntime/include/runtime/gs/gs_frontend.h
 +++ b/ps2xRuntime/include/runtime/gs/gs_frontend.h
 @@ -2,13 +2,16 @@
@@ -2383,7 +2384,7 @@ index 4c3f641..a0c6a9d 100644
      bool processNativePackedGIFPacket(const uint8_t *data, uint32_t sizeBytes);
      void uploadImageNative(uint64_t bitbltbuf,
                             uint64_t trxpos,
-@@ -129,6 +135,43 @@ public:
+@@ -129,6 +135,54 @@ public:
      bool isDebugHistoryPaused() const;
      void setDebugHistoryPaused(bool paused);
      bool getPreferredDisplaySource(GSFrameReg &outSource, uint32_t &outDestFbp) const;
@@ -2422,12 +2423,23 @@ index 4c3f641..a0c6a9d 100644
 +    const GSGpuRenderer *gpuRenderer() const { return m_gpu.get(); }
 +    // The main thread: whether the window shows the graphics card's picture, and the newest one (null: none newer).
 +    bool showsGpuPicture() const { return m_showGpu; }
++    // VENDETTA_GS=both: which renderer's picture the window shows (the debug panel switches it live)
++    void setShowGpuPicture(bool show) { m_showGpu = show && m_gpu != nullptr; }
++    GSGpuRenderer *gpuRendererForSettings() { return m_gpu.get(); }
++    // The main thread (window, debug panel): how the picture is scaled to the window.
++    GSPresentFilter presentFilter() const { return m_presentFilter; }
++    void setPresentFilter(GSPresentFilter filter)
++    {
++        m_presentFilter = filter;
++        if (m_gpu)
++            m_gpu->setFsr(filter == GSPresentFilter::Fsr);
++    }
 +    const GSGpuFrame *takeGpuFrame(uint64_t &lastSeq) { return m_gpu ? m_gpu->takeFrame(lastSeq) : nullptr; }
 +    // Present now and convert it (tests and tools; the game uses the two above).
      void latchHostPresentationFrame();
      bool copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
                                            uint32_t &outWidth,
-@@ -172,7 +215,27 @@ private:
+@@ -172,7 +226,27 @@ private:
      bool tryProcessNativeImageUploadPacket(const uint8_t *data, uint32_t sizeBytes);
      GSPrimitiveBatch buildDrawBatch(int vertexCount) const;
      void updatePreferredDisplaySourceForDraw(const GSPrimitiveBatch &batch);
@@ -2456,7 +2468,7 @@ index 4c3f641..a0c6a9d 100644
  
  
      GSContext &activeContext();
-@@ -191,6 +254,20 @@ private:
+@@ -191,6 +265,20 @@ private:
  
      uint8_t m_curR = 0x80, m_curG = 0x80, m_curB = 0x80, m_curA = 0x80;
      float m_curQ = 1.0f;
@@ -2477,7 +2489,7 @@ index 4c3f641..a0c6a9d 100644
      float m_curS = 0.0f, m_curT = 0.0f;
      uint16_t m_curU = 0, m_curV = 0;
      uint8_t m_curFog = 0;
-@@ -241,7 +318,26 @@ private:
+@@ -241,7 +329,30 @@ private:
      uint64_t m_debugLastVsyncTick = UINT64_MAX;
      bool m_debugHistoryPaused = true;
  
@@ -2493,7 +2505,11 @@ index 4c3f641..a0c6a9d 100644
 +    // The graphics card renderer (VENDETTA_GS=gpu / both), or null: the CPU renderer alone.
 +    GSRendererMode m_rendererMode = GSRendererMode::Cpu;
 +    bool m_showGpu = false;
++    GSPresentFilter m_presentFilter = GSPresentFilter::Bilinear;
 +    bool m_warnedGpuUnmirrored = false;
++    uint32_t m_gpuVerifyEvery = 0;   // VENDETTA_GPU_VERIFY=1[,N] (needs VENDETTA_GS=both): compare GS memory every N
++    uint64_t m_gpuVerifyPresents = 0;
++    void verifyGpuMemoryUnlocked(uint64_t vsyncTick);
 +    std::unique_ptr<GSGpuRenderer> m_gpu;
 +    void warnGpuUnmirrored(const char *what);
 +    // Declared before m_backend: a renderer thread may write it until m_backend is destroyed.
@@ -2506,27 +2522,33 @@ index 4c3f641..a0c6a9d 100644
  #endif
 diff --git a/ps2xRuntime/include/runtime/gs/gs_gpu.h b/ps2xRuntime/include/runtime/gs/gs_gpu.h
 new file mode 100644
-index 0000000..4acca12
+index 0000000..c812ebf
 --- /dev/null
 +++ b/ps2xRuntime/include/runtime/gs/gs_gpu.h
-@@ -0,0 +1,122 @@
+@@ -0,0 +1,166 @@
 +#pragma once
 +
 +// The GS drawn on the graphics card (paraLLEl-GS, Vulkan compute), next to the CPU renderer.
 +// This header carries no Vulkan / Granite types: only gs_gpu_parallel.cpp sees the library.
 +//
-+// VENDETTA_GS=cpu   (default) the CPU renderer alone, as before
-+// VENDETTA_GS=gpu   the graphics card draws the picture on screen; the CPU renderer still runs and answers everything
-+//                   the game reads back from GS memory
-+// VENDETTA_GS=both  as gpu; VENDETTA_GS_SHOW=cpu shows the CPU renderer's picture instead (for comparing)
++// VENDETTA_GS=gpu   (default) the graphics card draws everything; nothing is drawn on the CPU (reads of GS memory are
++//                   answered by the graphics card). Without a usable Vulkan device: the CPU renderer, as with cpu.
++// VENDETTA_GS=cpu   the CPU renderer alone
++// VENDETTA_GS=both  both draw: the CPU renderer answers the reads; the window shows the graphics card's picture
++//                   (VENDETTA_GS_SHOW=cpu: the CPU renderer's, for comparing)
 +//
-+// VENDETTA_SSAA=1|2|4|8|16 (default 4)      samples per pixel (super-sampling)
++// VENDETTA_SSAA=1|2|4|8|16 (default 8)      samples per pixel (super-sampling)
 +// VENDETTA_SSAA_ORDERED=0|1 (default 1)     ordered or rotated sample grid
 +// VENDETTA_SSAA_TEXTURES=0|1 (default 0)    render targets used as textures keep their samples
 +// VENDETTA_HIRES=0|1 (default 1)            a double-resolution picture from the samples (needs SSAA >= 4)
 +// VENDETTA_GPU=<index or name substring>    which Vulkan device (default: the library's choice, a discrete GPU first)
++// VENDETTA_FILTER=fsr|bilinear|nearest      how the picture is scaled to the window (default fsr on the graphics card:
++//                                           AMD FSR 1 upscaling + RCAS sharpening at the window's size; bilinear on the CPU)
++// VENDETTA_SHARPEN=<0..2> (default 0.5)     FSR's sharpening: 0 = sharpest, each 1 halves it
 +// VENDETTA_GPU_LOG=1                        the library's own information lines (devices, extensions)
 +// VENDETTA_GPU_SYNC=1                       wait for the graphics card thread after every call (debugging)
++// VENDETTA_GPU_VERIFY=1[,N]                 (with VENDETTA_GS=both) compare GS memory and the picture every N presentations
++//                                           (default 60); VENDETTA_GPU_VERIFY_DUMP=<dir> saves the first 3 differing pairs
 +
 +#include <atomic>
 +#include <cstdint>
@@ -2541,15 +2563,26 @@ index 0000000..4acca12
 +    Both,
 +};
 +
++// How the picture is scaled to the window. Fsr = on the graphics card (its picture only; else Bilinear).
++enum class GSPresentFilter : uint8_t
++{
++    Nearest,
++    Bilinear,
++    Fsr,
++};
++
 +GSRendererMode gsRendererModeFromEnvironment();
++GSPresentFilter gsPresentFilterFromEnvironment();
 +const char *gsRendererModeName(GSRendererMode mode);
 +
 +struct GSGpuOptions
 +{
-+    uint32_t superSampling = 4; // 1, 2, 4, 8 or 16
++    uint32_t superSampling = 8; // 1, 2, 4, 8 or 16
 +    bool orderedGrid = true;
 +    bool superSampledTextures = false;
 +    bool highResolutionScanout = true;
++    bool fsr = true;
++    float sharpness = 0.5f;
 +    bool libraryLog = false;
 +    bool sync = false;
 +    size_t ringBytes = size_t{16} << 20u;
@@ -2571,6 +2604,21 @@ index 0000000..4acca12
 +    uint32_t modeHeight = 0;
 +    bool highResolution = false;
 +    std::vector<uint8_t> rgba;
++};
++
++// What the graphics card renderer is doing (the debug panel's Graphics tab).
++struct GSGpuStatus
++{
++    uint32_t superSampling = 0;
++    bool highResolution = false;
++    bool fsr = false;
++    float sharpness = 0.0f;
++    uint32_t pictureWidth = 0; // the last picture read back
++    uint32_t pictureHeight = 0;
++    float busyPercent = 0.0f; // the graphics card thread, over the last second
++    float presentsPerSecond = 0.0f;
++    float gifMegabytesPerSecond = 0.0f;
++    float renderPassesPerSecond = 0.0f;
 +};
 +
 +// A lock-free triple buffer: one writer (the graphics card thread), one reader (the main thread).
@@ -2618,6 +2666,9 @@ index 0000000..4acca12
 +    virtual void reset() = 0;
 +    virtual void present(const uint64_t (&privRegs)[kPrivRegCount], uint64_t vsyncTick, bool flip) = 0;
 +    virtual void kick() = 0;
++    // The producer, blocking: answered after everything sent before (GS memory as of this point in the order).
++    virtual void snapshotVram(std::vector<uint8_t> &out) = 0;              // all 4 MiB
++    virtual uint32_t readTransfer(uint8_t *dst, uint32_t maxBytes) = 0;    // a local -> host transfer's data
 +
 +    // The game thread, holding no lock: wait while more than maxAhead presentations are not yet drawn.
 +    virtual bool waitPresentBacklog(uint32_t maxAhead, const std::atomic<bool> &stop) = 0;
@@ -2625,6 +2676,15 @@ index 0000000..4acca12
 +
 +    // The main thread: the newest finished picture if newer than lastSeq, else null (valid until the next take).
 +    virtual const GSGpuFrame *takeFrame(uint64_t &lastSeq) = 0;
++    // The main thread: the size the picture is shown at (FSR draws at exactly that size).
++    virtual void setOutputSize(uint32_t width, uint32_t height) = 0;
++
++    // Any thread: live settings, taken at the next presentation.
++    virtual void setSuperSampling(uint32_t rate) = 0; // 1, 2, 4, 8 or 16
++    virtual void setHighResolution(bool on) = 0;
++    virtual void setFsr(bool on) = 0;
++    virtual void setSharpness(float stops) = 0;
++    virtual GSGpuStatus status() const = 0;
 +
 +    // Idempotent; joins the renderer's thread, which owns (and destroys) every Vulkan object.
 +    virtual void shutdown() = 0;
@@ -2632,6 +2692,56 @@ index 0000000..4acca12
 +
 +// nullptr when this build has no paraLLEl-GS or the device could not be set up; whyNot says which.
 +std::unique_ptr<GSGpuRenderer> makeGpuRenderer(const GSGpuOptions &options, std::string &whyNot);
+diff --git a/ps2xRuntime/include/runtime/gs/gs_gpu_backend.h b/ps2xRuntime/include/runtime/gs/gs_gpu_backend.h
+new file mode 100644
+index 0000000..2c4060b
+--- /dev/null
++++ b/ps2xRuntime/include/runtime/gs/gs_gpu_backend.h
+@@ -0,0 +1,44 @@
++#pragma once
++
++#include "runtime/gs/gs_backend.h"
++#include "runtime/gs/gs_gpu.h"
++
++// VENDETTA_GS=gpu: the renderer behind the GS front end when the graphics card draws everything. Nothing is drawn on
++// the CPU; the front end still parses every packet (CSR, SIGNAL / FINISH / LABEL and every value the game can read come
++// from it), and the few calls that return GS memory are answered by the graphics card renderer after everything sent
++// before them (GS memory as of that point in the order).
++class GSGpuBackend final : public GSRasterBackend
++{
++public:
++    explicit GSGpuBackend(GSGpuRenderer &gpu) : m_gpu(gpu) {}
++
++    void Initialize(uint8_t *, uint32_t) override {}
++    void Reset() override {}
++
++    void Submit(const GSPrimitiveBatch &) override {}
++    void LoadClut(const GSTex0Reg &, const GSTexClutReg &) override {}
++    void BeginTransfer(const GSTransferCommand &) override {}
++    void UploadImage(const uint8_t *, uint32_t) override {}
++
++    void Flush() override {}
++    void TextureFlush() override {}
++    void Sync(GSSyncReason) override {}
++    PresentationFrame Present(const GSPresentationRequest &) override { return {}; }
++
++    bool ClearFramebuffer(const GSContext &context, uint32_t rgba) override;
++    uint32_t ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes) override;
++
++    uint32_t ReadVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y) const override;
++    void WriteVram(uint32_t, uint32_t, uint32_t, uint32_t, uint32_t, uint32_t) override {}
++    void SnapshotVram(std::vector<uint8_t> &out) const override { m_gpu.snapshotVram(out); }
++    GSTransferSnapshot GetTransferSnapshot() const override { return {}; }
++
++    // The window shows the graphics card's picture; the CPU picture mailbox only ever says "no picture".
++    void PresentToMailbox(const GSPresentationRequest &, GSPresentTicket ticket, GSPresentMailbox &box) override
++    {
++        ResetPresentation(box, ticket.seq);
++    }
++
++private:
++    GSGpuRenderer &m_gpu;
++};
 diff --git a/ps2xRuntime/include/runtime/gs/gs_presentation.h b/ps2xRuntime/include/runtime/gs/gs_presentation.h
 new file mode 100644
 index 0000000..c238864
@@ -8541,26 +8651,26 @@ index f0ad507..d26795c 100644
      result.displayFbp = displayFrame.fbp;
      result.sourceFbp = selected.fbp;
 diff --git a/ps2xRuntime/src/lib/gs/gs_frontend.cpp b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
-index 5658928..257230c 100644
+index 5658928..aff11f3 100644
 --- a/ps2xRuntime/src/lib/gs/gs_frontend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
-@@ -1,5 +1,7 @@
+@@ -1,5 +1,8 @@
 +#include "runtime/ps2_host_profile.h"
  #include "runtime/gs/gs_frontend.h"
  #include "runtime/gs/gs_cpu_backend.h"
 +#include "runtime/gs/gs_threaded_backend.h"
++#include "runtime/gs/gs_gpu_backend.h"
  #include "ps2_log.h"
  #include "runtime/ps2_memory.h"
  #include <atomic>
-@@ -106,25 +108,78 @@ namespace
+@@ -106,25 +109,210 @@ namespace
  
  
  GS::GS()
 -    : m_backend(std::make_unique<GSCpuBackend>())
-+    : m_rendererMode(gsRendererModeFromEnvironment()),
-+      m_backend(makeRasterBackendFromEnvironment())
++    : m_rendererMode(gsRendererModeFromEnvironment())
  {
-+    m_backendRaw.store(m_backend.get(), std::memory_order_release);
++    m_presentFilter = gsPresentFilterFromEnvironment();
 +    if (m_rendererMode != GSRendererMode::Cpu)
 +    {
 +        std::string whyNot;
@@ -8574,8 +8684,31 @@ index 5658928..257230c 100644
 +        {
 +            const char *show = std::getenv("VENDETTA_GS_SHOW");
 +            m_showGpu = !(m_rendererMode == GSRendererMode::Both && show && std::string(show) == "cpu");
++            if (const char *verify = std::getenv("VENDETTA_GPU_VERIFY"); verify && *verify && *verify != '0')
++            {
++                const char *comma = std::strchr(verify, ',');
++                m_gpuVerifyEvery = std::max<uint32_t>(1u, comma ? static_cast<uint32_t>(std::strtoul(comma + 1, nullptr, 10)) : 60u);
++                if (m_rendererMode != GSRendererMode::Both)
++                {
++                    std::cerr << "[gpu-verify] needs VENDETTA_GS=both (the CPU renderer is the reference)" << std::endl;
++                    m_gpuVerifyEvery = 0u;
++                }
++            }
 +        }
 +    }
++    if (m_rendererMode == GSRendererMode::Gpu)
++    {
++        // nothing drawn on the CPU: the CPU renderer's switches have nothing to act on
++        for (const char *name : {"VENDETTA_GS_VERIFY", "VENDETTA_GS_ASYNC", "VENDETTA_SPRITELOG", "VENDETTA_GSDUMP"})
++            if (const char *value = std::getenv(name); value && *value)
++                std::cerr << "[gpu-gs] " << name << " needs the CPU renderer: VENDETTA_GS=cpu or both" << std::endl;
++        m_backend = std::make_unique<GSGpuBackend>(*m_gpu);
++    }
++    else
++        m_backend = makeRasterBackendFromEnvironment();
++    m_backendRaw.store(m_backend.get(), std::memory_order_release);
++    if (!m_gpu && m_presentFilter == GSPresentFilter::Fsr)
++        m_presentFilter = GSPresentFilter::Bilinear; // FSR runs on the graphics card
      reset();
  }
  
@@ -8593,6 +8726,116 @@ index 5658928..257230c 100644
 +        gs.m_backend->Kick();
 +    if (gs.m_gpu)
 +        gs.m_gpu->kick();
++}
++
++// VENDETTA_GPU_VERIFY: GS memory from both renderers at the same point in the order, compared by 8 KiB page. The
++// graphics card's GS is not bit-exact with the CPU renderer (interpolation, depth precision), so this counts identical
++// pages, pages within +-2 per byte and pages that differ more, and names the worst ones. Super-sampling keeps the
++// single-sample memory, but compare with VENDETTA_SSAA=1 for the cleanest numbers.
++void GS::verifyGpuMemoryUnlocked(uint64_t vsyncTick)
++{
++    const GSPresentationRequest &request = m_lastPresentRequest; // the presentation just made
++    static uint32_t dumpsWritten = 0u;
++    std::vector<uint8_t> cpu;
++    std::vector<uint8_t> gpu;
++    m_backend->Sync(GSSyncReason::DebugReadback);
++    m_backend->SnapshotVram(cpu);
++    m_gpu->snapshotVram(gpu);
++    const size_t bytes = std::min(cpu.size(), gpu.size());
++    if (bytes == 0u)
++        return;
++    constexpr size_t kPage = 8192u;
++    struct Worst
++    {
++        uint32_t page;
++        uint32_t differing;
++        uint32_t maxDelta;
++    };
++    std::vector<Worst> worst;
++    uint32_t same = 0u, near = 0u, differ = 0u;
++    uint64_t totalDiffering = 0u;
++    uint64_t byLane[4] = {}; // bytes off by >2, by position in a 32-bit word (0-2 = R G B of a 32-bit pixel, 3 = A)
++    for (size_t page = 0; page * kPage < bytes; ++page)
++    {
++        const uint8_t *a = cpu.data() + page * kPage;
++        const uint8_t *b = gpu.data() + page * kPage;
++        if (std::memcmp(a, b, kPage) == 0)
++        {
++            ++same;
++            continue;
++        }
++        uint32_t differing = 0u, maxDelta = 0u;
++        for (size_t i = 0; i < kPage; ++i)
++        {
++            const uint32_t delta = static_cast<uint32_t>(a[i] > b[i] ? a[i] - b[i] : b[i] - a[i]);
++            if (delta > 2u)
++            {
++                ++differing;
++                ++byLane[i & 3u];
++            }
++            maxDelta = std::max(maxDelta, delta);
++        }
++        if (differing == 0u)
++            ++near;
++        else
++        {
++            ++differ;
++            totalDiffering += differing;
++            worst.push_back({static_cast<uint32_t>(page), differing, maxDelta});
++        }
++    }
++    std::sort(worst.begin(), worst.end(), [](const Worst &x, const Worst &y)
++              { return x.differing > y.differing; });
++    std::cerr << "[gpu-verify] vsync=" << vsyncTick << " pages: same=" << same << " near=" << near << " differ=" << differ
++              << " (" << totalDiffering << " bytes off by >2)";
++    for (size_t i = 0; i < std::min<size_t>(worst.size(), 5u); ++i)
++        std::cerr << " page " << worst[i].page << " (block 0x" << std::hex << worst[i].page * 32u << std::dec << ": "
++                  << worst[i].differing << " bytes, max " << worst[i].maxDelta << ")";
++    std::cerr << " by byte: " << byLane[0] << "/" << byLane[1] << "/" << byLane[2] << "/" << byLane[3];
++
++    // The picture each renderer's memory makes (read the CPU renderer's way from both): what differs on screen.
++    const PresentationFrame a = GSCpuBackend::ConvertSnapshot(cpu.data(), static_cast<uint32_t>(cpu.size()), request);
++    const PresentationFrame b = GSCpuBackend::ConvertSnapshot(gpu.data(), static_cast<uint32_t>(gpu.size()), request);
++    if (a.width == b.width && a.height == b.height && !a.pixels.empty() && a.pixels.size() == b.pixels.size())
++    {
++        const size_t pixels = a.pixels.size() / 4u;
++        uint64_t sum = 0u, off8 = 0u;
++        for (size_t i = 0; i < pixels; ++i)
++        {
++            uint32_t worstChannel = 0u;
++            for (size_t ch = 0; ch < 3u; ++ch)
++            {
++                const int d = static_cast<int>(a.pixels[i * 4u + ch]) - static_cast<int>(b.pixels[i * 4u + ch]);
++                const uint32_t m = static_cast<uint32_t>(d < 0 ? -d : d);
++                sum += m;
++                worstChannel = std::max(worstChannel, m);
++            }
++            if (worstChannel > 8u)
++                ++off8;
++        }
++        std::cerr << " picture " << a.width << "x" << a.height << ": mean |d| " << (static_cast<double>(sum) / (pixels * 3.0))
++                  << ", " << (100.0 * static_cast<double>(off8) / static_cast<double>(pixels)) << "% of pixels off by >8";
++        // VENDETTA_GPU_VERIFY_DUMP=<dir>: the first 3 picture pairs as PPM
++        static const char *dumpDir = std::getenv("VENDETTA_GPU_VERIFY_DUMP");
++        if (dumpDir && *dumpDir && dumpsWritten < 3u && off8 != 0u)
++        {
++            for (int which = 0; which < 2; ++which)
++            {
++                const PresentationFrame &f = which == 0 ? a : b;
++                const std::string path = std::string(dumpDir) + "/" + (which == 0 ? "cpu-" : "gpu-") +
++                                         std::to_string(vsyncTick) + ".ppm";
++                if (FILE *file = std::fopen(path.c_str(), "wb"))
++                {
++                    std::fprintf(file, "P6%c%u %u%c255%c", 10, f.width, f.height, 10, 10);
++                    for (size_t i = 0; i < static_cast<size_t>(f.width) * f.height; ++i)
++                        std::fwrite(&f.pixels[i * 4u], 1, 3, file);
++                    std::fclose(file);
++                }
++            }
++            ++dumpsWritten;
++        }
++    }
++    std::cerr << std::endl;
 +}
 +
 +// Input the graphics card renderer does not get yet (none of it reaches the GS in Def Jam Vendetta).
@@ -8632,7 +8875,7 @@ index 5658928..257230c 100644
      std::memset(m_ctx, 0, sizeof(m_ctx));
      m_prim = {};
      m_primRegister = {};
-@@ -164,7 +219,12 @@ void GS::reset()
+@@ -164,7 +352,12 @@ void GS::reset()
          m_backend->Flush();
          m_backend->Sync(GSSyncReason::Reset);
          m_backend->Reset();
@@ -8645,7 +8888,7 @@ index 5658928..257230c 100644
      {
          std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
          m_hostPresentationFrame.clear();
-@@ -200,10 +260,12 @@ void GS::snapshotVRAM()
+@@ -200,10 +393,12 @@ void GS::snapshotVRAM()
      // Presentation/debug snapshots run outside m_stateMutex so the EE can keep
      // feeding the GS while a backend performs host-side conversion. Keep the
      // selected backend alive and unswappable for the duration of the call.
@@ -8658,7 +8901,7 @@ index 5658928..257230c 100644
      m_backend->Sync(GSSyncReason::DebugReadback);
      m_backend->SnapshotVram(snapshot);
      std::lock_guard<std::mutex> lock(m_snapshotMutex);
-@@ -503,19 +565,55 @@ void GS::refreshDisplaySnapshot()
+@@ -503,19 +698,55 @@ void GS::refreshDisplaySnapshot()
      snapshotVRAM();
  }
  
@@ -8725,7 +8968,7 @@ index 5658928..257230c 100644
      request.contextFrames[0] = m_ctx[0].frame;
      request.contextFrames[1] = m_ctx[1].frame;
      request.preferredSource = m_preferredDisplaySourceFrame;
-@@ -524,11 +622,140 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
+@@ -524,11 +755,142 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
      return request;
  }
  
@@ -8750,6 +8993,8 @@ index 5658928..257230c 100644
 +            regs.pmode, regs.smode1, regs.smode2, regs.srfsh, regs.synch1, regs.synch2, regs.syncv, regs.dispfb1,
 +            regs.display1, regs.dispfb2, regs.display2, regs.extbuf, regs.extdata, regs.extwrite, regs.bgcolor};
 +        m_gpu->present(privRegs, vsyncTick, flip);
++        if (m_gpuVerifyEvery != 0u && ++m_gpuVerifyPresents % m_gpuVerifyEvery == 0u)
++            verifyGpuMemoryUnlocked(vsyncTick);
 +    }
 +    ps2_host_profile::count(ps2_host_profile::GsPresents);
 +    if (flip)
@@ -8867,7 +9112,7 @@ index 5658928..257230c 100644
          if (!m_backend || !m_privRegs)
          {
              std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
-@@ -537,42 +764,13 @@ void GS::latchHostPresentationFrame()
+@@ -537,42 +899,13 @@ void GS::latchHostPresentationFrame()
              m_hostPresentationWidth = m_hostPresentationHeight = 0u;
              return;
          }
@@ -8915,7 +9160,7 @@ index 5658928..257230c 100644
  }
  
  bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
-@@ -638,13 +836,27 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
+@@ -638,13 +971,27 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
      return true;
  }
  
@@ -8945,7 +9190,7 @@ index 5658928..257230c 100644
          return;
  
      PS2_IF_AGRESSIVE_LOGS({
-@@ -668,7 +880,6 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
+@@ -668,7 +1015,6 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
          }
      });
  
@@ -8953,7 +9198,7 @@ index 5658928..257230c 100644
      while (offset + 16 <= sizeBytes)
      {
          uint64_t tagLo = loadLE64(data + offset);
-@@ -695,55 +906,107 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
+@@ -695,55 +1041,107 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
          for (uint32_t i = 0; i < nreg; ++i)
              regs[i] = static_cast<uint8_t>((tagHi >> (i * 4)) & 0xF);
  
@@ -8984,13 +9229,26 @@ index 5658928..257230c 100644
 +            continuation.flg = GIF_FMT_IMAGE;
 +            continuation.loopsLeft = 0;
 +            continuation.imageBytesLeft = nloop * 16u;
-+        }
+         }
+-        else if (flg == GIF_FMT_REGLIST)
 +        else
-+        {
+         {
+-            for (uint32_t loop = 0; loop < nloop; ++loop)
+-            {
+-                for (uint32_t r = 0; r < nreg; ++r)
+-                {
+-                    if (offset + 8 > sizeBytes)
+-                        return;
+-                    writeRegisterUnlocked(regs[r], loadLE64(data + offset));
+-                    offset += 8;
+-                }
+-            }
+-            if ((nloop * nreg) & 1)
+-                offset += 8;
 +            continuation.loopsLeft = nloop;
 +            continuation.imageBytesLeft = 0;
          }
--        else if (flg == GIF_FMT_REGLIST)
+-        else if (flg == GIF_FMT_IMAGE)
 +        offset += continueGifTag(continuation, data + offset, sizeBytes - offset);
 +    }
 +    static const bool contLog = std::getenv("VENDETTA_GSLOG") != nullptr;
@@ -9023,40 +9281,22 @@ index 5658928..257230c 100644
 +    while (tag.loopsLeft != 0u)
 +    {
 +        if (tag.flg == GIF_FMT_PACKED)
-         {
--            for (uint32_t loop = 0; loop < nloop; ++loop)
--            {
--                for (uint32_t r = 0; r < nreg; ++r)
--                {
--                    if (offset + 8 > sizeBytes)
--                        return;
--                    writeRegisterUnlocked(regs[r], loadLE64(data + offset));
--                    offset += 8;
--                }
--            }
--            if ((nloop * nreg) & 1)
--                offset += 8;
++        {
 +            if (offset + 16u > sizeBytes)
 +                return offset;
 +            const uint64_t lo = loadLE64(data + offset);
 +            const uint64_t hi = loadLE64(data + offset + 8);
 +            offset += 16u;
 +            writeRegisterPacked(tag.regs[tag.regIndex], lo, hi);
-         }
--        else if (flg == GIF_FMT_IMAGE)
++        }
 +        else // REGLIST
-         {
--            uint32_t imageBytes = nloop * 16;
--            if (offset + imageBytes > sizeBytes)
--                imageBytes = sizeBytes - offset;
--            processImageData(data + offset, imageBytes);
--            offset += imageBytes;
++        {
 +            if (offset + 8u > sizeBytes)
 +                return offset;
 +            writeRegisterUnlocked(tag.regs[tag.regIndex], loadLE64(data + offset));
 +            offset += 8u;
 +            ++tag.regListWords;
-         }
++        }
 +        if (++tag.regIndex == tag.nreg)
 +        {
 +            tag.regIndex = 0;
@@ -9066,12 +9306,17 @@ index 5658928..257230c 100644
 +    if (tag.flg == GIF_FMT_REGLIST && (tag.regListWords & 1u))
 +    {
 +        if (offset + 8u > sizeBytes)
-+        {
+         {
+-            uint32_t imageBytes = nloop * 16;
+-            if (offset + imageBytes > sizeBytes)
+-                imageBytes = sizeBytes - offset;
+-            processImageData(data + offset, imageBytes);
+-            offset += imageBytes;
 +            // the padding word is in the next packet: keep the tag one more 8-byte step
 +            tag.regListWords = 0;
 +            tag.active = offset + 8u <= sizeBytes;
 +            return offset;
-+        }
+         }
 +        offset += 8u;
      }
 +    tag.active = false;
@@ -9093,7 +9338,7 @@ index 5658928..257230c 100644
  
      const bool processed = visitPackedGifPacket(data, sizeBytes, [&](const PackedGifPacketTag &tag)
                                                  {
-@@ -783,7 +1046,9 @@ void GS::uploadImageNative(uint64_t bitbltbuf,
+@@ -783,7 +1181,9 @@ void GS::uploadImageNative(uint64_t bitbltbuf,
                             const uint8_t *data,
                             uint32_t sizeBytes)
  {
@@ -9103,7 +9348,7 @@ index 5658928..257230c 100644
      uploadImageNativeUnlocked(bitbltbuf, trxpos, trxreg, trxdir, data, sizeBytes);
  }
  
-@@ -796,6 +1061,25 @@ void GS::uploadImageNativeUnlocked(uint64_t bitbltbuf,
+@@ -796,6 +1196,25 @@ void GS::uploadImageNativeUnlocked(uint64_t bitbltbuf,
  {
      if (!data || sizeBytes == 0 || !m_backend)
          return;
@@ -9129,7 +9374,7 @@ index 5658928..257230c 100644
  
      writeRegisterUnlocked(GS_REG_BITBLTBUF, bitbltbuf);
      writeRegisterUnlocked(GS_REG_TRXPOS, trxpos);
-@@ -1061,7 +1345,12 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
+@@ -1061,7 +1480,12 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
  
  void GS::writeRegister(uint8_t regAddr, uint64_t value)
  {
@@ -9142,7 +9387,7 @@ index 5658928..257230c 100644
      writeRegisterUnlocked(regAddr, value);
  }
  
-@@ -1240,6 +1529,14 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
+@@ -1240,6 +1664,14 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
          t.csa = static_cast<uint8_t>((value >> 56) & 0x1F);
          t.cld = static_cast<uint8_t>((value >> 61) & 0x7);
          m_backend->LoadClut(t, m_texclut);
@@ -9157,7 +9402,7 @@ index 5658928..257230c 100644
          break;
      }
      case GS_REG_CLAMP_1:
-@@ -1392,6 +1689,7 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
+@@ -1392,6 +1824,7 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
              command.trxreg = m_trxreg;
              command.direction = m_trxdir;
              m_backend->BeginTransfer(command);
@@ -9165,7 +9410,7 @@ index 5658928..257230c 100644
          }
          recordTransferDebugEventUnlocked();
          break;
-@@ -1576,7 +1874,11 @@ void GS::vertexKick(bool drawing)
+@@ -1576,7 +2009,11 @@ void GS::vertexKick(bool drawing)
      {
          GSPrimitiveBatch batch = buildDrawBatch(needed);
          updatePreferredDisplaySourceForDraw(batch);
@@ -9178,7 +9423,7 @@ index 5658928..257230c 100644
          recordDrawDebugEventUnlocked(needed);
      }
  
-@@ -1609,26 +1911,42 @@ void GS::vertexKick(bool drawing)
+@@ -1609,26 +2046,42 @@ void GS::vertexKick(bool drawing)
  
  void GS::processImageData(const uint8_t *data, uint32_t sizeBytes)
  {
@@ -9223,7 +9468,7 @@ index 5658928..257230c 100644
      return m_backend ? m_backend->ConsumeLocalToHostBytes(dst, maxBytes) : 0u;
  }
  
-@@ -1637,7 +1955,9 @@ void GS::setRasterBackend(std::unique_ptr<GSRasterBackend> backend)
+@@ -1637,7 +2090,9 @@ void GS::setRasterBackend(std::unique_ptr<GSRasterBackend> backend)
      if (!backend)
          backend = std::make_unique<GSCpuBackend>();
  
@@ -9233,7 +9478,7 @@ index 5658928..257230c 100644
      std::lock_guard<std::mutex> backendLock(m_backendLifetimeMutex);
      if (m_backend)
      {
-@@ -1657,21 +1977,30 @@ void GS::setRasterBackend(std::unique_ptr<GSRasterBackend> backend)
+@@ -1657,21 +2112,30 @@ void GS::setRasterBackend(std::unique_ptr<GSRasterBackend> backend)
          }
      }
  
@@ -9266,10 +9511,10 @@ index 5658928..257230c 100644
  GSPrimitiveBatch GS::buildDrawBatch(int vertexCount) const
 diff --git a/ps2xRuntime/src/lib/gs/gs_gpu.cpp b/ps2xRuntime/src/lib/gs/gs_gpu.cpp
 new file mode 100644
-index 0000000..4a75f55
+index 0000000..b5a3fee
 --- /dev/null
 +++ b/ps2xRuntime/src/lib/gs/gs_gpu.cpp
-@@ -0,0 +1,67 @@
+@@ -0,0 +1,82 @@
 +#include "runtime/gs/gs_gpu.h"
 +
 +#include <algorithm>
@@ -9291,10 +9536,10 @@ index 0000000..4a75f55
 +GSRendererMode gsRendererModeFromEnvironment()
 +{
 +    const char *value = std::getenv("VENDETTA_GS");
-+    if (!value || !*value || std::strcmp(value, "cpu") == 0)
-+        return GSRendererMode::Cpu;
-+    if (std::strcmp(value, "gpu") == 0)
++    if (!value || !*value || std::strcmp(value, "gpu") == 0)
 +        return GSRendererMode::Gpu;
++    if (std::strcmp(value, "cpu") == 0)
++        return GSRendererMode::Cpu;
 +    if (std::strcmp(value, "both") == 0)
 +        return GSRendererMode::Both;
 +    std::cerr << "[gpu-gs] VENDETTA_GS=" << value << " not understood (cpu, gpu or both); drawing on the CPU" << std::endl;
@@ -9314,6 +9559,18 @@ index 0000000..4a75f55
 +    }
 +}
 +
++GSPresentFilter gsPresentFilterFromEnvironment()
++{
++    const char *value = std::getenv("VENDETTA_FILTER");
++    if (value && std::strcmp(value, "nearest") == 0)
++        return GSPresentFilter::Nearest;
++    if (value && std::strcmp(value, "bilinear") == 0)
++        return GSPresentFilter::Bilinear;
++    if (value && *value && std::strcmp(value, "fsr") != 0)
++        std::cerr << "[present] VENDETTA_FILTER=" << value << " not understood (fsr, bilinear or nearest)" << std::endl;
++    return GSPresentFilter::Fsr;
++}
++
 +GSGpuOptions GSGpuOptions::fromEnvironment()
 +{
 +    GSGpuOptions options;
@@ -9329,6 +9586,9 @@ index 0000000..4a75f55
 +    options.orderedGrid = envFlag("VENDETTA_SSAA_ORDERED", true);
 +    options.superSampledTextures = envFlag("VENDETTA_SSAA_TEXTURES", false);
 +    options.highResolutionScanout = envFlag("VENDETTA_HIRES", true);
++    options.fsr = gsPresentFilterFromEnvironment() == GSPresentFilter::Fsr;
++    if (const char *sharpen = std::getenv("VENDETTA_SHARPEN"); sharpen && *sharpen)
++        options.sharpness = std::clamp(static_cast<float>(std::atof(sharpen)), 0.0f, 2.0f);
 +    options.libraryLog = envFlag("VENDETTA_GPU_LOG", false);
 +    options.sync = envFlag("VENDETTA_GPU_SYNC", false);
 +    if (const char *ring = std::getenv("VENDETTA_GPU_RING_MB"); ring && *ring)
@@ -9336,6 +9596,39 @@ index 0000000..4a75f55
 +    if (const char *gpu = std::getenv("VENDETTA_GPU"))
 +        options.gpuSelector = gpu;
 +    return options;
++}
+diff --git a/ps2xRuntime/src/lib/gs/gs_gpu_backend.cpp b/ps2xRuntime/src/lib/gs/gs_gpu_backend.cpp
+new file mode 100644
+index 0000000..7b28d1d
+--- /dev/null
++++ b/ps2xRuntime/src/lib/gs/gs_gpu_backend.cpp
+@@ -0,0 +1,27 @@
++#include "runtime/gs/gs_gpu_backend.h"
++#include "runtime/gs/gs_cpu_backend.h"
++
++bool GSGpuBackend::ClearFramebuffer(const GSContext &context, uint32_t rgba)
++{
++    (void)rgba;
++    return GSCpuBackend::ClearFramebufferWritesPixels(context, true);
++}
++
++uint32_t GSGpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
++{
++    return m_gpu.readTransfer(dst, maxBytes);
++}
++
++uint32_t GSGpuBackend::ReadVram(uint32_t psm, uint32_t base, uint32_t bw, uint32_t x, uint32_t y) const
++{
++    // Rare (debugging, other games' stand-ins): a copy of GS memory from the graphics card, read the CPU renderer's way.
++    std::vector<uint8_t> vram;
++    m_gpu.snapshotVram(vram);
++    if (vram.empty())
++        return 0u;
++    GSCpuBackend reader(1u);
++    reader.Initialize(vram.data(), static_cast<uint32_t>(vram.size()));
++    const uint32_t value = reader.ReadVram(psm, base, bw, x, y);
++    reader.Initialize(nullptr, 0u);
++    return value;
 +}
 diff --git a/ps2xRuntime/src/lib/gs/gs_gpu_none.cpp b/ps2xRuntime/src/lib/gs/gs_gpu_none.cpp
 new file mode 100644
@@ -9353,10 +9646,10 @@ index 0000000..6085f2a
 +}
 diff --git a/ps2xRuntime/src/lib/gs/gs_gpu_parallel.cpp b/ps2xRuntime/src/lib/gs/gs_gpu_parallel.cpp
 new file mode 100644
-index 0000000..823be0f
+index 0000000..502e19c
 --- /dev/null
 +++ b/ps2xRuntime/src/lib/gs/gs_gpu_parallel.cpp
-@@ -0,0 +1,728 @@
+@@ -0,0 +1,1080 @@
 +// The GS on the graphics card: paraLLEl-GS (Arntzen Software AS, LGPL-3.0+) on Granite's Vulkan backend.
 +//
 +// The GS front end hands over the raw GS input in its own order (GIF data per path, register writes, presentations);
@@ -9372,12 +9665,15 @@ index 0000000..823be0f
 +#include "device.hpp"
 +#include "gs_interface.hpp"
 +#include "logging.hpp"
++#include "muglm/muglm_impl.hpp"
++#include "shaders/slangmosh.hpp"
 +
 +#include <windows.h>
 +
 +#include <algorithm>
 +#include <atomic>
 +#include <cctype>
++#include <cmath>
 +#include <chrono>
 +#include <condition_variable>
 +#include <cstdarg>
@@ -9455,6 +9751,40 @@ index 0000000..823be0f
 +        return VK_NULL_HANDLE;
 +    }
 +
++    // AMD FSR 1's constants for the EASU upscale and the RCAS sharpen passes paraLLEl-GS ships (shaders upscale_* and
++    // sharpen_*), as its PCSX2 integration computes them.
++    void fsrEasuConstants(float *con0, float *con1, float *con2, float *con3, float inputWidth, float inputHeight,
++                          float outputWidth, float outputHeight)
++    {
++        con0[0] = inputWidth / outputWidth;
++        con0[1] = inputHeight / outputHeight;
++        con0[2] = 0.5f * inputWidth / outputWidth - 0.5f;
++        con0[3] = 0.5f * inputHeight / outputHeight - 0.5f;
++        con1[0] = 1.0f / inputWidth;
++        con1[1] = 1.0f / inputHeight;
++        con1[2] = 1.0f / inputWidth;
++        con1[3] = -1.0f / inputHeight;
++        con2[0] = -1.0f / inputWidth;
++        con2[1] = 2.0f / inputHeight;
++        con2[2] = 1.0f / inputWidth;
++        con2[3] = 2.0f / inputHeight;
++        con3[0] = 0.0f;
++        con3[1] = 4.0f / inputHeight;
++        con3[2] = con3[3] = 0.0f;
++    }
++
++    // sharpness in stops: 0 = the most, each 1 halves it
++    void fsrRcasConstants(float *con, float sharpness)
++    {
++        sharpness = std::exp2(-sharpness);
++        const uint32_t half = muglm::floatToHalf(sharpness);
++        con[0] = sharpness;
++        const uint32_t halves = half | (half << 16);
++        std::memcpy(&con[1], &halves, sizeof(halves));
++        con[2] = 0.0f;
++        con[3] = 0.0f;
++    }
++
 +    constexpr uint64_t align16(uint64_t bytes) { return (bytes + 15u) & ~uint64_t{15u}; }
 +    constexpr uint32_t kMaxGifChunk = 256u * 1024u;         // larger GIF transfers go in pieces (paths keep their tag)
 +    constexpr uint64_t kPublishBytes = 16u * 1024u;         // hand records over at least this often
@@ -9464,10 +9794,16 @@ index 0000000..823be0f
 +
 +    class ParallelGsRenderer final : public GSGpuRenderer
 +    {
++        using Clock = std::chrono::steady_clock;
++
 +    public:
 +        explicit ParallelGsRenderer(const GSGpuOptions &options) : m_options(options)
 +        {
 +            m_profile = std::getenv("VENDETTA_HOSTPROF") != nullptr;
++            m_wantSsaa.store(options.superSampling);
++            m_wantHires.store(options.highResolutionScanout);
++            m_wantFsr.store(options.fsr);
++            m_wantSharpness.store(options.sharpness);
 +            size_t size = size_t{1} << 20u;
 +            while (size < options.ringBytes)
 +                size <<= 1u;
@@ -9542,6 +9878,24 @@ index 0000000..823be0f
 +            publish();
 +        }
 +
++        void snapshotVram(std::vector<uint8_t> &out) override
++        {
++            CallRecord call{};
++            call.kind = CallRecord::Snapshot;
++            call.out = &out;
++            runCall(call);
++        }
++
++        uint32_t readTransfer(uint8_t *dst, uint32_t maxBytes) override
++        {
++            CallRecord call{};
++            call.kind = CallRecord::ReadTransfer;
++            call.dst = dst;
++            call.bytes = maxBytes;
++            runCall(call);
++            return call.result;
++        }
++
 +        void kick() override
 +        {
 +            if (m_options.sync)
@@ -9579,6 +9933,29 @@ index 0000000..823be0f
 +
 +        const GSGpuFrame *takeFrame(uint64_t &lastSeq) override { return m_frames.take(lastSeq); }
 +
++        void setOutputSize(uint32_t width, uint32_t height) override
++        {
++            m_outputSize.store((uint64_t{width} << 32u) | height, std::memory_order_relaxed);
++        }
++
++        void setSuperSampling(uint32_t rate) override
++        {
++            if (rate == 1u || rate == 2u || rate == 4u || rate == 8u || rate == 16u)
++                m_wantSsaa.store(rate, std::memory_order_relaxed);
++        }
++        void setHighResolution(bool on) override { m_wantHires.store(on, std::memory_order_relaxed); }
++        void setFsr(bool on) override { m_wantFsr.store(on, std::memory_order_relaxed); }
++        void setSharpness(float stops) override
++        {
++            m_wantSharpness.store(std::clamp(stops, 0.0f, 2.0f), std::memory_order_relaxed);
++        }
++
++        GSGpuStatus status() const override
++        {
++            std::lock_guard<std::mutex> lock(m_statusMutex);
++            return m_status;
++        }
++
 +        void shutdown() override
 +        {
 +            if (m_shutDown)
@@ -9602,6 +9979,7 @@ index 0000000..823be0f
 +            Reg,      // flags = register address, aux = value
 +            Reset,
 +            Present,  // payload = PresentRecord
++            Call,     // payload = a CallRecord * (on the waiting producer's stack)
 +        };
 +        struct alignas(16) Header
 +        {
@@ -9611,6 +9989,20 @@ index 0000000..823be0f
 +            uint64_t aux = 0;
 +        };
 +        static_assert(sizeof(Header) == 16u);
++        struct CallRecord
++        {
++            enum Kind : uint32_t
++            {
++                Snapshot,
++                ReadTransfer,
++            };
++            Kind kind = Snapshot;
++            std::vector<uint8_t> *out = nullptr;
++            uint8_t *dst = nullptr;
++            uint32_t bytes = 0u;
++            uint32_t result = 0u;
++            std::atomic<bool> done{false};
++        };
 +        struct PresentRecord
 +        {
 +            uint64_t regs[kPrivRegCount];
@@ -9620,6 +10012,17 @@ index 0000000..823be0f
 +        };
 +
 +        // ---- the ring, producer side ----------------------------------------------------------------------------
++
++        void runCall(CallRecord &call)
++        {
++            CallRecord *pointer = &call;
++            uint8_t *dst = reserve(Cmd::Call, sizeof(pointer));
++            std::memcpy(dst, &pointer, sizeof(pointer));
++            commit();
++            publish();
++            waitProgress("the graphics card to read GS memory back", [&]()
++                         { return m_stop.load(std::memory_order_relaxed) || call.done.load(std::memory_order_acquire); });
++        }
 +
 +        uint8_t *reserve(Cmd cmd, uint32_t payloadBytes)
 +        {
@@ -9775,6 +10178,14 @@ index 0000000..823be0f
 +                                " (it needs descriptor indexing, timeline semaphores, 8/16-bit storage and subgroup "
 +                                "size control)");
 +
++                {
++                    Vulkan::ResourceLayout layout;
++                    ParallelGS::Shaders<> suite(device, layout, 0);
++                    m_upscaleProgram = device.request_program(suite.upscale_vert, suite.upscale_frag);
++                    m_sharpenProgram = device.request_program(suite.sharpen_vert, suite.sharpen_frag);
++                }
++                m_currentSsaa = m_options.superSampling;
++
 +                const VkPhysicalDeviceProperties &props = context.get_gpu_props();
 +                m_deviceName = props.deviceName;
 +                std::cerr << "[gpu-gs] device=\"" << props.deviceName << "\" vulkan=" << VK_VERSION_MAJOR(props.apiVersion)
@@ -9797,6 +10208,8 @@ index 0000000..823be0f
 +                m_device = nullptr;
 +                m_lastScanout = {};
 +                m_readback.reset();
++                m_fsrUpscaled.reset();
++                m_fsrSharpened.reset();
 +                // The GS interface first: it submits the command buffers it holds (waiting for the device while it
 +                // holds one never ends), then the device.
 +                gsHolder.reset();
@@ -9898,6 +10311,24 @@ index 0000000..823be0f
 +            case Cmd::Reset:
 +                m_gs->reset_context_state();
 +                break;
++            case Cmd::Call:
++            {
++                CallRecord *call = nullptr;
++                std::memcpy(&call, payload, sizeof(call));
++                try
++                {
++                    doCall(*call);
++                }
++                catch (...)
++                {
++                    call->done.store(true, std::memory_order_release);
++                    wake();
++                    throw;
++                }
++                call->done.store(true, std::memory_order_release);
++                wake();
++                break;
++            }
 +            case Cmd::Present:
 +            {
 +                PresentRecord record;
@@ -9911,17 +10342,72 @@ index 0000000..823be0f
 +            }
 +        }
 +
++        void doCall(CallRecord &call)
++        {
++            constexpr size_t kVramBytes = size_t{4} << 20u;
++            switch (call.kind)
++            {
++            case CallRecord::Snapshot:
++            {
++                const auto *vram = static_cast<const uint8_t *>(m_gs->map_vram_read(0, kVramBytes));
++                call.out->assign(vram, vram + kVramBytes);
++                break;
++            }
++            case CallRecord::ReadTransfer:
++                m_gs->read_transfer_fifo(call.dst, call.bytes / 16u);
++                call.result = call.bytes & ~15u;
++                break;
++            }
++        }
++
++        // VENDETTA_HOSTPROF: every 5 s, where the graphics card thread's time went.
++        // Every second: the debug panel's status (from what was counted since the last one).
++        void updateStatus(Clock::time_point now)
++        {
++            if (m_statusSince == Clock::time_point{})
++                m_statusSince = now;
++            const double seconds = std::chrono::duration<double>(now - m_statusSince).count();
++            if (seconds < 1.0)
++                return;
++            const double idle = std::chrono::duration<double>(m_stats.idle - m_statusBase.idle).count();
++            GSGpuStatus status;
++            status.superSampling = m_currentSsaa;
++            status.highResolution = m_lastScanout.high_resolution_scanout;
++            status.fsr = m_lastFrameFsr;
++            status.sharpness = m_wantSharpness.load(std::memory_order_relaxed);
++            status.pictureWidth = m_lastFrameWidth;
++            status.pictureHeight = m_lastFrameHeight;
++            status.busyPercent = static_cast<float>(100.0 * (1.0 - idle / seconds));
++            status.presentsPerSecond = static_cast<float>((m_stats.presents - m_statusBase.presents) / seconds);
++            status.gifMegabytesPerSecond =
++                static_cast<float>((m_stats.gifBytes - m_statusBase.gifBytes) / seconds / 1048576.0);
++            status.renderPassesPerSecond =
++                static_cast<float>((m_stats.renderPasses - m_statusBase.renderPasses) / seconds);
++            {
++                std::lock_guard<std::mutex> lock(m_statusMutex);
++                m_status = status;
++            }
++            m_statusBase = m_stats;
++            m_statusSince = now;
++        }
++
 +        // VENDETTA_HOSTPROF: every 5 s, where the graphics card thread's time went.
 +        void reportStats()
 +        {
-+            if (!m_profile)
-+                return;
 +            const auto now = Clock::now();
++            updateStatus(now);
 +            if (m_stats.since == Clock::time_point{})
 +                m_stats.since = now;
 +            const double seconds = std::chrono::duration<double>(now - m_stats.since).count();
 +            if (seconds < 5.0)
 +                return;
++            if (!m_profile)
++            {
++                m_stats = Stats{};
++                m_stats.since = now;
++                m_statusBase = Stats{};
++                return;
++            }
 +            auto pct = [&](Clock::duration d)
 +            { return static_cast<int>(100.0 * std::chrono::duration<double>(d).count() / seconds + 0.5); };
 +            std::fprintf(stderr,
@@ -9932,6 +10418,7 @@ index 0000000..823be0f
 +                         m_stats.renderPasses / seconds, m_stats.primitives / seconds, 10);
 +            m_stats = Stats{};
 +            m_stats.since = now;
++            m_statusBase = Stats{};
 +        }
 +
 +        void doPresent(const PresentRecord &record)
@@ -9952,16 +10439,38 @@ index 0000000..823be0f
 +            info.crtc_offsets = false;
 +            info.adapt_to_internal_horizontal_resolution = true;
 +            info.raw_circuit_scanout = true;
-+            info.high_resolution_scanout = m_options.highResolutionScanout && m_options.superSampling >= 4u;
-+            info.dst_layout = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
-+            info.dst_stage = VK_PIPELINE_STAGE_2_COPY_BIT;
-+            info.dst_access = VK_ACCESS_2_TRANSFER_READ_BIT;
++            // live settings (the debug panel)
++            bool settingsChanged = false;
++            const uint32_t wantSsaa = m_wantSsaa.load(std::memory_order_relaxed);
++            if (wantSsaa != m_currentSsaa)
++            {
++                gs.set_super_sampling_rate(static_cast<ParallelGS::SuperSampling>(wantSsaa), m_options.orderedGrid,
++                                           m_options.superSampledTextures);
++                m_currentSsaa = wantSsaa;
++                settingsChanged = true;
++            }
++            const bool hires = m_wantHires.load(std::memory_order_relaxed) && m_currentSsaa >= 4u;
++            const uint64_t output = m_outputSize.load(std::memory_order_relaxed);
++            const bool fsr = m_wantFsr.load(std::memory_order_relaxed) && output != 0u;
++            const float sharpness = m_wantSharpness.load(std::memory_order_relaxed);
++            settingsChanged |= hires != m_lastHires || fsr != m_lastFsr || output != m_lastOutput || sharpness != m_lastSharpness;
++            m_lastHires = hires;
++            m_lastFsr = fsr;
++            m_lastOutput = output;
++            m_lastSharpness = sharpness;
++
++            info.high_resolution_scanout = hires;
++            // FSR samples the picture in a shader; the plain read-back copies it
++            info.dst_layout = fsr ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
++            info.dst_stage = fsr ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_2_COPY_BIT;
++            info.dst_access = fsr ? VK_ACCESS_2_SHADER_SAMPLED_READ_BIT : VK_ACCESS_2_TRANSFER_READ_BIT;
 +
 +            const ParallelGS::FlushStats stats = gs.consume_flush_stats();
 +            ++m_stats.presents;
 +            m_stats.renderPasses += stats.num_render_passes;
 +            m_stats.primitives += stats.num_primitives;
-+            const bool duplicate = record.flip == 0u && stats.num_render_passes == 0u && stats.num_copies == 0u &&
++            const bool duplicate = !settingsChanged && record.flip == 0u && stats.num_render_passes == 0u &&
++                                   stats.num_copies == 0u &&
 +                                   m_lastScanout.image && gs.vsync_can_skip(info);
 +            if (duplicate)
 +                return; // the same picture: the main thread keeps the last one
@@ -9969,14 +10478,15 @@ index 0000000..823be0f
 +            const auto vsyncStart = Clock::now();
 +            m_lastScanout = gs.vsync(info);
 +            const auto readStart = Clock::now();
-+            readBack(m_lastScanout);
++            readBack(m_lastScanout, fsr ? output : 0u);
 +            m_stats.vsync += readStart - vsyncStart;
 +            m_stats.readback += Clock::now() - readStart;
 +            ++m_stats.scanouts;
 +        }
 +
 +        // Copies the scanout picture back to host memory and publishes it (alpha forced opaque: the window blends).
-+        void readBack(const ParallelGS::ScanoutResult &scanout)
++        // fsrOutput != 0: upscaled + sharpened to that size first (packed width << 32 | height).
++        void readBack(const ParallelGS::ScanoutResult &scanout, uint64_t fsrOutput)
 +        {
 +            GSGpuFrame &frame = m_frames.writeSlot();
 +            frame.seq = ++m_frameSeq;
@@ -9985,10 +10495,37 @@ index 0000000..823be0f
 +                frame.width = frame.height = 0u;
 +                frame.rgba.clear();
 +                m_frames.publish();
++                m_lastFrameWidth = m_lastFrameHeight = 0u;
 +                return;
 +            }
-+            const uint32_t width = scanout.image->get_width();
-+            const uint32_t height = scanout.image->get_height();
++            uint32_t width = scanout.image->get_width();
++            uint32_t height = scanout.image->get_height();
++            const Vulkan::Image *source = scanout.image.get();
++            Vulkan::CommandBufferHandle cmd = m_device->request_command_buffer();
++            m_lastFrameFsr = false;
++            if (fsrOutput != 0u)
++            {
++                const uint32_t outWidth = static_cast<uint32_t>(fsrOutput >> 32u);
++                const uint32_t outHeight = static_cast<uint32_t>(fsrOutput & 0xFFFFFFFFu);
++                // FSR only upscales; at or below the picture's own size the plain copy is as good
++                if (outWidth > width && outHeight > height && outWidth <= 8192u && outHeight <= 8192u)
++                {
++                    runFsr(*cmd, scanout.image->get_view(), outWidth, outHeight);
++                    source = m_fsrSharpened.get();
++                    width = outWidth;
++                    height = outHeight;
++                    m_lastFrameFsr = true;
++                }
++                else
++                {
++                    // the picture is in the sampling layout; make it copyable
++                    cmd->image_barrier(*scanout.image, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
++                                       VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0,
++                                       VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
++                }
++            }
++            m_lastFrameWidth = width;
++            m_lastFrameHeight = height;
 +            const VkDeviceSize bytes = VkDeviceSize{width} * height * 4u;
 +            if (!m_readback || m_readback->get_create_info().size < bytes)
 +            {
@@ -9999,8 +10536,7 @@ index 0000000..823be0f
 +                m_readback = m_device->create_buffer(info);
 +            }
 +
-+            Vulkan::CommandBufferHandle cmd = m_device->request_command_buffer();
-+            cmd->copy_image_to_buffer(*m_readback, *scanout.image, 0, {0, 0, 0}, {width, height, 1}, 0, 0,
++            cmd->copy_image_to_buffer(*m_readback, *source, 0, {0, 0, 0}, {width, height, 1}, 0, 0,
 +                                      {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1});
 +            cmd->barrier(VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
 +                         VK_PIPELINE_STAGE_HOST_BIT, VK_ACCESS_2_HOST_READ_BIT);
@@ -10024,6 +10560,92 @@ index 0000000..823be0f
 +                dst[i] = src[i] | 0xFF000000u;
 +            m_device->unmap_host_buffer(*m_readback, Vulkan::MEMORY_ACCESS_READ_BIT, 0, bytes);
 +            m_frames.publish();
++        }
++
++        void ensureTarget(Vulkan::ImageHandle &image, uint32_t width, uint32_t height)
++        {
++            if (image && image->get_width() == width && image->get_height() == height)
++                return;
++            Vulkan::ImageCreateInfo info = Vulkan::ImageCreateInfo::render_target(width, height, VK_FORMAT_R8G8B8A8_UNORM);
++            info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
++            info.usage |= VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
++            image = m_device->create_image(info);
++        }
++
++        // AMD FSR 1 on the picture: EASU upscales it to the window's size, RCAS sharpens it (both in the picture's own
++        // gamma space, as AMD recommends). The result ends in m_fsrSharpened, ready to copy.
++        void runFsr(Vulkan::CommandBuffer &cmd, const Vulkan::ImageView &picture, uint32_t width, uint32_t height)
++        {
++            ensureTarget(m_fsrUpscaled, width, height);
++            ensureTarget(m_fsrSharpened, width, height);
++            const float vertices[] = {-1.0f, -1.0f, -1.0f, 3.0f, 3.0f, -1.0f};
++            struct Push
++            {
++                float width, height;
++            } push{static_cast<float>(width), static_cast<float>(height)};
++
++            cmd.image_barrier(*m_fsrUpscaled, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
++                              VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
++                              VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
++            Vulkan::RenderPassInfo pass{};
++            pass.num_color_attachments = 1;
++            pass.color_attachments[0] = &m_fsrUpscaled->get_view();
++            pass.store_attachments = 1u << 0;
++            cmd.begin_render_pass(pass);
++            {
++                struct Constants
++                {
++                    float params[4][4];
++                } constants;
++                fsrEasuConstants(constants.params[0], constants.params[1], constants.params[2], constants.params[3],
++                                 static_cast<float>(picture.get_image().get_width()),
++                                 static_cast<float>(picture.get_image().get_height()), static_cast<float>(width),
++                                 static_cast<float>(height));
++                *cmd.allocate_typed_constant_data<Constants>(1, 0, 1) = constants;
++                cmd.push_constants(&push, 0, sizeof(push));
++                std::memcpy(cmd.allocate_vertex_data(0, sizeof(vertices), 2 * sizeof(float)), vertices, sizeof(vertices));
++                cmd.set_vertex_attrib(0, 0, VK_FORMAT_R32G32_SFLOAT, 0);
++                cmd.set_texture(0, 0, picture, Vulkan::StockSampler::NearestClamp);
++                cmd.set_program(m_upscaleProgram);
++                cmd.set_opaque_state();
++                cmd.set_depth_test(false, false);
++                cmd.draw(3);
++            }
++            cmd.end_render_pass();
++            cmd.image_barrier(*m_fsrUpscaled, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
++                              VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
++                              VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
++
++            cmd.image_barrier(*m_fsrSharpened, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
++                              VK_PIPELINE_STAGE_2_COPY_BIT, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
++                              VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
++            pass.color_attachments[0] = &m_fsrSharpened->get_view();
++            cmd.begin_render_pass(pass);
++            {
++                struct Constants
++                {
++                    float params[4];
++                    int32_t range[4];
++                } constants;
++                fsrRcasConstants(constants.params, m_lastSharpness);
++                constants.range[0] = 0;
++                constants.range[1] = 0;
++                constants.range[2] = static_cast<int32_t>(width) - 1;
++                constants.range[3] = static_cast<int32_t>(height) - 1;
++                *cmd.allocate_typed_constant_data<Constants>(1, 0, 1) = constants;
++                cmd.push_constants(&push, 0, sizeof(push));
++                std::memcpy(cmd.allocate_vertex_data(0, sizeof(vertices), 2 * sizeof(float)), vertices, sizeof(vertices));
++                cmd.set_vertex_attrib(0, 0, VK_FORMAT_R32G32_SFLOAT, 0);
++                cmd.set_texture(0, 0, m_fsrUpscaled->get_view(), Vulkan::StockSampler::NearestClamp);
++                cmd.set_program(m_sharpenProgram);
++                cmd.set_opaque_state();
++                cmd.set_depth_test(false, false);
++                cmd.draw(3);
++            }
++            cmd.end_render_pass();
++            cmd.image_barrier(*m_fsrSharpened, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
++                              VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
++                              VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT);
 +        }
 +
 +        GSGpuOptions m_options;
@@ -10066,7 +10688,6 @@ index 0000000..823be0f
 +
 +        GSGpuFrameMailbox m_frames;
 +
-+        using Clock = std::chrono::steady_clock;
 +        struct Stats
 +        {
 +            Clock::time_point since{};
@@ -10075,6 +10696,30 @@ index 0000000..823be0f
 +        };
 +        bool m_profile = false;
 +        Stats m_stats; // the graphics card thread only
++        Stats m_statusBase;
++        Clock::time_point m_statusSince{};
++
++        // live settings: written by any thread, taken at a presentation
++        std::atomic<uint32_t> m_wantSsaa{8u};
++        std::atomic<bool> m_wantHires{true};
++        std::atomic<bool> m_wantFsr{true};
++        std::atomic<float> m_wantSharpness{0.5f};
++        std::atomic<uint64_t> m_outputSize{0u};
++        // the graphics card thread only
++        uint32_t m_currentSsaa = 0u;
++        bool m_lastHires = false;
++        bool m_lastFsr = false;
++        uint64_t m_lastOutput = 0u;
++        float m_lastSharpness = -1.0f;
++        bool m_lastFrameFsr = false;
++        uint32_t m_lastFrameWidth = 0u;
++        uint32_t m_lastFrameHeight = 0u;
++        Vulkan::Program *m_upscaleProgram = nullptr;
++        Vulkan::Program *m_sharpenProgram = nullptr;
++        Vulkan::ImageHandle m_fsrUpscaled;
++        Vulkan::ImageHandle m_fsrSharpened;
++        mutable std::mutex m_statusMutex;
++        GSGpuStatus m_status;
 +    };
 +}
 +
@@ -11780,6 +12425,183 @@ index 0000000..268b841
 +    }
 +    }
 +}
+diff --git a/ps2xRuntime/src/lib/ps2_debug_panel.cpp b/ps2xRuntime/src/lib/ps2_debug_panel.cpp
+index c9aa2c6..49303e5 100644
+--- a/ps2xRuntime/src/lib/ps2_debug_panel.cpp
++++ b/ps2xRuntime/src/lib/ps2_debug_panel.cpp
+@@ -20,6 +20,7 @@
+ #include <array>
+ #include <cstdint>
+ #include <cstdio>
++#include <cstdlib>
+ #include <cstring>
+ #include <filesystem>
+ #include <fstream>
+@@ -1512,6 +1513,80 @@ namespace
+         ImGui::TextUnformatted("bits: Select,L3,R3,Start,Up,Right,Down,Left,L2,R2,L1,R1,Triangle,Circle,Cross,Square");
+     }
+ 
++    // The picture: which renderer draws it, how it is scaled to the window, and (on the graphics card) the detail and
++    // what the card's thread is doing. Changes take effect at the next frame.
++    void drawGraphicsTab(PS2Runtime &runtime)
++    {
++        GS &gs = runtime.gs();
++        GSGpuRenderer *gpu = gs.gpuRendererForSettings();
++        const GSRendererMode mode = gs.rendererMode();
++
++        ImGui::SeparatorText("Renderer");
++        if (gpu)
++            ImGui::Text("Graphics card: %s (paraLLEl-GS, Vulkan)", gpu->deviceName());
++        else
++            ImGui::TextUnformatted("CPU renderer (PS2Recomp's software GS) at the PS2's own resolution");
++        if (mode == GSRendererMode::Both)
++        {
++            int show = gs.showsGpuPicture() ? 0 : 1;
++            ImGui::TextUnformatted("Show:");
++            ImGui::SameLine();
++            if (ImGui::RadioButton("graphics card", show == 0))
++                gs.setShowGpuPicture(true);
++            ImGui::SameLine();
++            if (ImGui::RadioButton("CPU renderer", show == 1))
++                gs.setShowGpuPicture(false);
++        }
++        else
++            ImGui::TextDisabled("To compare with the CPU renderer live, start with VENDETTA_GS=both (VENDETTA_GS=cpu: "
++                                "the CPU renderer only).");
++
++        ImGui::SeparatorText("Scaling to the window");
++        const GSPresentFilter filter = gs.presentFilter();
++        if (gpu && ImGui::RadioButton("FSR (sharp)", filter == GSPresentFilter::Fsr))
++            gs.setPresentFilter(GSPresentFilter::Fsr);
++        if (gpu)
++            ImGui::SameLine();
++        if (ImGui::RadioButton("Bilinear (smooth)", filter == GSPresentFilter::Bilinear))
++            gs.setPresentFilter(GSPresentFilter::Bilinear);
++        ImGui::SameLine();
++        if (ImGui::RadioButton("Nearest (blocky)", filter == GSPresentFilter::Nearest))
++            gs.setPresentFilter(GSPresentFilter::Nearest);
++
++        if (!gpu)
++            return;
++        const GSGpuStatus status = gpu->status();
++        if (filter == GSPresentFilter::Fsr)
++        {
++            float sharpness = status.sharpness;
++            if (ImGui::SliderFloat("Sharpening (0 = most)", &sharpness, 0.0f, 2.0f, "%.2f"))
++                gpu->setSharpness(sharpness);
++        }
++
++        ImGui::SeparatorText("Detail (super-sampling)");
++        static const uint32_t kRates[] = {1u, 2u, 4u, 8u, 16u};
++        for (size_t i = 0; i < std::size(kRates); ++i)
++        {
++            char label[8];
++            std::snprintf(label, sizeof(label), "%ux", kRates[i]);
++            if (i != 0)
++                ImGui::SameLine();
++            if (ImGui::RadioButton(label, status.superSampling == kRates[i]))
++                gpu->setSuperSampling(kRates[i]);
++        }
++        bool hires = status.highResolution;
++        if (ImGui::Checkbox("Double resolution (4x and up)", &hires))
++            gpu->setHighResolution(hires);
++
++        ImGui::SeparatorText("Now");
++        ImGui::Text("Picture %u x %u%s%s", status.pictureWidth, status.pictureHeight,
++                    status.highResolution ? ", double resolution" : "", status.fsr ? ", FSR to the window's size" : "");
++        ImGui::Text("Graphics card thread %.0f%% busy, %.0f pictures/s, %.1f MB/s of GS data, %.0f render passes/s",
++                    status.busyPercent, status.presentsPerSecond, status.gifMegabytesPerSecond,
++                    status.renderPassesPerSecond);
++        ImGui::TextDisabled("F1 hides this panel.");
++    }
++
+     void drawGsTab(PS2Runtime &runtime)
+     {
+         GSRegisters &regs = runtime.memory().gs();
+@@ -2229,57 +2304,72 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
+ 
+         if (ImGui::BeginTabBar("debug-tabs"))
+         {
+-            if (ImGui::BeginTabItem("CPU"))
++            // VENDETTA_DEBUG_TAB=<name>: that tab open at start (e.g. Graphics)
++            static const char *startTab = std::getenv("VENDETTA_DEBUG_TAB");
++            static int startFrames = 2;
++            auto tabFlags = [&](const char *name) -> ImGuiTabItemFlags
++            {
++                return (startFrames > 0 && startTab && std::strcmp(startTab, name) == 0) ? ImGuiTabItemFlags_SetSelected
++                                                                                          : ImGuiTabItemFlags_None;
++            };
++            if (startFrames > 0)
++                --startFrames;
++            if (ImGui::BeginTabItem("CPU", nullptr, tabFlags("CPU")))
+             {
+                 drawCpuTab(runtime, m_showRegisters);
+                 ImGui::EndTabItem();
+             }
+-            if (ImGui::BeginTabItem("Threads"))
++            if (ImGui::BeginTabItem("Threads", nullptr, tabFlags("Threads")))
+             {
+                 drawThreadsTab(runtime);
+                 ImGui::EndTabItem();
+             }
+-            if (ImGui::BeginTabItem("Kernel"))
++            if (ImGui::BeginTabItem("Kernel", nullptr, tabFlags("Kernel")))
+             {
+                 drawKernelTab(runtime);
+                 ImGui::EndTabItem();
+             }
+-            if (ImGui::BeginTabItem("IOP/SIF"))
++            if (ImGui::BeginTabItem("IOP/SIF", nullptr, tabFlags("IOP/SIF")))
+             {
+                 drawIopTab(runtime);
+                 ImGui::EndTabItem();
+             }
+-            if (ImGui::BeginTabItem("RPC History"))
++            if (ImGui::BeginTabItem("RPC History", nullptr, tabFlags("RPC History")))
+             {
+                 drawRpcHistoryTab(runtime);
+                 ImGui::EndTabItem();
+             }
+-            if (ImGui::BeginTabItem("PAD"))
++            if (ImGui::BeginTabItem("PAD", nullptr, tabFlags("PAD")))
+             {
+                 drawPadTab();
+                 ImGui::EndTabItem();
+             }
+-            if (ImGui::BeginTabItem("File/CD"))
++            if (ImGui::BeginTabItem("File/CD", nullptr, tabFlags("File/CD")))
+             {
+                 drawFileCdTab(runtime);
+                 ImGui::EndTabItem();
+             }
+-            if (ImGui::BeginTabItem("GS"))
++            if (ImGui::BeginTabItem("Graphics", nullptr, tabFlags("Graphics")))
++            {
++                drawGraphicsTab(runtime);
++                ImGui::EndTabItem();
++            }
++            if (ImGui::BeginTabItem("GS", nullptr, tabFlags("GS")))
+             {
+                 drawGsTab(runtime);
+                 ImGui::EndTabItem();
+             }
+-            if (ImGui::BeginTabItem("DMA/IO"))
++            if (ImGui::BeginTabItem("DMA/IO", nullptr, tabFlags("DMA/IO")))
+             {
+                 drawIoTab(runtime);
+                 ImGui::EndTabItem();
+             }
+-            if (ImGui::BeginTabItem("Logs"))
++            if (ImGui::BeginTabItem("Logs", nullptr, tabFlags("Logs")))
+             {
+                 drawLogsTab();
+                 ImGui::EndTabItem();
+             }
+-            if (ImGui::BeginTabItem("Memory"))
++            if (ImGui::BeginTabItem("Memory", nullptr, tabFlags("Memory")))
+             {
+                 uint32_t bytes = m_memoryBytes;
+                 ImGui::InputScalar("Address", ImGuiDataType_U32, &m_memoryAddress, nullptr, nullptr, "%08X", ImGuiInputTextFlags_CharsHexadecimal);
 diff --git a/ps2xRuntime/src/lib/ps2_iop_host.cpp b/ps2xRuntime/src/lib/ps2_iop_host.cpp
 index 8d46e03..a1a4eda 100644
 --- a/ps2xRuntime/src/lib/ps2_iop_host.cpp
@@ -12382,7 +13204,7 @@ index 8590f14..eb147f8 100644
          if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))
              clearBit(PAD_UP);
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..98d4234 100644
+index 45cb9d2..bcaf545 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
 @@ -1,3 +1,4 @@
@@ -12390,7 +13212,15 @@ index 45cb9d2..98d4234 100644
  #include "ps2_runtime.h"
  #include "ps2_log.h"
  #include "ps2_stubs.h"
-@@ -85,12 +86,19 @@ struct ProgramHeader
+@@ -18,6 +19,7 @@
+ #include <stdexcept>
+ #include <fstream>
+ #include <algorithm>
++#include <cmath>
+ #include <array>
+ #include <cstring>
+ #include <limits>
+@@ -85,12 +87,19 @@ struct ProgramHeader
      uint32_t align;
  };
  
@@ -12410,7 +13240,7 @@ index 45cb9d2..98d4234 100644
  
      constexpr uint32_t COP0_CAUSE_EXCCODE_MASK = 0x0000007Cu;
      constexpr uint32_t COP0_CAUSE_BD = 0x80000000u;
-@@ -373,10 +381,64 @@ namespace
+@@ -373,10 +382,83 @@ namespace
      }
  }
  
@@ -12466,10 +13296,29 @@ index 45cb9d2..98d4234 100644
  {
 -    static uint64_t s_lastPresentationTick = std::numeric_limits<uint64_t>::max();
 -    static bool s_hasLatchedInitialFrame = false;
++    // the scaling filter can change at any time (the debug panel); FSR is done on the graphics card, the window then
++    // only places its picture (drawn at exactly the window's size)
++    const int wantedFilter =
++        rt->gs().presentFilter() == GSPresentFilter::Nearest ? TEXTURE_FILTER_POINT : TEXTURE_FILTER_BILINEAR;
++    if (wantedFilter != s_frameTextureFilter)
++    {
++        s_frameTextureFilter = wantedFilter;
++        SetTextureFilter(tex, s_frameTextureFilter);
++    }
 +    if (rt->gs().showsGpuPicture())
 +    {
 +        UploadGpuFrame(tex, rt, outWidth, outHeight);
 +        return;
++    }
++    // back from the graphics card's picture (VENDETTA_GS=both, switched in the debug panel): the CPU picture's texture
++    if (tex.width != FB_WIDTH || tex.height != FB_HEIGHT)
++    {
++        UnloadTexture(tex);
++        Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLACK);
++        tex = LoadTextureFromImage(blank);
++        UnloadImage(blank);
++        SetTextureFilter(tex, s_frameTextureFilter);
++        s_presentAspectScale = 1.0f;
 +    }
 +    // The newest picture the game thread presented (GS::presentAtSettlePoint), converted here; nothing new = keep
 +    // showing the last one. The main thread never touches the renderer.
@@ -12477,7 +13326,7 @@ index 45cb9d2..98d4234 100644
      static uint32_t s_lastDisplayFbp = std::numeric_limits<uint32_t>::max();
      static uint32_t s_lastSourceFbp = std::numeric_limits<uint32_t>::max();
      static bool s_lastPreferred = false;
-@@ -386,35 +448,29 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -386,35 +468,29 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      static std::vector<uint8_t> s_scratch;
      static std::vector<uint8_t> s_uploadBuffer(DEFAULT_FB_SIZE, 0u);
  
@@ -12526,7 +13375,7 @@ index 45cb9d2..98d4234 100644
          UpdateTexture(tex, blank.data);
          UnloadImage(blank);
          outWidth = FB_WIDTH;
-@@ -435,7 +491,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -435,7 +511,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
              height != s_lastHeight)
          {
              std::cout << "[frame:upload] idx=" << s_uploadDebugCount
@@ -12535,7 +13384,7 @@ index 45cb9d2..98d4234 100644
                        << " displayFbp=" << displayFbp
                        << " sourceFbp=" << sourceFbp
                        << " size=" << width << "x" << height
-@@ -503,8 +559,8 @@ PS2Runtime::PS2Runtime()
+@@ -503,8 +579,8 @@ PS2Runtime::PS2Runtime()
      m_guestHeapLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
      m_guestHeapSuggestedBase = kGuestHeapDefaultBase;
      m_guestHeapConfigured = false;
@@ -12546,7 +13395,7 @@ index 45cb9d2..98d4234 100644
  }
  
  void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
-@@ -599,6 +655,12 @@ ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx,
+@@ -599,6 +675,12 @@ ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx,
      return m_iopSubsystem->handleRpc(request);
  }
  
@@ -12559,7 +13408,7 @@ index 45cb9d2..98d4234 100644
  void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransfer &transfer)
  {
      auto scope = m_iopHost->enterCall(nullptr, rdram);
-@@ -607,6 +669,7 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
+@@ -607,6 +689,7 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
  
  void PS2Runtime::advanceIopEeCycles(uint64_t eeCycles) noexcept
  {
@@ -12567,7 +13416,7 @@ index 45cb9d2..98d4234 100644
      m_iopSubsystem->runEeCycles(eeCycles);
  }
  
-@@ -665,45 +728,32 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -665,45 +748,32 @@ bool PS2Runtime::syncCoreSubsystems()
      }
  
      m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
@@ -12628,7 +13477,7 @@ index 45cb9d2..98d4234 100644
      resetIop();
      m_vu0.reset();
      m_vu1.reset();
-@@ -971,9 +1021,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+@@ -971,9 +1041,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
      }
      {
          std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
@@ -12640,7 +13489,7 @@ index 45cb9d2..98d4234 100644
      }
  
      LoadedModule module;
-@@ -1316,6 +1365,16 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
+@@ -1316,6 +1385,16 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
              << " policy=" << static_cast<uint32_t>(policy)
              << " trace=" << formatDispatchHistory()
              << std::dec;
@@ -12657,7 +13506,7 @@ index 45cb9d2..98d4234 100644
  
          static std::mutex s_missingFunctionLogMutex;
          {
-@@ -1396,14 +1455,25 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
+@@ -1396,14 +1475,25 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
  
      RecompiledFunction targetFn = lookupFunction(targetPc);
      const uint32_t entryPc = ctx->pc;
@@ -12684,7 +13533,7 @@ index 45cb9d2..98d4234 100644
      {
          ctx->pc = fallthroughPc;
      }
-@@ -1945,12 +2015,89 @@ uint32_t PS2Runtime::guestRealloc(uint32_t guestAddr, uint32_t newSize, uint32_t
+@@ -1945,12 +2035,89 @@ uint32_t PS2Runtime::guestRealloc(uint32_t guestAddr, uint32_t newSize, uint32_t
      return newAddr;
  }
  
@@ -12774,7 +13623,7 @@ index 45cb9d2..98d4234 100644
  
      std::lock_guard<std::mutex> lock(m_guestHeapMutex);
      ensureGuestHeapInitializedLocked();
-@@ -2039,10 +2186,36 @@ uint16_t PS2Runtime::Load16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
+@@ -2039,10 +2206,36 @@ uint16_t PS2Runtime::Load16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
      }
  }
  
@@ -12811,7 +13660,7 @@ index 45cb9d2..98d4234 100644
          return m_memory.read32(vaddr);
      }
      catch (const std::exception &)
-@@ -2056,6 +2229,8 @@ uint64_t PS2Runtime::Load64(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
+@@ -2056,6 +2249,8 @@ uint64_t PS2Runtime::Load64(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
  {
      try
      {
@@ -12820,7 +13669,7 @@ index 45cb9d2..98d4234 100644
          return m_memory.read64(vaddr);
      }
      catch (const std::exception &)
-@@ -2187,6 +2362,14 @@ void PS2Runtime::requestStop()
+@@ -2187,6 +2382,14 @@ void PS2Runtime::requestStop()
      {
          m_eeScheduler->requestStop();
      }
@@ -12835,7 +13684,7 @@ index 45cb9d2..98d4234 100644
  }
  
  bool PS2Runtime::isStopRequested() const
-@@ -2339,8 +2522,12 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
+@@ -2339,8 +2542,12 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
      raiseCop0Exception(ctx, EXCEPTION_INTEGER_OVERFLOW);
  }
  
@@ -12848,19 +13697,20 @@ index 45cb9d2..98d4234 100644
      m_stopRequested.store(false, std::memory_order_relaxed);
      ps2_stubs::resetSifState();
      resetIop();
-@@ -2361,12 +2548,26 @@ void PS2Runtime::run()
+@@ -2361,12 +2568,27 @@ void PS2Runtime::run()
      Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
      Texture2D frameTex = LoadTextureFromImage(blank);
      UnloadImage(blank);
 +    // The picture is scaled to the window by a non-whole factor (a 224-line field on a 1440-line screen is ×6.4), so
-+    // blocky nearest-pixel scaling makes uneven blocks: smooth it by default. VENDETTA_FILTER=nearest = the blocky look.
++    // blocky nearest-pixel scaling makes uneven blocks: smoothed by default (VENDETTA_FILTER: fsr on the graphics card,
++    // bilinear, or nearest = the blocky look).
 +    {
-+        const char *filter = std::getenv("VENDETTA_FILTER");
-+        const bool nearest = filter && std::string(filter) == "nearest";
-+        s_frameTextureFilter = nearest ? TEXTURE_FILTER_POINT : TEXTURE_FILTER_BILINEAR;
++        const GSPresentFilter filter = m_gs.presentFilter();
++        s_frameTextureFilter = filter == GSPresentFilter::Nearest ? TEXTURE_FILTER_POINT : TEXTURE_FILTER_BILINEAR;
 +        SetTextureFilter(frameTex, s_frameTextureFilter);
-+        std::cerr << "[present] filter=" << (nearest ? "nearest" : "bilinear") << " renderer="
-+                  << gsRendererModeName(m_gs.rendererMode()) << std::endl;
++        std::cerr << "[present] filter="
++                  << (filter == GSPresentFilter::Fsr ? "fsr" : filter == GSPresentFilter::Nearest ? "nearest" : "bilinear")
++                  << " renderer=" << gsRendererModeName(m_gs.rendererMode()) << std::endl;
 +    }
  
      std::atomic<bool> gameThreadFinished{false};
@@ -12875,7 +13725,7 @@ index 45cb9d2..98d4234 100644
          try
          {
              m_eeScheduler->reset(m_memory.getRDRAM(), m_cpuContext);
-@@ -2430,9 +2631,16 @@ void PS2Runtime::run()
+@@ -2430,13 +2652,23 @@ void PS2Runtime::run()
          const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
          const float screenWidth = static_cast<float>(GetScreenWidth());
          const float screenHeight = static_cast<float>(GetScreenHeight());
@@ -12890,12 +13740,21 @@ index 45cb9d2..98d4234 100644
 +            return (aspect && std::string(aspect) == "16:9") ? 16.0f / 9.0f : 4.0f / 3.0f;
 +        }();
 +        const float aspect = displayAspect * s_presentAspectScale;
-+        const float dstHeight = std::min(screenHeight, screenWidth / aspect);
-+        const float dstWidth = dstHeight * aspect;
++        // whole pixels: an FSR picture is drawn at exactly this size, one texel per pixel
++        const float dstHeight = std::round(std::min(screenHeight, screenWidth / aspect));
++        const float dstWidth = std::round(std::min(screenWidth, dstHeight * aspect));
++        if (GSGpuRenderer *gpu = m_gs.gpuRendererForSettings())
++            gpu->setOutputSize(static_cast<uint32_t>(dstWidth), static_cast<uint32_t>(dstHeight));
          const Rectangle srcRect{0.0f, 0.0f, srcWidth, srcHeight};
          const Rectangle dstRect{
-             (screenWidth - dstWidth) * 0.5f,
-@@ -2459,6 +2667,9 @@ void PS2Runtime::run()
+-            (screenWidth - dstWidth) * 0.5f,
+-            (screenHeight - dstHeight) * 0.5f,
++            std::floor((screenWidth - dstWidth) * 0.5f),
++            std::floor((screenHeight - dstHeight) * 0.5f),
+             dstWidth,
+             dstHeight};
+         DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
+@@ -2459,6 +2691,9 @@ void PS2Runtime::run()
      {
          gameThread.join();
      }
