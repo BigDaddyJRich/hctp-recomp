@@ -1,6 +1,7 @@
 // Def Jam Vendetta (USA, SLUS-20639) — runtime overrides for this game build (PS2Recomp game-override module).
 // Copied into ps2xRuntime/src/runner/ by tools/sync_generated.py; edit this file in the repo's overrides/ folder.
 #include "ps2_runtime.h"
+#include "ps2_runtime_macros.h"
 #include "game_overrides.h"
 #include "runtime/ee_scheduler.h"
 #include "runtime/gs/ps2_gs_memory.h"
@@ -483,8 +484,59 @@ namespace
             .detach();
     }
 
+    // VENDETTA_RAMTEST=1: guest RAM above the PS2's 32 MB (PS2_RAM_BACKING_SIZE) — commit 64 KB at 0x02000000, write a
+    // pattern from the host and read it back through the game's paths (the fast path the recompiled code uses, the
+    // runtime's Load path, and the 0x20000000 / 0x80000000 / 0xA0000000 mirrors). =stray: then read 0x03000000, which
+    // nothing committed, to see the stray-access report (the game crashes there on purpose).
+    void ramSelfTest(PS2Runtime &runtime)
+    {
+        const char *mode = std::getenv("VENDETTA_RAMTEST");
+        if (!mode || !*mode || std::strcmp(mode, "0") == 0)
+            return;
+        PS2Memory &mem = runtime.memory();
+        uint8_t *rdram = mem.getRDRAM();
+        constexpr uint32_t kBase = 0x02000000u;
+        constexpr uint32_t kSize = 0x10000u;
+        if (!rdram || !mem.commitRam(kBase, kSize))
+        {
+            std::cerr << "[ramtest] FAIL: commitRam(0x02000000) refused" << std::endl;
+            return;
+        }
+        for (uint32_t i = 0; i < kSize; i += 4u)
+        {
+            const uint32_t v = 0xDEF00000u ^ i;
+            std::memcpy(rdram + kBase + i, &v, 4);
+        }
+        uint32_t bad = 0;
+        const uint32_t mirrors[] = {0x00000000u, 0x20000000u, 0x30000000u, 0x80000000u, 0xA0000000u};
+        for (uint32_t m : mirrors)
+        {
+            for (uint32_t i = 0; i < kSize; i += 0x404u)
+            {
+                const uint32_t want = 0xDEF00000u ^ (i & ~3u);
+                const uint32_t addr = (m | kBase) + (i & ~3u);
+                if (Ps2FastRead32(rdram, addr) != want || mem.read32(addr) != want)
+                    ++bad;
+            }
+        }
+        Ps2FastWrite32(rdram, 0x82000010u, 0x12345678u);
+        if (mem.read32(0x02000010u) != 0x12345678u)
+            ++bad;
+        // The game's own 32 MB is untouched by the test.
+        std::cerr << "[ramtest] guest RAM backing " << (PS2_RAM_BACKING_SIZE >> 20) << " MB (the game sees "
+                  << (PS2_RAM_SIZE >> 20) << " MB): 0x02000000 round trip through 5 mirrors "
+                  << (bad == 0 ? "OK" : "FAILED") << " (" << bad << " mismatches)" << std::endl;
+        if (std::strcmp(mode, "stray") == 0)
+        {
+            std::cerr << "[ramtest] reading 0x03000000 (not committed) - expect a [ram] report and a crash" << std::endl;
+            volatile uint32_t v = Ps2FastRead32(rdram, 0x03000000u);
+            (void)v;
+        }
+    }
+
     void applyVendetta(PS2Runtime &runtime)
     {
+        ramSelfTest(runtime);
         // The chain worker (VENDETTA_CHAIN_ASYNC=1): the VSync handler 0x1A1680 reads CSR at 0x1A16C0 (ld s0, 0(v0) of
         // 0x12001000) only to pass it to 0x1A1648, which uses (s0 >> 13) & 1 = FIELD (written by the EE scheduler
         // alone); SIGNAL / FINISH (bits 0-1, from the GS front end on the worker) only reach a dead stack slot. So that
