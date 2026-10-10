@@ -29,6 +29,62 @@ index 1eceb08..e105dc2 100644
          virtual void log(LogLevel level, std::string_view message) = 0;
      };
  }
+diff --git a/ps2xIOP/include/ps2x/iop/iop_native_hooks.h b/ps2xIOP/include/ps2x/iop/iop_native_hooks.h
+new file mode 100644
+index 0000000..6e6fffa
+--- /dev/null
++++ b/ps2xIOP/include/ps2x/iop/iop_native_hooks.h
+@@ -0,0 +1,50 @@
++#pragma once
++
++#include <cstddef>
++#include <cstdint>
++
++// Native hooks: a routine of an IOP module run as C++ instead of interpreted, instruction by instruction — for hot
++// leaf routines (a sound driver's mixing loop). A hook names the routine's address and length and a hash of its code
++// (not the code itself); it is used only while the IOP's RAM holds exactly that code there, so another game, another
++// module version or another load address keeps the interpreter. Hooks are registered before the IOP runs (a game's
++// overrides) and stay for the process.
++namespace ps2x::iop
++{
++    // What a hook sees of the IOP at the routine's first instruction: the calling thread's registers and the IOP's RAM.
++    class NativeCall
++    {
++    public:
++        virtual ~NativeCall() = default;
++        [[nodiscard]] virtual uint32_t reg(uint32_t index) const = 0;
++        virtual void setReg(uint32_t index, uint32_t value) = 0;
++        [[nodiscard]] virtual bool readRam(uint32_t address, void *destination, size_t size) const = 0;
++        virtual bool writeRam(uint32_t address, const void *source, size_t size) = 0;
++    };
++
++    struct NativeHook
++    {
++        const char *name = "";
++        uint32_t address = 0;   // the routine's first instruction
++        uint32_t codeBytes = 0; // its length; the hash covers [address, address + codeBytes)
++        uint64_t codeHash = 0;  // nativeCodeHash of those bytes
++        // Runs the routine: memory and registers as the routine leaves them (the IOP then continues at $ra), and the
++        // number of IOP instructions the routine would have taken (charged as the IOP's time); 0 = not handled, the
++        // IOP interprets the routine.
++        uint32_t (*run)(NativeCall &call) = nullptr;
++        // VENDETTA_IOP_NATIVE_VERIFY=1: the IOP interprets the routine; check(call, before) is called at its first
++        // instruction (before = true: predict, change nothing) and when it has returned to $ra (before = false, with the
++        // instructions this thread ran in it): compare. Returns the number of differences found.
++        uint32_t (*check)(NativeCall &call, bool before, uint64_t instructions) = nullptr;
++    };
++
++    // FNV-1a over the bytes, the hash NativeHook::codeHash holds.
++    [[nodiscard]] inline uint64_t nativeCodeHash(const uint8_t *bytes, size_t size) noexcept
++    {
++        uint64_t hash = 1469598103934665603ull;
++        for (size_t i = 0; i < size; ++i)
++            hash = (hash ^ bytes[i]) * 1099511628211ull;
++        return hash;
++    }
++
++    void registerNativeHook(const NativeHook &hook);
++}
 diff --git a/ps2xIOP/include/ps2x/iop/iop_subsystem.h b/ps2xIOP/include/ps2x/iop/iop_subsystem.h
 index 68fec81..90e6e9c 100644
 --- a/ps2xIOP/include/ps2x/iop/iop_subsystem.h
@@ -439,10 +495,10 @@ index a932a5d..0296a8e 100644
  }
 diff --git a/ps2xIOP/src/emulator/core/spu2.cpp b/ps2xIOP/src/emulator/core/spu2.cpp
 new file mode 100644
-index 0000000..dd2653f
+index 0000000..a8ca373
 --- /dev/null
 +++ b/ps2xIOP/src/emulator/core/spu2.cpp
-@@ -0,0 +1,702 @@
+@@ -0,0 +1,712 @@
 +#include "spu2.h"
 +
 +#include <algorithm>
@@ -1004,9 +1060,19 @@ index 0000000..dd2653f
 +            const auto address = [&](uint32_t offsetRegister, int32_t delta)
 +            {
 +                const uint32_t offset = composeAddress(reg(base + offsetRegister), reg(base + offsetRegister + 2u));
-+                int64_t position = (static_cast<int64_t>(core.reverbPosition) + offset + delta) % static_cast<int64_t>(size);
-+                if (position < 0)
-+                    position += size;
++                int64_t position = static_cast<int64_t>(core.reverbPosition) + offset + delta;
++                // (position mod size), the usual case without a division: within one turn of the buffer either way
++                if (position >= 0 && position < 2 * static_cast<int64_t>(size))
++                {
++                    if (position >= static_cast<int64_t>(size))
++                        position -= size;
++                }
++                else
++                {
++                    position %= static_cast<int64_t>(size);
++                    if (position < 0)
++                        position += size;
++                }
 +                return (start + static_cast<uint32_t>(position)) & kAddressMask;
 +            };
 +            const auto memory = [&](uint32_t halfword) { return static_cast<int32_t>(static_cast<int16_t>(m_ram[halfword])); };
@@ -1281,22 +1347,48 @@ index 0000000..b80e42f
 +    };
 +}
 diff --git a/ps2xIOP/src/emulator/iop_emulator.cpp b/ps2xIOP/src/emulator/iop_emulator.cpp
-index e5f63a9..65d4d7a 100644
+index e5f63a9..8be3ae6 100644
 --- a/ps2xIOP/src/emulator/iop_emulator.cpp
 +++ b/ps2xIOP/src/emulator/iop_emulator.cpp
-@@ -19,7 +19,11 @@
+@@ -16,14 +16,22 @@
+ #include "imports/iop_timrman.h"
+ #include "imports/iop_vblank.h"
+ #include "iop_emulator_const.h"
++#include "ps2x/iop/iop_native_hooks.h"
  
  #include <algorithm>
++#include <array>
  #include <cctype>
 +#include <chrono>
 +#include <cstdlib>
++#include <cstring>
 +#include <iostream>
  #include <map>
 +#include <unordered_map>
  #include <optional>
  #include <span>
  #include <sstream>
-@@ -126,6 +130,9 @@ namespace ps2x::iop::detail
+ #include <utility>
++#include <vector>
+ 
+ namespace ps2x::iop::detail
+ {
+@@ -43,6 +51,14 @@ namespace ps2x::iop::detail
+             return IopMemory::physicalAddress(address);
+         }
+ 
++        // The native hooks (ps2x/iop/iop_native_hooks.h), and which 4 KB pages of IOP RAM hold one (tested per instruction)
++        std::vector<ps2x::iop::NativeHook> &nativeHooks()
++        {
++            static std::vector<ps2x::iop::NativeHook> hooks;
++            return hooks;
++        }
++        std::array<uint8_t, kRamSize / 4096u> g_nativeHookPages{};
++
+         int32_t sign16(uint32_t value)
+         {
+             return static_cast<int16_t>(value & 0xFFFFu);
+@@ -126,9 +142,14 @@ namespace ps2x::iop::detail
              ioman.reset();
              pendingDmaInterrupts.clear();
              pendingGuestCallbacks.clear();
@@ -1306,7 +1398,12 @@ index e5f63a9..65d4d7a 100644
              nextModuleId = 1;
              moduleCursor = kModuleLoadBase;
              totalCycles = 0;
-@@ -177,7 +184,16 @@ namespace ps2x::iop::detail
++            grantedCycles = 0;
++            cyclesAfterLastRun = 0;
+             totalInstructions = 0;
+             eeCycleCarry = 0;
+             activeCpu = nullptr;
+@@ -177,7 +198,16 @@ namespace ps2x::iop::detail
          void schedulePendingDma()
          {
              if (const auto dma = memory.takeDmaStart())
@@ -1323,7 +1420,7 @@ index e5f63a9..65d4d7a 100644
          }
  
          bool readRam(uint32_t address, void *destination, size_t size) const
-@@ -238,6 +254,42 @@ namespace ps2x::iop::detail
+@@ -238,6 +268,42 @@ namespace ps2x::iop::detail
          };
  
          ImportDisposition dispatchImport(const IopImportCall &call, CpuState &cpu)
@@ -1366,7 +1463,7 @@ index e5f63a9..65d4d7a 100644
          {
              const uint32_t a0 = cpu.gpr[4];
              auto setV0 = [&](uint32_t value)
-@@ -252,6 +304,7 @@ namespace ps2x::iop::detail
+@@ -252,6 +318,7 @@ namespace ps2x::iop::detail
              {
                  if (const auto callback = cdvd.takeCompletionCallback())
                  {
@@ -1374,7 +1471,7 @@ index e5f63a9..65d4d7a 100644
                      pendingGuestCallbacks.emplace(
                          totalCycles + kCdvdCompletionCycles,
                          ScheduledGuestCallback{
-@@ -358,8 +411,49 @@ namespace ps2x::iop::detail
+@@ -358,8 +425,158 @@ namespace ps2x::iop::detail
              return ImportDisposition::Missing;
          }
  
@@ -1418,13 +1515,142 @@ index e5f63a9..65d4d7a 100644
 +            profileSamples = 0u;
 +        }
 +
++        class CpuNativeCall final : public ps2x::iop::NativeCall
++        {
++        public:
++            CpuNativeCall(CpuState &cpu, IopMemory &memory) noexcept : m_cpu(cpu), m_memory(memory) {}
++            [[nodiscard]] uint32_t reg(uint32_t index) const override { return index < 32u ? m_cpu.gpr[index] : 0u; }
++            void setReg(uint32_t index, uint32_t value) override
++            {
++                if (index != 0u && index < 32u)
++                    m_cpu.gpr[index] = value;
++            }
++            [[nodiscard]] bool readRam(uint32_t address, void *destination, size_t size) const override
++            {
++                return m_memory.readRam(address, destination, size);
++            }
++            bool writeRam(uint32_t address, const void *source, size_t size) override
++            {
++                return m_memory.writeRam(address, source, size);
++            }
++
++        private:
++            CpuState &m_cpu;
++            IopMemory &m_memory;
++        };
++
++        // VENDETTA_IOP_NATIVE_VERIFY: the routine being interpreted for a check, until it returns to $ra
++        struct NativeWatch
++        {
++            CpuState *cpu = nullptr;
++            const ps2x::iop::NativeHook *hook = nullptr;
++            uint32_t ra = 0;
++            uint32_t sp = 0;
++            uint64_t instructions = 0;
++        };
++        NativeWatch nativeWatch;
++        uint64_t nativeVerifyChecks = 0;
++        uint64_t nativeVerifyDifferences = 0;
++
++        // At a hooked routine's first instruction (a clean entry: no branch or load in flight, the code as hashed):
++        // run it natively and continue at $ra; true = done. In the verify mode it is interpreted and checked instead.
++        bool runNativeHook(CpuState &cpu)
++        {
++            if (cpu.branchPending || cpu.pendingLoad)
++                return false;
++            const uint32_t phys = physicalAddress(cpu.pc);
++            for (const ps2x::iop::NativeHook &hook : nativeHooks())
++            {
++                if (physicalAddress(hook.address) != phys)
++                    continue;
++                const std::span<const uint8_t> ram = memory.ram();
++                if (hook.codeBytes > ram.size() - phys ||
++                    ps2x::iop::nativeCodeHash(ram.data() + phys, hook.codeBytes) != hook.codeHash)
++                    return false;
++                CpuNativeCall call(cpu, memory);
++                static const bool verify = []
++                {
++                    const char *value = std::getenv("VENDETTA_IOP_NATIVE_VERIFY");
++                    return value && *value && *value != '0';
++                }();
++                if (verify && hook.check)
++                {
++                    if (nativeWatch.cpu == nullptr)
++                    {
++                        hook.check(call, true, 0u);
++                        nativeWatch = NativeWatch{&cpu, &hook, cpu.gpr[31], cpu.gpr[29], 1u};
++                    }
++                    return false;
++                }
++                const uint32_t instructions = hook.run ? hook.run(call) : 0u;
++                if (instructions == 0u)
++                    return false;
++                static bool announced = false;
++                if (!announced)
++                {
++                    announced = true;
++                    std::ostringstream out;
++                    out << "[iop-native] running " << hook.name << " natively (0x" << std::hex << hook.address << ")";
++                    log(LogLevel::Info, out.str());
++                }
++                cpu.pc = cpu.gpr[31];
++                totalInstructions += instructions;
++                totalCycles += instructions;
++                return true;
++            }
++            return false;
++        }
++
++        void watchNativeHook(CpuState &cpu)
++        {
++            if (cpu.pc != nativeWatch.ra || cpu.gpr[29] != nativeWatch.sp || cpu.branchPending)
++            {
++                ++nativeWatch.instructions;
++                return;
++            }
++            CpuNativeCall call(cpu, memory);
++            nativeVerifyDifferences += nativeWatch.hook->check(call, false, nativeWatch.instructions);
++            if ((++nativeVerifyChecks & 255u) == 0u)
++            {
++                std::ostringstream out;
++                out << "[iop-native] verify: " << nativeVerifyChecks << " calls of " << nativeWatch.hook->name
++                    << " checked, " << nativeVerifyDifferences << " differences";
++                log(LogLevel::Info, out.str());
++            }
++            nativeWatch = NativeWatch{};
++        }
++
++        // VENDETTA_IOPPROF: tested here, so profileSample is not called at every instruction when it is off
++        const bool profileEnabled = std::getenv("VENDETTA_IOPPROF") != nullptr;
++
          bool step(CpuState &cpu)
          {
-+            profileSample(cpu.pc);
++            if (profileEnabled)
++                profileSample(cpu.pc);
              if (cpu.stopped)
                  return false;
              if (cpu.pc == kThreadReturnSentinel || cpu.pc == kCallReturnSentinel)
-@@ -399,6 +493,8 @@ namespace ps2x::iop::detail
+@@ -377,8 +594,18 @@ namespace ps2x::iop::detail
+             }
+             if (checkInterrupt(cpu))
+                 return true;
++            if (nativeWatch.cpu == &cpu)
++                watchNativeHook(cpu);
++            if (g_nativeHookPages[physicalAddress(cpu.pc) >> 12] != 0u && runNativeHook(cpu))
++                return !cpu.stopped;
+ 
+-            if (const auto import = imports.decode(cpu.pc))
++            // An import stub is "jr $ra; addiu $0, $0, ordinal": only a jr $ra can be one, so the registry (which reads
++            // the instruction again through IopMemory) is asked only then — the pc is in RAM (checked above).
++            const uint32_t phys = physicalAddress(cpu.pc);
++            uint32_t word = 0u;
++            if ((phys & 3u) == 0u)
++                std::memcpy(&word, memory.ram().data() + phys, sizeof(word));
++            if (const auto import = ((phys & 3u) != 0u || word == 0x03E00008u) ? imports.decode(cpu.pc) : decltype(imports.decode(cpu.pc)){})
+             {
+                 const ImportDisposition disposition = dispatchImport(*import, cpu);
+                 ++totalInstructions;
+@@ -399,6 +626,8 @@ namespace ps2x::iop::detail
  
          uint32_t runCpu(CpuState &cpu, uint32_t instructionBudget)
          {
@@ -1433,7 +1659,7 @@ index e5f63a9..65d4d7a 100644
              CpuState *previous = activeCpu;
              activeCpu = &cpu;
              const uint64_t start = totalInstructions;
-@@ -406,12 +502,17 @@ namespace ps2x::iop::detail
+@@ -406,12 +635,17 @@ namespace ps2x::iop::detail
              {
                  if (!step(cpu))
                      break;
@@ -1453,18 +1679,18 @@ index e5f63a9..65d4d7a 100644
              return static_cast<uint32_t>(totalInstructions - start);
          }
  
-@@ -483,22 +584,32 @@ namespace ps2x::iop::detail
+@@ -483,22 +717,32 @@ namespace ps2x::iop::detail
          // Not that good to use exception handling for control flow but will do for now
          void servicePendingDmaInterrupts()
          {
 -            if (servicingDmaInterrupts || pendingDmaInterrupts.empty())
 +            // Before dmaDueFloor nothing in the list is due, and a walk that finds nothing due changes nothing.
 +            if (servicingDmaInterrupts || totalCycles < dmaDueFloor)
-                 return;
++                return;
 +            if (pendingDmaInterrupts.empty())
 +            {
 +                dmaDueFloor = UINT64_MAX;
-+                return;
+                 return;
 +            }
  
              servicingDmaInterrupts = true;
@@ -1487,7 +1713,7 @@ index e5f63a9..65d4d7a 100644
              try
              {
                  for (const int irq : completed)
-@@ -514,7 +625,9 @@ namespace ps2x::iop::detail
+@@ -514,7 +758,9 @@ namespace ps2x::iop::detail
  
          void servicePendingGuestCallbacks()
          {
@@ -1498,7 +1724,7 @@ index e5f63a9..65d4d7a 100644
                  return;
  
              std::vector<ScheduledGuestCallback> callbacks;
-@@ -553,28 +666,89 @@ namespace ps2x::iop::detail
+@@ -553,28 +799,98 @@ namespace ps2x::iop::detail
              servicingGuestCallbacks = false;
          }
  
@@ -1506,7 +1732,15 @@ index e5f63a9..65d4d7a 100644
 +        // those calls find the IOP idle: every thread waiting and nothing due within them.
          void runCycles(uint64_t cycles) noexcept
 +        {
-+            const uint64_t target = totalCycles + cycles;
++            // The IOP runs up to the total of the cycles it has been given, not "now + cycles": a step can take more
++            // than one cycle (a native hook charges a whole routine at once) and pass the target; counted from where
++            // the IOP stood, that overshoot was never paid back and the IOP's clock — the SPU2's 48 kHz output with it
++            // — ran ahead of the EE's (the host's audio queue overflowed; the movies, timed by their sound, stuttered).
++            // Time the IOP spent outside runCycles (a synchronous RPC, a module load) counts as given, as before.
++            if (totalCycles > cyclesAfterLastRun)
++                grantedCycles += totalCycles - cyclesAfterLastRun;
++            grantedCycles += cycles;
++            const uint64_t target = std::max(grantedCycles, totalCycles);
 +            ++runCalls;
 +            // The idle skip. idleKnown means the last pass of runCyclesFull ended in its idle branch and nothing
 +            // has changed since (every change clears it - see idleKnown). That branch found no thread ready and
@@ -1531,6 +1765,7 @@ index e5f63a9..65d4d7a 100644
 +            }
 +            if (totalCycles >= memory.spu2().nextSampleCycle())
 +                runSoundChip();
++            cyclesAfterLastRun = totalCycles;
 +        }
 +
 +        // The SPU2 plays up to the IOP's cycle (a 48 kHz sample every 768 cycles); its output goes to the host in
@@ -1595,7 +1830,7 @@ index e5f63a9..65d4d7a 100644
                      const uint64_t before = totalCycles;
                      runCpu(next->cpu, static_cast<uint32_t>(std::min<uint64_t>(kDefaultSlice, target - totalCycles)));
                      kernel.endTimeslice(*next, kThreadReturnSentinel);
-@@ -588,6 +762,44 @@ namespace ps2x::iop::detail
+@@ -588,6 +904,44 @@ namespace ps2x::iop::detail
              }
          }
  
@@ -1640,7 +1875,7 @@ index e5f63a9..65d4d7a 100644
          ModuleLoadResult loadImage(std::string path, std::span<const uint8_t> image, const void *arguments, uint32_t argumentSize)
          {
              ModuleLoadResult result{true, -1, -1};
-@@ -664,6 +876,7 @@ namespace ps2x::iop::detail
+@@ -664,6 +1018,7 @@ namespace ps2x::iop::detail
  
          bool stopModule(int32_t moduleId, int32_t *result)
          {
@@ -1648,7 +1883,7 @@ index e5f63a9..65d4d7a 100644
              auto it = modules.find(moduleId);
              if (it == modules.end())
                  return false;
-@@ -696,10 +909,33 @@ namespace ps2x::iop::detail
+@@ -696,10 +1051,35 @@ namespace ps2x::iop::detail
          IopLoadcore loadcore;
          std::map<int, Module> modules;
          std::map<int, uint64_t> pendingDmaInterrupts;
@@ -1677,12 +1912,14 @@ index e5f63a9..65d4d7a 100644
 +        uint64_t profileIdleSkipsMark = 0u;
          uint32_t nextModuleId = 1;
          uint32_t moduleCursor = kModuleLoadBase;
++        uint64_t grantedCycles = 0;      // the cycles runCycles has handed the IOP so far (see there)
++        uint64_t cyclesAfterLastRun = 0; // totalCycles when runCycles last returned
          uint64_t totalCycles = 0;
 +        std::vector<int16_t> soundOutput; // SPU2 frames not yet handed to the host
          uint64_t totalInstructions = 0;
          uint64_t eeCycleCarry = 0;
          CpuState *activeCpu = nullptr;
-@@ -724,35 +960,75 @@ namespace ps2x::iop::detail
+@@ -724,35 +1104,75 @@ namespace ps2x::iop::detail
          m_impl->reset();
      }
  
@@ -1759,7 +1996,7 @@ index e5f63a9..65d4d7a 100644
      bool IopEmulator::hasRpcServer(uint32_t sid) const noexcept
      {
          return m_impl->rpc.hasServer(sid);
-@@ -760,16 +1036,19 @@ namespace ps2x::iop::detail
+@@ -760,16 +1180,19 @@ namespace ps2x::iop::detail
  
      void IopEmulator::onSifTransfer(const SifTransfer &transfer)
      {
@@ -1779,7 +2016,7 @@ index e5f63a9..65d4d7a 100644
          return m_impl->memory.freeAllocation(address);
      }
  
-@@ -781,12 +1060,14 @@ namespace ps2x::iop::detail
+@@ -781,12 +1204,14 @@ namespace ps2x::iop::detail
  
      bool IopEmulator::writeMemory(uint32_t address, const void *source, size_t size)
      {
@@ -1794,6 +2031,21 @@ index e5f63a9..65d4d7a 100644
          return isMemoryRange(address, size) &&
                 m_impl->memory.zeroRam(address, size);
      }
+@@ -828,3 +1253,14 @@ namespace ps2x::iop::detail
+     }
+ 
+ }
++
++namespace ps2x::iop
++{
++    void registerNativeHook(const NativeHook &hook)
++    {
++        detail::nativeHooks().push_back(hook);
++        const uint32_t phys = detail::physicalAddress(hook.address);
++        if (phys < detail::kRamSize)
++            detail::g_nativeHookPages[phys >> 12] = 1u;
++    }
++}
 diff --git a/ps2xIOP/src/emulator/iop_emulator.h b/ps2xIOP/src/emulator/iop_emulator.h
 index 01b48df..d9cf84f 100644
 --- a/ps2xIOP/src/emulator/iop_emulator.h
@@ -2321,7 +2573,7 @@ index 0f19c9f..0b5c59e 100644
  #define FPU_C_F_S(a, b) (0)
  #define FPU_C_UN_S(a, b) (isnan((float)(a)) || isnan((float)(b)))
 diff --git a/ps2xRuntime/include/runtime/ee_scheduler.h b/ps2xRuntime/include/runtime/ee_scheduler.h
-index f247ff9..51ce2e5 100644
+index f247ff9..6dc4499 100644
 --- a/ps2xRuntime/include/runtime/ee_scheduler.h
 +++ b/ps2xRuntime/include/runtime/ee_scheduler.h
 @@ -91,6 +91,10 @@ enum class GuestInvocationKind : uint8_t
@@ -2372,10 +2624,12 @@ index f247ff9..51ce2e5 100644
      void scheduleEvent(uint64_t deadlineCycle, std::chrono::steady_clock::time_point hostDeadline, EeEvent event);
      void updateNextDeadline();
      [[nodiscard]] bool hasReadyAtOrAbovePriority(int priority) const;
-@@ -426,6 +437,10 @@ private:
+@@ -426,6 +437,12 @@ private:
      bool m_insideInterrupt = false;
      uint32_t m_pendingEeTimerInterrupts = 0;
      uint64_t m_eeCycle = 0;
++    // EE cycles not yet handed to the IOP (accountCycles hands them over in batches, see there)
++    uint64_t m_iopPendingCycles = 0;
 +    // EE time follows the host clock while the guest is busy (see catchUpWithHostClock)
 +    std::chrono::steady_clock::time_point m_hostClockOrigin{};
 +    uint64_t m_hostClockOriginCycle = 0;
@@ -2383,7 +2637,7 @@ index f247ff9..51ce2e5 100644
      uint64_t m_sliceEndCycle = kDefaultTimeSliceCycles;
      std::thread::id m_executorThread{};
      std::atomic<bool> m_running{false};
-@@ -447,6 +462,19 @@ private:
+@@ -447,6 +464,19 @@ private:
      uint32_t m_gsVSyncCallback = 0;
      uint32_t m_gsVSyncCallbackGp = 0;
      uint32_t m_gsVSyncCallbackSp = 0;
@@ -3732,7 +3986,7 @@ index 0000000..17cbd74
 +    }
 +}
 diff --git a/ps2xRuntime/include/runtime/ps2_memory.h b/ps2xRuntime/include/runtime/ps2_memory.h
-index ea86a9c..fb32761 100644
+index ea86a9c..50684a6 100644
 --- a/ps2xRuntime/include/runtime/ps2_memory.h
 +++ b/ps2xRuntime/include/runtime/ps2_memory.h
 @@ -258,6 +258,9 @@ struct JumpTable
@@ -3773,6 +4027,30 @@ index ea86a9c..fb32761 100644
      Vu1MscalCallback m_vu1MscalCallback;
      Vu1MscntCallback m_vu1MscntCallback;
  
+@@ -449,6 +466,23 @@ public:
+     };
+ 
+     std::array<EeTimer, 4> m_eeTimers{};
++    // EE time is handed to the timers at every checkpoint; between two timer events nothing can happen, so the cycles
++    // add up in m_eeTimerPending and the timers advance when the next event (m_eeTimerHorizon cycles after the last
++    // advance) is reached, or before a timer register is written (a read projects the count). Exact: the tick remainder
++    // carries, so one step of N cycles counts as N steps of one.
++    uint64_t m_eeTimerPending = 0;
++    uint64_t m_eeTimerHorizon = 0;
++    uint32_t m_eeTimerLateMask = 0;   // interrupts found by an advance before a register write (none expected)
++    bool m_eeTimerVerify = false;     // VENDETTA_EETIMER_VERIFY=1: the old per-checkpoint advance on a shadow, compared
++    std::array<EeTimer, 4> m_eeTimersShadow{};
++    uint64_t m_eeTimerVerifyChecks = 0;
++    uint64_t m_eeTimerVerifyMismatches = 0;
++    bool m_gifFqcMaybeSet = false;    // GIF_STAT's FIFO count may be non-zero (cleared at the next advance)
++    static uint32_t advanceEeTimer(EeTimer &timer, size_t index, uint64_t eeCycles) noexcept;
++    static void applyEeTimerWrite(EeTimer &timer, uint32_t timerOffset, uint32_t value) noexcept;
++    uint32_t advanceEeTimersNow(uint64_t eeCycles) noexcept;
++    void flushEeTimers() noexcept;
++    uint64_t cyclesUntilNextEeTimerEventNow() const noexcept;
+     bool tryProcessScratchpadDma(uint32_t channelBase, uint32_t chcr);
+     void completeDmacChannel(uint32_t channelBase, uint32_t cause);
+     void queueCompletedDmacCause(uint32_t cause);
 diff --git a/ps2xRuntime/include/runtime/ps2_vu1.h b/ps2xRuntime/include/runtime/ps2_vu1.h
 index 67c8184..633a964 100644
 --- a/ps2xRuntime/include/runtime/ps2_vu1.h
@@ -4585,7 +4863,7 @@ index 0000000..3bc0f17
 +    bool writtenSince(const PS2Memory *memory, uint64_t since, uint64_t now, uint32_t &begin, uint32_t &end);
 +}
 diff --git a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-index c5e31c4..effd7e9 100644
+index c5e31c4..5dd978d 100644
 --- a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 @@ -1,10 +1,18 @@
@@ -4703,7 +4981,15 @@ index c5e31c4..effd7e9 100644
      constexpr uint64_t kVBlankDurationCycles = microsecondsToEeCycles(500u);
      constexpr uint64_t kAlarmTickCycles = microsecondsToEeCycles(kAlarmTickMicroseconds);
  
-@@ -124,6 +207,14 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
+@@ -112,6 +195,7 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
+     m_insideInterrupt = false;
+     m_pendingEeTimerInterrupts = 0u;
+     m_eeCycle = 0u;
++    m_iopPendingCycles = 0u;
+     m_sliceEndCycle = kDefaultTimeSliceCycles;
+     m_stopRequested.store(false, std::memory_order_release);
+     m_checkpointPending.store(false, std::memory_order_release);
+@@ -124,6 +208,14 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
      }
      m_eventSequence = 0;
      m_invocationSequence = 0;
@@ -4718,7 +5004,7 @@ index c5e31c4..effd7e9 100644
      m_vsyncTick = 0;
      m_vsyncFlagAddress = 0;
      m_vsyncTickAddress = 0;
-@@ -152,6 +243,9 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
+@@ -152,6 +244,9 @@ void EeScheduler::reset(uint8_t *rdram, const R5900Context &mainContext)
      publishSnapshot();
  }
  
@@ -4728,7 +5014,7 @@ index c5e31c4..effd7e9 100644
  void EeScheduler::run()
  {
      assertExecutor();
-@@ -160,6 +254,7 @@ void EeScheduler::run()
+@@ -160,6 +255,7 @@ void EeScheduler::run()
      while (!m_stopRequested.load(std::memory_order_acquire))
      {
          processPendingEvents();
@@ -4736,7 +5022,7 @@ index c5e31c4..effd7e9 100644
          if (m_stopRequested.load(std::memory_order_acquire))
          {
              break;
-@@ -244,8 +339,34 @@ void EeScheduler::run()
+@@ -244,8 +340,34 @@ void EeScheduler::run()
                      {
                      }
                  }
@@ -4771,7 +5057,7 @@ index c5e31c4..effd7e9 100644
              makeDormant(*running);
              m_currentThreadId = 0;
              copyMainContextToRuntime();
-@@ -254,7 +375,9 @@ void EeScheduler::run()
+@@ -254,7 +376,9 @@ void EeScheduler::run()
              continue;
          }
  
@@ -4782,7 +5068,7 @@ index c5e31c4..effd7e9 100644
          {
              GuestInvocation invocation = std::move(m_pendingInvocations.front());
              m_pendingInvocations.pop_front();
-@@ -296,6 +419,7 @@ void EeScheduler::run()
+@@ -296,6 +420,7 @@ void EeScheduler::run()
          {
              m_insideInterrupt = !running->invocations.empty() && running->invocations.back().kind == GuestInvocationKind::Interrupt;
              m_guestExecuting.store(true, std::memory_order_release);
@@ -4790,7 +5076,7 @@ index c5e31c4..effd7e9 100644
              function(m_rdram, &context, &m_runtime);
              m_guestExecuting.store(false, std::memory_order_release);
              m_insideInterrupt = false;
-@@ -354,9 +478,140 @@ void EeScheduler::postEvent(EeEvent event)
+@@ -354,9 +479,140 @@ void EeScheduler::postEvent(EeEvent event)
      m_eventCv.notify_one();
  }
  
@@ -4931,7 +5217,25 @@ index c5e31c4..effd7e9 100644
  
      if (m_checkpointPending.load(std::memory_order_acquire) ||
          m_stopRequested.load(std::memory_order_acquire))
-@@ -1061,7 +1316,8 @@ int EeScheduler::setAlarm(uint16_t ticks,
+@@ -393,7 +649,16 @@ void EeScheduler::accountCycles(uint32_t cycles) noexcept
+     const uint64_t elapsed = std::max<uint64_t>(1u, cycles);
+     m_eeCycle += elapsed;
+     m_pendingEeTimerInterrupts |= m_runtime.memory().advanceEeTimers(elapsed);
+-    m_runtime.advanceIopEeCycles(elapsed);
++    // The IOP gets the EE's time in batches of 4096 EE cycles (512 IOP cycles, ~14 us): handing it over at every
++    // checkpoint (8-32 cycles) was a call chain and a profiler mark millions of times a second for an IOP that runs
++    // its own work in such batches anyway (IopEmulator::runEeCycles). Nothing the EE can see is that fine.
++    constexpr uint64_t kIopHandOverCycles = 4096u;
++    m_iopPendingCycles += elapsed;
++    if (m_iopPendingCycles >= kIopHandOverCycles)
++    {
++        m_runtime.advanceIopEeCycles(m_iopPendingCycles);
++        m_iopPendingCycles = 0u;
++    }
+     if (m_pendingEeTimerInterrupts != 0u)
+     {
+         m_checkpointPending.store(true, std::memory_order_release);
+@@ -1061,7 +1326,8 @@ int EeScheduler::setAlarm(uint16_t ticks,
                            uint32_t handler,
                            uint32_t argument,
                            uint32_t gp,
@@ -4941,7 +5245,7 @@ index c5e31c4..effd7e9 100644
  {
      assertExecutor();
      if (handler == 0u || !m_runtime.hasFunction(handler))
-@@ -1073,7 +1329,8 @@ int EeScheduler::setAlarm(uint16_t ticks,
+@@ -1073,7 +1339,8 @@ int EeScheduler::setAlarm(uint16_t ticks,
      {
          return KE_ERROR;
      }
@@ -4951,7 +5255,7 @@ index c5e31c4..effd7e9 100644
      const uint64_t tickCount = ticks == 0u ? 1u : static_cast<uint64_t>(ticks);
      scheduleEvent(m_eeCycle + tickCount * kAlarmTickCycles,
                    std::chrono::steady_clock::now() + std::chrono::microseconds(tickCount * kAlarmTickMicroseconds),
-@@ -1170,13 +1427,15 @@ uint32_t EeScheduler::invocationStackTop()
+@@ -1170,13 +1437,15 @@ uint32_t EeScheduler::invocationStackTop()
      {
          return existing->second;
      }
@@ -4968,7 +5272,7 @@ index c5e31c4..effd7e9 100644
      return top;
  }
  
-@@ -1258,6 +1517,9 @@ void EeScheduler::dispatchIrq(bool dmac, uint32_t cause)
+@@ -1258,6 +1527,9 @@ void EeScheduler::dispatchIrq(bool dmac, uint32_t cause)
      const uint32_t mask = dmac ? m_enabledDmacMask : m_enabledIntcMask;
      if (cause < 32u && (mask & (1u << cause)) == 0u)
      {
@@ -4978,7 +5282,7 @@ index c5e31c4..effd7e9 100644
          return;
      }
      const auto &handlers = dmac ? m_dmacHandlers : m_intcHandlers;
-@@ -1680,10 +1942,69 @@ void EeScheduler::removeFromWaitObject(GuestThread &item)
+@@ -1680,10 +1952,69 @@ void EeScheduler::removeFromWaitObject(GuestThread &item)
      item.wait = {};
  }
  
@@ -5048,7 +5352,7 @@ index c5e31c4..effd7e9 100644
      self->wait = std::move(wait);
      self->status = self->suspendCount == 0 ? EeThreadStatus::Waiting : EeThreadStatus::WaitingSuspended;
      m_currentThreadId = 0;
-@@ -1693,6 +2014,24 @@ void EeScheduler::blockCurrent(EeWaitState wait)
+@@ -1693,6 +2024,24 @@ void EeScheduler::blockCurrent(EeWaitState wait)
  
  void EeScheduler::makeReady(GuestThread &item, int result, bool interruptSafe)
  {
@@ -5073,7 +5377,7 @@ index c5e31c4..effd7e9 100644
      auto completion = std::move(item.wait.completion);
      item.wait = {};
      setReturnS32(&item.activeContext(), result);
-@@ -1800,9 +2139,16 @@ void EeScheduler::processDueDeadlines()
+@@ -1800,9 +2149,16 @@ void EeScheduler::processDueDeadlines()
  
              if (now < pacingDeadline)
              {
@@ -5093,7 +5397,7 @@ index c5e31c4..effd7e9 100644
                  if (!m_events.empty() || m_stopRequested.load(std::memory_order_acquire))
                  {
                      updateNextDeadline();
-@@ -1847,11 +2193,49 @@ void EeScheduler::processDueDeadlines()
+@@ -1847,11 +2203,49 @@ void EeScheduler::processDueDeadlines()
          {
              if (scheduled.event.type == EeEventType::VBlankStart)
              {
@@ -5145,7 +5449,7 @@ index c5e31c4..effd7e9 100644
                                EeEvent{EeEventType::VBlankStart, 0, 0});
              }
              processEvent(scheduled.event);
-@@ -1867,6 +2251,7 @@ void EeScheduler::processEvent(const EeEvent &event)
+@@ -1867,6 +2261,7 @@ void EeScheduler::processEvent(const EeEvent &event)
          requestStop();
          break;
      case EeEventType::VBlankStart:
@@ -5153,7 +5457,7 @@ index c5e31c4..effd7e9 100644
          ++m_vsyncTick;
          m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);
          if ((m_vsyncTick & 1u) != 0u)
-@@ -1889,6 +2274,7 @@ void EeScheduler::processEvent(const EeEvent &event)
+@@ -1889,6 +2284,7 @@ void EeScheduler::processEvent(const EeEvent &event)
          m_vsyncFlagAddress = 0u;
          m_vsyncTickAddress = 0u;
          completeVSync(m_vsyncTick);
@@ -5161,7 +5465,7 @@ index c5e31c4..effd7e9 100644
          if (m_gsVSyncCallback != 0u && m_runtime.hasFunction(m_gsVSyncCallback))
          {
              GuestInvocation invocation{};
-@@ -1901,7 +2287,18 @@ void EeScheduler::processEvent(const EeEvent &event)
+@@ -1901,7 +2297,18 @@ void EeScheduler::processEvent(const EeEvent &event)
              queueInvocation(std::move(invocation));
          }
          dispatchIrq(false, 2u);
@@ -5180,7 +5484,7 @@ index c5e31c4..effd7e9 100644
      case EeEventType::ExternalWake:
          completeExternalWait(event.id, event.value, KE_OK);
          break;
-@@ -1922,9 +2319,9 @@ void EeScheduler::processEvent(const EeEvent &event)
+@@ -1922,9 +2329,9 @@ void EeScheduler::processEvent(const EeEvent &event)
          GuestInvocation invocation{};
          invocation.kind = GuestInvocationKind::Alarm;
          invocation.context.pc = alarm.handler;
@@ -5193,7 +5497,7 @@ index c5e31c4..effd7e9 100644
          SET_GPR_U32(&invocation.context, 28, alarm.gp);
          SET_GPR_U32(&invocation.context, 29, 0u);
          SET_GPR_U32(&invocation.context, 31, 0u);
-@@ -1994,8 +2391,39 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
+@@ -1994,8 +2401,39 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
      std::memcpy(m_rdram + physical, &value, sizeof(value));
  }
  
@@ -5233,7 +5537,7 @@ index c5e31c4..effd7e9 100644
      std::unique_lock lock(m_eventMutex);
      if (!m_events.empty() || m_stopRequested.load(std::memory_order_acquire))
      {
-@@ -2028,17 +2456,38 @@ void EeScheduler::waitForEvent()
+@@ -2028,17 +2466,38 @@ void EeScheduler::waitForEvent()
      }
      if (hasTimerDeadline)
      {
@@ -13268,7 +13572,7 @@ index 6bd1835..98b4db0 100644
      {
          return !runtime || runtime->canBindIopRpc(sid);
 diff --git a/ps2xRuntime/src/lib/ps2_memory.cpp b/ps2xRuntime/src/lib/ps2_memory.cpp
-index 37b6a4d..5536525 100644
+index 37b6a4d..641b75f 100644
 --- a/ps2xRuntime/src/lib/ps2_memory.cpp
 +++ b/ps2xRuntime/src/lib/ps2_memory.cpp
 @@ -1,4 +1,8 @@
@@ -13341,7 +13645,227 @@ index 37b6a4d..5536525 100644
          } while (!csr.compare_exchange_weak(expected, desired));
      }
  
-@@ -560,9 +597,13 @@ const uint8_t *PS2Memory::mapVuMemory(uint32_t physAddr, uint32_t size, uint32_t
+@@ -402,85 +439,162 @@ bool PS2Memory::initialize(size_t ramSize)
+ void PS2Memory::resetEeTimers() noexcept
+ {
+     m_eeTimers = {};
++    m_eeTimersShadow = {};
++    m_eeTimerPending = 0u;
++    m_eeTimerHorizon = 0u;
++    m_eeTimerLateMask = 0u;
++    static const bool verify = []
++    {
++        const char *value = std::getenv("VENDETTA_EETIMER_VERIFY");
++        return value && *value && *value != '0';
++    }();
++    m_eeTimerVerify = verify;
+ }
+ 
+-uint32_t PS2Memory::advanceEeTimers(uint64_t eeCycles) noexcept
++// One timer advanced by eeCycles EE cycles (the timer's ticks carry their remainder); the interrupt bits it raises.
++uint32_t PS2Memory::advanceEeTimer(EeTimer &timer, size_t index, uint64_t eeCycles) noexcept
+ {
+-    if (eeCycles == 0u)
++    uint32_t interruptMask = 0u;
++    if ((timer.mode & kEeTimerModeCue) == 0u)
+     {
+         return 0u;
+     }
+ 
+-    constexpr uint32_t kGifStat = 0x10003020u;
+-    constexpr uint32_t kGifFqcMask = 0x1F000000u;
+-    auto gifStatIt = m_ioRegisters.find(kGifStat);
+-    if (gifStatIt != m_ioRegisters.end())
+-        gifStatIt->second &= ~kGifFqcMask;
+-
+-    uint32_t interruptMask = 0u;
+-    for (size_t index = 0; index < m_eeTimers.size(); ++index)
++    const uint64_t clockHz = kEeTimerClockHz[timer.mode & kEeTimerModeClksMask];
++    const uint64_t wholeSeconds = eeCycles / kEeClockHz;
++    const uint64_t remainingCycles = eeCycles % kEeClockHz;
++    const uint64_t scaled = remainingCycles * clockHz + timer.clockRemainder;
++    const uint64_t ticks = wholeSeconds * clockHz + scaled / kEeClockHz;
++    timer.clockRemainder = scaled % kEeClockHz;
++    if (ticks == 0u)
+     {
+-        EeTimer &timer = m_eeTimers[index];
+-        if ((timer.mode & kEeTimerModeCue) == 0u)
+-        {
+-            continue;
+-        }
+-
+-        const uint64_t clockHz = kEeTimerClockHz[timer.mode & kEeTimerModeClksMask];
+-        const uint64_t wholeSeconds = eeCycles / kEeClockHz;
+-        const uint64_t remainingCycles = eeCycles % kEeClockHz;
+-        const uint64_t scaled = remainingCycles * clockHz + timer.clockRemainder;
+-        const uint64_t ticks = wholeSeconds * clockHz + scaled / kEeClockHz;
+-        timer.clockRemainder = scaled % kEeClockHz;
+-        if (ticks == 0u)
+-        {
+-            continue;
+-        }
++        return 0u;
++    }
+ 
+-        const uint32_t oldCount = timer.count & 0xFFFFu;
+-        const uint32_t compare = timer.compare & 0xFFFFu;
+-        const uint64_t compareDistance = ticksUntilMatch(oldCount, compare);
+-        const uint64_t overflowDistance = 0x10000ull - oldCount;
+-        const bool zeroReturn = (timer.mode & kEeTimerModeZret) != 0u;
+-        const bool compareReached = ticks >= compareDistance;
+-        bool overflowReached = false;
++    const uint32_t oldCount = timer.count & 0xFFFFu;
++    const uint32_t compare = timer.compare & 0xFFFFu;
++    const uint64_t compareDistance = ticksUntilMatch(oldCount, compare);
++    const uint64_t overflowDistance = 0x10000ull - oldCount;
++    const bool zeroReturn = (timer.mode & kEeTimerModeZret) != 0u;
++    const bool compareReached = ticks >= compareDistance;
++    bool overflowReached = false;
+ 
+-        if (zeroReturn)
++    if (zeroReturn)
++    {
++        overflowReached = ticks >= overflowDistance && overflowDistance <= compareDistance;
++        if (compareReached)
+         {
+-            overflowReached = ticks >= overflowDistance && overflowDistance <= compareDistance;
+-            if (compareReached)
+-            {
+-                const uint64_t remaining = ticks - compareDistance;
+-                timer.count = compare == 0u
+-                                  ? static_cast<uint32_t>(remaining & 0xFFFFu)
+-                                  : static_cast<uint32_t>(remaining % compare);
+-            }
+-            else
+-            {
+-                timer.count = static_cast<uint32_t>((oldCount + ticks) & 0xFFFFu);
+-            }
++            const uint64_t remaining = ticks - compareDistance;
++            timer.count = compare == 0u
++                              ? static_cast<uint32_t>(remaining & 0xFFFFu)
++                              : static_cast<uint32_t>(remaining % compare);
+         }
+         else
+         {
+-            overflowReached = ticks >= overflowDistance;
+             timer.count = static_cast<uint32_t>((oldCount + ticks) & 0xFFFFu);
+         }
++    }
++    else
++    {
++        overflowReached = ticks >= overflowDistance;
++        timer.count = static_cast<uint32_t>((oldCount + ticks) & 0xFFFFu);
++    }
+ 
+-        if (compareReached && (timer.mode & kEeTimerModeCmpe) != 0u && (timer.mode & kEeTimerModeEquf) == 0u)
+-        {
+-            timer.mode |= kEeTimerModeEquf;
+-            interruptMask |= 1u << index;
+-        }
+-        if (overflowReached && (timer.mode & kEeTimerModeOvfe) != 0u && (timer.mode & kEeTimerModeOvff) == 0u)
+-        {
+-            timer.mode |= kEeTimerModeOvff;
+-            interruptMask |= 1u << index;
+-        }
++    if (compareReached && (timer.mode & kEeTimerModeCmpe) != 0u && (timer.mode & kEeTimerModeEquf) == 0u)
++    {
++        timer.mode |= kEeTimerModeEquf;
++        interruptMask |= 1u << index;
++    }
++    if (overflowReached && (timer.mode & kEeTimerModeOvfe) != 0u && (timer.mode & kEeTimerModeOvff) == 0u)
++    {
++        timer.mode |= kEeTimerModeOvff;
++        interruptMask |= 1u << index;
++    }
++    return interruptMask;
++}
++
++uint32_t PS2Memory::advanceEeTimersNow(uint64_t eeCycles) noexcept
++{
++    uint32_t interruptMask = 0u;
++    for (size_t index = 0; index < m_eeTimers.size(); ++index)
++        interruptMask |= advanceEeTimer(m_eeTimers[index], index, eeCycles);
++    return interruptMask;
++}
++
++// Before a timer register is written: the cycles not yet handed to the timers (fewer than the next event needs, so
++// they raise nothing — kept for the next advance if they ever did)
++void PS2Memory::flushEeTimers() noexcept
++{
++    if (m_eeTimerPending != 0u)
++    {
++        m_eeTimerLateMask |= advanceEeTimersNow(m_eeTimerPending);
++        m_eeTimerPending = 0u;
++    }
++}
++
++uint32_t PS2Memory::advanceEeTimers(uint64_t eeCycles) noexcept
++{
++    if (eeCycles == 0u)
++    {
++        return 0u;
++    }
++
++    // GIF_STAT's FIFO count reads as empty once EE time moves on (it is set while GIF transfers are pending)
++    if (m_gifFqcMaybeSet)
++    {
++        constexpr uint32_t kGifStat = 0x10003020u;
++        constexpr uint32_t kGifFqcMask = 0x1F000000u;
++        auto gifStatIt = m_ioRegisters.find(kGifStat);
++        if (gifStatIt != m_ioRegisters.end())
++            gifStatIt->second &= ~kGifFqcMask;
++        m_gifFqcMaybeSet = false;
++    }
++
++    m_eeTimerPending += eeCycles;
++    uint32_t interruptMask = m_eeTimerLateMask;
++    m_eeTimerLateMask = 0u;
++    const bool advanced = m_eeTimerPending >= m_eeTimerHorizon;
++    if (advanced)
++    {
++        interruptMask |= advanceEeTimersNow(m_eeTimerPending);
++        m_eeTimerPending = 0u;
++        m_eeTimerHorizon = cyclesUntilNextEeTimerEventNow();
++    }
++    if (m_eeTimerVerify)
++    {
++        // the old way: every timer advanced at every checkpoint — the same interrupts at the same checkpoint, and the
++        // same state whenever the timers have advanced
++        uint32_t shadowMask = 0u;
++        for (size_t index = 0; index < m_eeTimersShadow.size(); ++index)
++            shadowMask |= advanceEeTimer(m_eeTimersShadow[index], index, eeCycles);
++        bool same = shadowMask == interruptMask;
++        if (advanced)
++            for (size_t index = 0; index < m_eeTimers.size(); ++index)
++            {
++                const EeTimer &a = m_eeTimers[index], &b = m_eeTimersShadow[index];
++                same = same && a.count == b.count && a.mode == b.mode && a.compare == b.compare && a.clockRemainder == b.clockRemainder;
++            }
++        ++m_eeTimerVerifyChecks;
++        if (!same && ++m_eeTimerVerifyMismatches <= 16u)
++            std::fprintf(stderr, "[eetimer-verify] checkpoint %llu: interrupts 0x%x, the per-checkpoint advance 0x%x%c",
++                         static_cast<unsigned long long>(m_eeTimerVerifyChecks), interruptMask, shadowMask, 10);
++        if ((m_eeTimerVerifyChecks & ((1ull << 26) - 1u)) == 0u)
++            std::fprintf(stderr, "[eetimer-verify] %llu checkpoints checked, %llu differed%c",
++                         static_cast<unsigned long long>(m_eeTimerVerifyChecks),
++                         static_cast<unsigned long long>(m_eeTimerVerifyMismatches), 10);
+     }
+     return interruptMask;
+ }
+ 
+ uint64_t PS2Memory::cyclesUntilNextEeTimerInterrupt() const noexcept
++{
++    const uint64_t next = cyclesUntilNextEeTimerEventNow();
++    if (next == std::numeric_limits<uint64_t>::max())
++        return next;
++    return next > m_eeTimerPending ? next - m_eeTimerPending : 1u;
++}
++
++uint64_t PS2Memory::cyclesUntilNextEeTimerEventNow() const noexcept
+ {
+     uint64_t nearest = std::numeric_limits<uint64_t>::max();
+     for (const EeTimer &timer : m_eeTimers)
+@@ -560,9 +674,13 @@ const uint8_t *PS2Memory::mapVuMemory(uint32_t physAddr, uint32_t size, uint32_t
      }
      if (const uint8_t *ptr = mapRange(PS2_VU1_CODE_BASE, PS2_VU1_CODE_SIZE, m_vu1Code))
      {
@@ -13356,7 +13880,7 @@ index 37b6a4d..5536525 100644
  }
  
  uint32_t PS2Memory::translateAddress(uint32_t virtualAddress)
-@@ -744,6 +785,7 @@ uint32_t PS2Memory::read32(uint32_t address)
+@@ -744,6 +862,7 @@ uint32_t PS2Memory::read32(uint32_t address)
  
      if (isGsPrivReg(address))
      {
@@ -13364,7 +13888,7 @@ index 37b6a4d..5536525 100644
          uint32_t off = address & 7;
          const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
          if (regOff == kGsCsrRegOffset)
-@@ -792,6 +834,7 @@ uint64_t PS2Memory::read64(uint32_t address)
+@@ -792,6 +911,7 @@ uint64_t PS2Memory::read64(uint32_t address)
  
      if (isGsPrivReg(address))
      {
@@ -13372,7 +13896,7 @@ index 37b6a4d..5536525 100644
          const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
          if (regOff == kGsCsrRegOffset)
          {
-@@ -887,6 +930,7 @@ void PS2Memory::write8(uint32_t address, uint8_t value)
+@@ -887,6 +1007,7 @@ void PS2Memory::write8(uint32_t address, uint8_t value)
              if (vuMem == m_vu0Code)
                  markVU0CodeModified();
              else if (vuMem == m_vu1Code)
@@ -13380,7 +13904,7 @@ index 37b6a4d..5536525 100644
                  markVU1CodeModified();
              return;
          }
-@@ -930,6 +974,7 @@ void PS2Memory::write16(uint32_t address, uint16_t value)
+@@ -930,6 +1051,7 @@ void PS2Memory::write16(uint32_t address, uint16_t value)
              if (vuMem == m_vu0Code)
                  markVU0CodeModified();
              else if (vuMem == m_vu1Code)
@@ -13388,7 +13912,7 @@ index 37b6a4d..5536525 100644
                  markVU1CodeModified();
              return;
          }
-@@ -953,6 +998,7 @@ void PS2Memory::write32(uint32_t address, uint32_t value)
+@@ -953,6 +1075,7 @@ void PS2Memory::write32(uint32_t address, uint32_t value)
  
      if (isGsPrivReg(address))
      {
@@ -13396,7 +13920,7 @@ index 37b6a4d..5536525 100644
          uint32_t off = address & 7;
          const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
          if (regOff == kGsCsrRegOffset)
-@@ -960,6 +1006,8 @@ void PS2Memory::write32(uint32_t address, uint32_t value)
+@@ -960,6 +1083,8 @@ void PS2Memory::write32(uint32_t address, uint32_t value)
              // CSR: bits 0..1 of the low dword are write-one-to-clear status bits.
              // Done as a single atomic RMW -- see writeCsrHalf's comment.
              writeCsrHalf(gs_regs.csr, off, value);
@@ -13405,7 +13929,7 @@ index 37b6a4d..5536525 100644
          }
          else if (uint64_t *reg = gsRegPtr(gs_regs, address))
          {
-@@ -994,6 +1042,7 @@ void PS2Memory::write32(uint32_t address, uint32_t value)
+@@ -994,6 +1119,7 @@ void PS2Memory::write32(uint32_t address, uint32_t value)
              if (vuMem == m_vu0Code)
                  markVU0CodeModified();
              else if (vuMem == m_vu1Code)
@@ -13413,7 +13937,7 @@ index 37b6a4d..5536525 100644
                  markVU1CodeModified();
              return;
          }
-@@ -1013,12 +1062,15 @@ void PS2Memory::write64(uint32_t address, uint64_t value)
+@@ -1013,12 +1139,15 @@ void PS2Memory::write64(uint32_t address, uint64_t value)
  
      if (isGsPrivReg(address))
      {
@@ -13429,7 +13953,7 @@ index 37b6a4d..5536525 100644
          }
          else if (uint64_t *reg = gsRegPtr(gs_regs, address))
          {
-@@ -1049,6 +1101,7 @@ void PS2Memory::write64(uint32_t address, uint64_t value)
+@@ -1049,6 +1178,7 @@ void PS2Memory::write64(uint32_t address, uint64_t value)
              if (vuMem == m_vu0Code)
                  markVU0CodeModified();
              else if (vuMem == m_vu1Code)
@@ -13437,7 +13961,7 @@ index 37b6a4d..5536525 100644
                  markVU1CodeModified();
              return;
          }
-@@ -1081,7 +1134,10 @@ void PS2Memory::write128(uint32_t address, __m128i value)
+@@ -1081,7 +1211,10 @@ void PS2Memory::write128(uint32_t address, __m128i value)
      {
          alignas(16) uint8_t fifoData[16];
          _mm_storeu_si128(reinterpret_cast<__m128i *>(fifoData), value);
@@ -13449,7 +13973,7 @@ index 37b6a4d..5536525 100644
          return;
      }
  
-@@ -1107,6 +1163,7 @@ void PS2Memory::write128(uint32_t address, __m128i value)
+@@ -1107,6 +1240,7 @@ void PS2Memory::write128(uint32_t address, __m128i value)
              if (vuMem == m_vu0Code)
                  markVU0CodeModified();
              else if (vuMem == m_vu1Code)
@@ -13457,16 +13981,86 @@ index 37b6a4d..5536525 100644
                  markVU1CodeModified();
              return;
          }
-@@ -1124,6 +1181,8 @@ void PS2Memory::write128(uint32_t address, __m128i value)
+@@ -1122,44 +1256,60 @@ void PS2Memory::write128(uint32_t address, __m128i value)
+     }
+ }
  
++void PS2Memory::applyEeTimerWrite(EeTimer &timer, uint32_t timerOffset, uint32_t value) noexcept
++{
++    switch (timerOffset)
++    {
++    case kEeTimerCountOffset:
++        timer.count = value & 0xFFFFu;
++        timer.clockRemainder = 0u;
++        break;
++    case kEeTimerModeOffset:
++    {
++        const uint32_t previousMode = timer.mode;
++        const uint32_t status = (previousMode & kEeTimerModeStatusMask) & ~(value & kEeTimerModeStatusMask);
++        timer.mode = (value & kEeTimerModeConfigMask) | status;
++        if (((previousMode ^ timer.mode) & (kEeTimerModeClksMask | kEeTimerModeCue)) != 0u)
++        {
++            timer.clockRemainder = 0u;
++        }
++        break;
++    }
++    case kEeTimerCompareOffset:
++        timer.compare = value & 0xFFFFu;
++        break;
++    case kEeTimerHoldOffset:
++        timer.hold = value & 0xFFFFu;
++        break;
++    default:
++        break;
++    }
++}
++
  bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
  {
 +    if (ChainWorker::onWorker()) // the IO register map is the game thread's (not thread-safe)
 +        ps2_host_profile::count(ps2_host_profile::ChainOwnerViolations);
      size_t timerIndex = 0u;
      uint32_t timerOffset = 0u;
++    if (address == 0x10003020u) // GIF_STAT: the FIFO count may be set
++        m_gifFqcMaybeSet = true;
      if (decodeEeTimerRegister(address, timerIndex, timerOffset))
-@@ -1160,6 +1219,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+     {
+-        EeTimer &timer = m_eeTimers[timerIndex];
+-        switch (timerOffset)
+-        {
+-        case kEeTimerCountOffset:
+-            timer.count = value & 0xFFFFu;
+-            timer.clockRemainder = 0u;
+-            break;
+-        case kEeTimerModeOffset:
+-        {
+-            const uint32_t previousMode = timer.mode;
+-            const uint32_t status = (previousMode & kEeTimerModeStatusMask) & ~(value & kEeTimerModeStatusMask);
+-            timer.mode = (value & kEeTimerModeConfigMask) | status;
+-            if (((previousMode ^ timer.mode) & (kEeTimerModeClksMask | kEeTimerModeCue)) != 0u)
+-            {
+-                timer.clockRemainder = 0u;
+-            }
+-            break;
+-        }
+-        case kEeTimerCompareOffset:
+-            timer.compare = value & 0xFFFFu;
+-            break;
+-        case kEeTimerHoldOffset:
+-            timer.hold = value & 0xFFFFu;
+-            break;
+-        default:
++        if (timerOffset != kEeTimerCountOffset && timerOffset != kEeTimerModeOffset &&
++            timerOffset != kEeTimerCompareOffset && timerOffset != kEeTimerHoldOffset)
+             return false;
+-        }
++        flushEeTimers();
++        applyEeTimerWrite(m_eeTimers[timerIndex], timerOffset, value);
++        if (m_eeTimerVerify)
++            applyEeTimerWrite(m_eeTimersShadow[timerIndex], timerOffset, value);
++        m_eeTimerHorizon = cyclesUntilNextEeTimerEventNow();
+         return true;
+     }
  
      if (isGsPrivReg(address))
      {
@@ -13474,7 +14068,7 @@ index 37b6a4d..5536525 100644
          // NB: unreachable from write8/16/32/64 today since those all funnel IO
          // register writes through addresses in PS2_IO_BASE's range, which is
          // disjoint from PS2_GS_PRIV_REG_BASE; kept correct for direct callers.
-@@ -1169,6 +1229,8 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+@@ -1169,6 +1319,8 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
          if (regOff == kGsCsrRegOffset)
          {
              writeCsrHalf(gs_regs.csr, off, value);
@@ -13483,7 +14077,7 @@ index 37b6a4d..5536525 100644
          }
          else if (uint64_t *reg = gsRegPtr(gs_regs, address))
          {
-@@ -1221,66 +1283,10 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+@@ -1221,66 +1373,10 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
      if (address >= 0x10003C00u && address < 0x10003E00u)
      {
          m_vifWriteCount.fetch_add(1, std::memory_order_relaxed);
@@ -13554,7 +14148,7 @@ index 37b6a4d..5536525 100644
          return true;
      }
  
-@@ -1403,6 +1409,8 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+@@ -1403,6 +1499,8 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                      const bool transferTagData = isVifChannel && (chcr & 0x40u) != 0u;
  
                      int tagsProcessed = 0;
@@ -13563,7 +14157,7 @@ index 37b6a4d..5536525 100644
                      uint32_t lastTagUpper = (chcr >> 16) & 0xFFFFu;
  
                      while (tagsProcessed < kMaxChainTags)
-@@ -1441,6 +1449,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+@@ -1441,6 +1539,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                          uint32_t addr = static_cast<uint32_t>((tag >> 32) & 0x7FFFFFFF);
                          lastTagUpper = static_cast<uint32_t>((tag >> 16) & 0xFFFFu);
                          ++tagsProcessed;
@@ -13571,7 +14165,7 @@ index 37b6a4d..5536525 100644
  
                          uint32_t dataAddr = 0;
                          bool hasPayload = (tagQwc > 0);
-@@ -1521,6 +1530,19 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+@@ -1521,6 +1620,19 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                              break;
                      }
  
@@ -13591,7 +14185,7 @@ index 37b6a4d..5536525 100644
                      m_ioRegisters[channelBase + 0x30] = tagAddr;
                      m_ioRegisters[channelBase + 0x40] = asr0;
                      m_ioRegisters[channelBase + 0x50] = asr1;
-@@ -1584,6 +1606,68 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+@@ -1584,6 +1696,68 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
      return false;
  }
  
@@ -13660,7 +14254,7 @@ index 37b6a4d..5536525 100644
  bool PS2Memory::tryProcessScratchpadDma(uint32_t channelBase, uint32_t chcr)
  {
      static constexpr uint32_t kSprFromChannel = 0x1000D000u;
-@@ -1660,6 +1744,60 @@ void PS2Memory::completeDmacChannel(uint32_t channelBase, uint32_t cause)
+@@ -1660,6 +1834,60 @@ void PS2Memory::completeDmacChannel(uint32_t channelBase, uint32_t cause)
      queueCompletedDmacCause(cause);
  }
  
@@ -13721,7 +14315,15 @@ index 37b6a4d..5536525 100644
  void PS2Memory::processPendingTransfers()
  {
      const bool hadGif = !m_pendingGifTransfers.empty();
-@@ -1686,7 +1824,7 @@ void PS2Memory::processPendingTransfers()
+@@ -1677,6 +1905,7 @@ void PS2Memory::processPendingTransfers()
+         constexpr uint32_t kGifFqcMask = 0x1F000000u;
+         uint32_t &gifStat = m_ioRegisters[kGifStat];
+         gifStat = (gifStat & ~kGifFqcMask) | (observedGifQwc << 24u);
++        m_gifFqcMaybeSet = true;
+     }
+ 
+     for (size_t idx = 0; idx < m_pendingGifTransfers.size(); ++idx)
+@@ -1686,7 +1915,7 @@ void PS2Memory::processPendingTransfers()
          {
              m_seenGifCopy = true;
              m_gifCopyCount.fetch_add(1, std::memory_order_relaxed);
@@ -13730,7 +14332,7 @@ index 37b6a4d..5536525 100644
          }
          else if (p.qwc > 0)
          {
-@@ -1715,7 +1853,7 @@ void PS2Memory::processPendingTransfers()
+@@ -1715,7 +1944,7 @@ void PS2Memory::processPendingTransfers()
                          break;
                      m_seenGifCopy = true;
                      m_gifCopyCount.fetch_add(1, std::memory_order_relaxed);
@@ -13739,7 +14341,7 @@ index 37b6a4d..5536525 100644
                      bytesLeft -= chunk;
                      srcPhys += chunk;
                  }
-@@ -1734,7 +1872,7 @@ void PS2Memory::processPendingTransfers()
+@@ -1734,7 +1963,7 @@ void PS2Memory::processPendingTransfers()
                          break;
                      m_seenGifCopy = true;
                      m_gifCopyCount.fetch_add(1, std::memory_order_relaxed);
@@ -13748,7 +14350,7 @@ index 37b6a4d..5536525 100644
                      bytesLeft -= chunk;
                      srcPhys += chunk;
                  }
-@@ -1806,7 +1944,7 @@ void PS2Memory::processPendingTransfers()
+@@ -1806,7 +2035,7 @@ void PS2Memory::processPendingTransfers()
      {
          if (!p.chainData.empty())
          {
@@ -13757,7 +14359,7 @@ index 37b6a4d..5536525 100644
          }
          else if (p.qwc > 0)
          {
-@@ -1833,7 +1971,7 @@ void PS2Memory::processPendingTransfers()
+@@ -1833,7 +2062,7 @@ void PS2Memory::processPendingTransfers()
                          chunk = PS2_SCRATCHPAD_SIZE - srcPhys;
                      if (chunk == 0)
                          break;
@@ -13766,7 +14368,7 @@ index 37b6a4d..5536525 100644
                      bytesLeft -= chunk;
                      srcPhys += chunk;
                  }
-@@ -1850,7 +1988,7 @@ void PS2Memory::processPendingTransfers()
+@@ -1850,7 +2079,7 @@ void PS2Memory::processPendingTransfers()
                          chunk = PS2_RAM_SIZE - srcPhys;
                      if (chunk == 0)
                          break;
@@ -13775,7 +14377,7 @@ index 37b6a4d..5536525 100644
                      bytesLeft -= chunk;
                      srcPhys += chunk;
                  }
-@@ -1859,7 +1997,13 @@ void PS2Memory::processPendingTransfers()
+@@ -1859,7 +2088,13 @@ void PS2Memory::processPendingTransfers()
      }
      m_pendingVif1Transfers.clear();
  
@@ -13790,7 +14392,7 @@ index 37b6a4d..5536525 100644
          m_gifArbiter->drain();
  
      static constexpr uint32_t GIF_CHANNEL = 0x1000A000;
-@@ -2280,6 +2424,8 @@ int PS2Memory::pollDmaRegisters()
+@@ -2280,6 +2515,8 @@ int PS2Memory::pollDmaRegisters()
  
  uint32_t PS2Memory::readIORegister(uint32_t address)
  {
@@ -13799,7 +14401,20 @@ index 37b6a4d..5536525 100644
      size_t timerIndex = 0u;
      uint32_t timerOffset = 0u;
      if (decodeEeTimerRegister(address, timerIndex, timerOffset))
-@@ -2346,7 +2492,8 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
+@@ -2288,7 +2525,11 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
+         switch (timerOffset)
+         {
+         case kEeTimerCountOffset:
+-            return timer.count & 0xFFFFu;
++        {
++            EeTimer now = timer;
++            advanceEeTimer(now, timerIndex, m_eeTimerPending);
++            return now.count & 0xFFFFu;
++        }
+         case kEeTimerModeOffset:
+             return timer.mode & (kEeTimerModeConfigMask | kEeTimerModeStatusMask);
+         case kEeTimerCompareOffset:
+@@ -2346,7 +2587,8 @@ uint32_t PS2Memory::readIORegister(uint32_t address)
          const uint32_t ctrl = m_ioRegisters.count(0x10003000u) ? m_ioRegisters[0x10003000u] : 0u;
  
          // M3R and IMT mirror GIF_MODE, PSE mirrors GIF_CTRL, and M3P is the
@@ -13809,7 +14424,7 @@ index 37b6a4d..5536525 100644
          stat = (stat & ~0xFu) |
                 (mode & 0x1u) |
                 (m_path3Masked ? 0x2u : 0u) |
-@@ -2447,6 +2594,54 @@ bool PS2Memory::isCodeAddress(uint32_t address) const
+@@ -2447,6 +2689,54 @@ bool PS2Memory::isCodeAddress(uint32_t address) const
      return false;
  }
  
