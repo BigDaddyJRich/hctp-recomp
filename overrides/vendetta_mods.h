@@ -10,13 +10,13 @@
 //     "replace": {                                           things the game already has, by the game's names:
 //       "animations": { "N61A1_AP": "animations/Jericho Entrance.bin" }    changed everywhere they are used
 //     },
-//     "new": { "animations": ["animations/Jericho Entrance.bin"] },        things the game doesn't have (later)
+//     "new": { "animations": ["animations/Jericho Entrance.bin"] },        things the game doesn't have
 //     "wrestlers": { "Briggs": "wrestlers/Briggs.json" }                  slot changes per wrestler (later)
 //   }
 //
 // Load order: mods\order.txt (one mod folder per line; a later one wins when two change the same thing), the others
 // alphabetically, and a mod always after the mods it needs. A mod whose needs are missing is skipped, with a message.
-// VENDETTA_MODS=0: none (the plain game).
+// VENDETTA_MODS=0: none (the plain game). VENDETTA_MODS_DIR=<folder>: another mods folder (test runs).
 #pragma once
 
 #include <filesystem>

@@ -3,6 +3,7 @@
 #include "ps2_runtime.h"
 #include "ps2_runtime_macros.h"
 #include "game_overrides.h"
+#include "vendetta_store.h"
 #include "runtime/ee_scheduler.h"
 #include "runtime/gs/ps2_gs_memory.h"
 #include "runtime/ps2_host_profile.h"
@@ -547,6 +548,7 @@ namespace
         startPadWatch(runtime);
         startHostProfile(runtime);
         startFreezeWatch(runtime);
+        vendetta_store::install(runtime); // guest memory above 32 MB for mod data (before its users)
         installVendettaAnimations(runtime);
         installVendettaMovies(runtime);
         installVendettaIop();

@@ -9,19 +9,30 @@
 //
 // Once both banks are in memory - the boot routine starts their disc reads (FUN_001a0780) and lets them finish in the
 // background, so bank 1 is still empty when the boot moves on - the first time a fighter starts a clip
-// (FUN_00132158, hooked) each mod's "replace" / "animations" entries (mod.json, see vendetta_mods.h) replace those
-// game clips (by the names in the tables at 0x25A790 / 0x259AB8): the new bytes go into the free space after the
-// clip's bank and its index entry is repointed. A replacement changes the clip everywhere the game uses it; mods apply
-// in load order, so a later mod's replacement of the same clip wins.
+// (FUN_00132158, hooked) the mods go in (mod.json, see vendetta_mods.h), their bytes in the store above the game's
+// 32 MB (vendetta_store.h):
+//  - "new": "animations": clips the game doesn't have, named by their file, become bank 1 clips 2003, 2004, ... The
+//    index can't move (the code builds its address from a literal), so it grows in place over the first clips after
+//    it: those are copied to the store and repointed first. Each clip also has a 38-byte timing record (FZUI) in the
+//    array at *(0x2331C8 + 0x24), stride *(0x2331C8 + 0x1C), read when a clip starts (FUN_00132158 / FUN_00135060 /
+//    FUN_00125d58): the array is copied to the store with room for the new clips and the pointer moved. A new clip's
+//    record starts empty (a move that uses it sets it). The clip count at bank + 8 is updated (no game code reads it).
+//    Ids stay under 4,096: a move record holds its clip in 12 bits (FUN_0011c608).
+//  - "replace": "animations": game clips (by the names in the tables at 0x25A790 / 0x259AB8) get new bytes; the index
+//    entry points at them. A replacement changes the clip everywhere the game uses it; mods apply in load order, so a
+//    later mod's replacement of the same clip wins.
 //
 // VENDETTA_MODS=0        the plain game (mods\ ignored)
 // VENDETTA_ANIMLOG=1     each clip a fighter starts (FUN_00132158: fighter in a0, clip id in a1), with its name
 // VENDETTA_ANIMLIST=1    every clip at boot: id, bank, name, size, where it comes from
 // VENDETTA_ANIMDUMP=a,b  those clips' bytes to logs\anim\<name>.bin (to make test mods)
+// VENDETTA_ANIM_POISON=1 fills what the mods made unused (moved / replaced clips' old bytes, the old timing array) with
+//                        0xFF: if anything in the game still read them, it would show (a test switch)
 #include "ps2_runtime.h"
 #include "game_overrides.h"
 #include "runtime/ee_scheduler.h"
 #include "vendetta_mods.h"
+#include "vendetta_store.h"
 
 #include <algorithm>
 #include <cctype>
@@ -41,11 +52,13 @@ namespace vendetta_animations
 {
     constexpr uint32_t kBank0 = 0x1431580u;    // PAK 2: 821 clips, ids 10000 + i
     constexpr uint32_t kBank1 = 0x1625580u;    // PAK 3: 2,003 clips, ids i
-    constexpr uint32_t kBank0Limit = kBank1;   // the free space after bank 0 ends where bank 1 starts
-    constexpr uint32_t kBank1Limit = 0x1DDC580u; // ... after bank 1 ends where PAK 1 starts
     constexpr uint32_t kNames0 = 0x259AB8u;    // bank 0's clip names
     constexpr uint32_t kNames1 = 0x25A790u;    // bank 1's clip names
     constexpr uint32_t kWaza = 0x2331C8u;      // the parsed move data (+0x08 = 999 move records)
+    constexpr uint32_t kFzuiStride = 0x1Cu;    // ... + 0x1C: bytes per clip timing record (38)
+    constexpr uint32_t kFzuiBank1 = 0x24u;     // ... + 0x24: bank 1's timing records (one per clip id)
+    constexpr uint32_t kFzuiSize = 38u;
+    constexpr uint32_t kMaxClipId = 4095u;     // a move record's clip field is 12 bits (FUN_0011c608)
     constexpr uint32_t kReadSlots = 0x1E25F00u; // the game's 32 disc reads in flight (0 = free)
     constexpr uint32_t kPlayClip = 0x132158u;
     constexpr uint32_t kExpectedCount0 = 821u;
@@ -158,6 +171,8 @@ namespace vendetta_animations
                   std::to_string(read32(kBank1 + 8u)) + " clips, not 821 / 2003";
         else if (read32(kWaza + 8u) != 999u)
             why = "the move data holds " + std::to_string(read32(kWaza + 8u)) + " moves, not 999";
+        else if (read32(kWaza + kFzuiStride) != kFzuiSize || read32(kWaza + kFzuiBank1) - 0x100000u >= 0x1F00000u)
+            why = "the clip timing records aren't laid out as in the original game";
         else if (guestString(read32(kNames1)).empty() || guestString(read32(kNames0)).empty())
             why = "the clip name tables are not where the original game keeps them";
         else
@@ -199,30 +214,241 @@ namespace vendetta_animations
         return true;
     }
 
-    // Replaces clips from the mods\ folder: the bytes go into the free space after the clip's bank (placed 8 bytes past
-    // a 16-byte boundary, like the game's own clips), and the index entry points at them.
-    void applyMods()
+    uint32_t lastFrameOf(const std::vector<uint8_t> &bytes)
     {
-        uint32_t freeStart[2];
-        for (int bank = 0; bank < 2; ++bank)
+        return static_cast<uint32_t>(bytes[0]) | (static_cast<uint32_t>(bytes[1]) << 8u);
+    }
+
+    // A clip file from a mod, read and checked once however many times it's named; its bytes go into the store on
+    // first use (placed 8 bytes past a 16-byte boundary, like the game's own clips).
+    struct ModClip
+    {
+        std::string modName;
+        std::string fileName;
+        std::vector<uint8_t> bytes;
+        uint32_t address = 0; // in the store, once placed
+    };
+
+    std::map<std::filesystem::path, ModClip> g_modClips;
+
+    ModClip *loadModClip(const vendetta_mods::Mod &mod, const std::string &relative, const std::string &what)
+    {
+        const std::filesystem::path file = vendetta_mods::modFile(mod, relative, "animation");
+        if (file.empty())
+            return nullptr;
+        const auto known = g_modClips.find(file);
+        if (known != g_modClips.end())
+            return &known->second;
+        ModClip clip;
+        clip.modName = mod.name;
+        clip.fileName = file.filename().string();
+        std::string why;
+        if (!readFile(file, clip.bytes) || !clipLooksValid(clip.bytes, why))
         {
-            const uint32_t base = bankBase(bank);
-            freeStart[bank] = base + read32(base + 4u);
+            std::cerr << "[mods] " << mod.name << ": " << what << " " << relative << " skipped: "
+                      << (why.empty() ? "can't be read" : why) << std::endl;
+            return nullptr;
         }
-        const uint32_t freeEnd[2] = {kBank0Limit, kBank1Limit};
+        return &g_modClips.emplace(file, std::move(clip)).first->second;
+    }
 
-        std::unordered_map<std::string, std::vector<Clip *>> byName;
-        for (std::vector<Clip> &clips : g_clips)
-            for (Clip &clip : clips)
-                if (!clip.name.empty())
-                    byName[upper(clip.name)].push_back(&clip);
+    bool placeModClip(ModClip &clip)
+    {
+        if (clip.address == 0u)
+        {
+            clip.address = vendetta_store::allocate(vendetta_store::Area::Boot, static_cast<uint32_t>(clip.bytes.size()),
+                                                    "animations", 16u, 8u);
+            if (clip.address != 0u)
+                std::memcpy(vendetta_store::host(clip.address), clip.bytes.data(), clip.bytes.size());
+        }
+        return clip.address != 0u;
+    }
 
-        uint32_t replaced = 0, skipped = 0;
+    void pointIndexAt(int bank, uint32_t index, uint32_t address)
+    {
+        const uint32_t entry = bankBase(bank) + 0xCu + 4u * index;
+        write32(entry, address - entry); // self-relative; unsigned wrap-around makes it signed
+    }
+
+    // Byte ranges no index entry uses any more, for VENDETTA_ANIM_POISON.
+    std::vector<std::pair<uint32_t, uint32_t>> g_unused;
+
+    // A new clip from a mod: its name (the file's), the file.
+    struct NewClip
+    {
+        std::string name;
+        ModClip *clip = nullptr;
+    };
+
+    // The mods' "new" animations, in load order; a name added again by a later mod replaces the earlier one.
+    std::vector<NewClip> collectNewClips(const std::unordered_map<std::string, std::vector<Clip *>> &gameNames)
+    {
+        std::vector<NewClip> added;
+        std::unordered_map<std::string, size_t> byName;
         for (const vendetta_mods::Mod &mod : vendetta_mods::loadedMods())
         {
-            if (const vendetta_mods::Json *added = mod.manifest.find("new"))
-                if (added->find("animations"))
-                    std::cerr << "[mods] " << mod.name << ": new animations come in a later step - not loaded yet" << std::endl;
+            const vendetta_mods::Json *section = mod.manifest.find("new");
+            const vendetta_mods::Json *list = section ? section->find("animations") : nullptr;
+            if (!list)
+                continue;
+            if (!list->isArray())
+            {
+                std::cerr << "[mods] " << mod.name << ": \"new\": \"animations\" should be a list of files: [\"animations/<name>.bin\"]"
+                          << std::endl;
+                continue;
+            }
+            for (const vendetta_mods::Json &item : list->items)
+            {
+                if (!item.isString())
+                {
+                    std::cerr << "[mods] " << mod.name << ": new animations: each file should be a name in quotes" << std::endl;
+                    continue;
+                }
+                ModClip *clip = loadModClip(mod, item.text, "new animation");
+                if (!clip)
+                    continue;
+                const std::string name = std::filesystem::path(item.text).stem().string();
+                const std::string key = upper(name);
+                if (gameNames.count(key))
+                    std::cerr << "[mods] " << mod.name << ": new animation \"" << name
+                              << "\" has the name of one of the game's own clips - to change the game's, use \"replace\""
+                              << std::endl;
+                const auto earlier = byName.find(key);
+                if (earlier != byName.end())
+                {
+                    NewClip &was = added[earlier->second];
+                    if (was.clip != clip)
+                        std::cerr << "[mods] " << mod.name << ": new animation \"" << name << "\" was also added by "
+                                  << was.clip->modName << " - " << mod.name << "'s is used (later in the load order)" << std::endl;
+                    was.clip = clip;
+                    continue;
+                }
+                byName.emplace(key, added.size());
+                added.push_back({name, clip});
+            }
+        }
+        return added;
+    }
+
+    // Bank 1's index grows in place by 4 bytes per new clip: the game clips it would cover move to the store first.
+    // Returns false (nothing changed) if they can't.
+    bool growBank1Index(uint32_t newCount, uint32_t &moved)
+    {
+        std::vector<Clip> &clips = g_clips[1];
+        const uint32_t indexEnd = kBank1 + 0xCu + 4u * newCount;
+        std::vector<std::pair<Clip *, uint32_t>> moves;
+        for (Clip &clip : clips)
+        {
+            if (clip.address >= indexEnd || clip.address < kBank1)
+                continue;
+            const uint32_t to = vendetta_store::allocate(vendetta_store::Area::Boot, clip.size, "game clips moved for the index",
+                                                         16u, 8u);
+            if (to == 0u)
+                return false;
+            moves.push_back({&clip, to});
+        }
+        for (auto &[clip, to] : moves)
+        {
+            std::memcpy(vendetta_store::host(to), g_rdram + clip->address, clip->size);
+            pointIndexAt(1, clip->index, to);
+            if (clip->address + clip->size > indexEnd)
+                g_unused.push_back({indexEnd, clip->address + clip->size});
+            clip->address = to;
+        }
+        moved = static_cast<uint32_t>(moves.size());
+        return true;
+    }
+
+    // Bank 1's timing records (FZUI), copied to the store with room for the new clips (those start empty).
+    bool growBank1Timing(uint32_t newCount)
+    {
+        const uint32_t oldArray = read32(kWaza + kFzuiBank1);
+        const uint32_t oldBytes = kExpectedCount1 * kFzuiSize;
+        const uint32_t array = vendetta_store::allocate(vendetta_store::Area::Boot, newCount * kFzuiSize,
+                                                        "animation timing records", 16u, 0u);
+        if (array == 0u)
+            return false;
+        uint8_t *to = vendetta_store::host(array);
+        std::memcpy(to, g_rdram + oldArray, oldBytes);
+        std::memset(to + oldBytes, 0, (newCount - kExpectedCount1) * kFzuiSize);
+        write32(kWaza + kFzuiBank1, array);
+        g_unused.push_back({oldArray, oldArray + oldBytes});
+        return true;
+    }
+
+    // Applies the mods: new clips first (they move the clips under the grown index), then replacements.
+    void applyMods()
+    {
+        // the game's own clips by name (only those: "replace" is for the game's clips); built again once the new
+        // clips are in, since adding them can move the list
+        std::unordered_map<std::string, std::vector<Clip *>> byName;
+        const auto indexGameNames = [&byName]()
+        {
+            byName.clear();
+            for (int bank = 0; bank < 2; ++bank)
+            {
+                const uint32_t count = bank == 0 ? kExpectedCount0 : kExpectedCount1;
+                for (uint32_t i = 0; i < count && i < g_clips[bank].size(); ++i)
+                    if (!g_clips[bank][i].name.empty())
+                        byName[upper(g_clips[bank][i].name)].push_back(&g_clips[bank][i]);
+            }
+        };
+        indexGameNames();
+
+        uint32_t replaced = 0, skipped = 0, moved = 0, addedCount = 0;
+
+        std::vector<NewClip> added = collectNewClips(byName);
+        const uint32_t room = kMaxClipId + 1u - kExpectedCount1;
+        if (added.size() > room)
+        {
+            std::cerr << "[mods] new animations: " << added.size() << " asked for, " << room
+                      << " fit for now (a move holds its clip id in 12 bits, so ids stop at 4095) - the rest skipped"
+                      << std::endl;
+            skipped += static_cast<uint32_t>(added.size() - room);
+            added.resize(room);
+        }
+        // every new clip's bytes placed first, so a full store leaves the game untouched
+        std::vector<NewClip> placed;
+        for (NewClip &item : added)
+        {
+            if (placeModClip(*item.clip))
+                placed.push_back(item);
+            else
+                ++skipped;
+        }
+        if (!placed.empty())
+        {
+            const uint32_t newCount = kExpectedCount1 + static_cast<uint32_t>(placed.size());
+            if (!growBank1Index(newCount, moved) || !growBank1Timing(newCount))
+            {
+                std::cerr << "[mods] new animations skipped: no room in the store" << std::endl;
+                skipped += static_cast<uint32_t>(placed.size());
+            }
+            else
+            {
+                std::vector<Clip> &clips = g_clips[1];
+                for (const NewClip &item : placed)
+                {
+                    Clip clip;
+                    clip.bank = 1;
+                    clip.index = static_cast<uint32_t>(clips.size());
+                    clip.address = item.clip->address;
+                    clip.size = static_cast<uint32_t>(item.clip->bytes.size());
+                    clip.name = item.name;
+                    clip.from = item.clip->modName;
+                    pointIndexAt(1, clip.index, clip.address);
+                    std::cerr << "[mods] " << clip.from << ": added " << clip.name << " as clip " << clip.index << " ("
+                              << lastFrameOf(item.clip->bytes) + 1u << " frames, " << clip.size << " bytes)" << std::endl;
+                    clips.push_back(clip);
+                }
+                write32(kBank1 + 8u, static_cast<uint32_t>(clips.size()));
+                addedCount = static_cast<uint32_t>(placed.size());
+            }
+        }
+        indexGameNames();
+
+        for (const vendetta_mods::Mod &mod : vendetta_mods::loadedMods())
+        {
             const vendetta_mods::Json *replace = mod.manifest.find("replace");
             const vendetta_mods::Json *animations = replace ? replace->find("animations") : nullptr;
             if (!animations)
@@ -250,55 +476,63 @@ namespace vendetta_animations
                     ++skipped;
                     continue;
                 }
-                const std::filesystem::path file = vendetta_mods::modFile(mod, fileValue.text, "animation");
-                std::vector<uint8_t> bytes;
-                std::string why;
-                if (file.empty())
+                ModClip *modClip = loadModClip(mod, fileValue.text, "replace " + gameName + ":");
+                if (!modClip || !placeModClip(*modClip))
                 {
                     ++skipped;
                     continue;
                 }
-                if (!readFile(file, bytes) || !clipLooksValid(bytes, why))
-                {
-                    std::cerr << "[mods] " << mod.name << ": " << fileValue.text << " skipped: "
-                              << (why.empty() ? "can't be read" : why) << std::endl;
-                    ++skipped;
-                    continue;
-                }
-                const std::string fileName = file.filename().string();
-                const std::string &modName = mod.name;
                 for (Clip *clip : found->second)
                 {
-                    const int bank = clip->bank;
-                    const uint32_t start = ((freeStart[bank] + 7u) & ~15u) + 8u;
-                    const uint32_t end = start + static_cast<uint32_t>(bytes.size());
-                    if (end > freeEnd[bank])
-                    {
-                        std::cerr << "[mods] " << modName << ": " << fileName << " skipped: no room left after bank " << bank
-                                  << " (" << (freeEnd[bank] > freeStart[bank] ? freeEnd[bank] - freeStart[bank] : 0u)
-                                  << " bytes free; more memory comes in a later step)" << std::endl;
-                        ++skipped;
-                        continue;
-                    }
-                    std::memcpy(g_rdram + start, bytes.data(), bytes.size());
-                    const uint32_t entry = bankBase(bank) + 0xCu + 4u * clip->index;
                     const uint32_t oldLastFrame = read16(clip->address);
-                    write32(entry, start - entry);
-                    freeStart[bank] = end;
-                    std::cerr << "[mods] " << modName << ": replaced " << clip->name << " (bank " << bank << " clip "
-                              << clip->index << ", id " << (bank == 0 ? 10000u + clip->index : clip->index) << ", "
-                              << oldLastFrame + 1u << " frames) with " << fileName << " ("
-                              << (static_cast<uint32_t>(bytes[0]) | (static_cast<uint32_t>(bytes[1]) << 8u)) + 1u
-                              << " frames, " << bytes.size() << " bytes)" << std::endl;
-                    clip->address = start;
-                    clip->size = static_cast<uint32_t>(bytes.size());
-                    clip->from = modName;
+                    if (clip->from != "game")
+                        std::cerr << "[mods] " << mod.name << ": " << clip->name << " was already replaced by " << clip->from
+                                  << " - " << mod.name << "'s is used (later in the load order)" << std::endl;
+                    else if (clip->address >= kBank0 && clip->address < 0x2000000u)
+                        g_unused.push_back({clip->address, clip->address + clip->size});
+                    pointIndexAt(clip->bank, clip->index, modClip->address);
+                    std::cerr << "[mods] " << mod.name << ": replaced " << clip->name << " (bank " << clip->bank << " clip "
+                              << clip->index << ", id " << (clip->bank == 0 ? 10000u + clip->index : clip->index) << ", "
+                              << oldLastFrame + 1u << " frames) with " << modClip->fileName << " ("
+                              << lastFrameOf(modClip->bytes) + 1u << " frames, " << modClip->bytes.size() << " bytes)"
+                              << std::endl;
+                    clip->address = modClip->address;
+                    clip->size = static_cast<uint32_t>(modClip->bytes.size());
+                    clip->from = mod.name;
                     ++replaced;
                 }
             }
         }
-        std::cerr << "[mods] animations: " << replaced << " replaced" << (skipped ? ", " + std::to_string(skipped) + " skipped" : "")
-                  << std::endl;
+        std::cerr << "[mods] animations: " << replaced << " replaced, " << addedCount << " added";
+        if (addedCount)
+            std::cerr << " (clips " << kExpectedCount1 << "-" << kExpectedCount1 + addedCount - 1u << ", " << moved
+                      << " game clips moved to make room)";
+        if (skipped)
+            std::cerr << ", " << skipped << " skipped";
+        std::cerr << std::endl;
+    }
+
+    // VENDETTA_ANIM_POISON=1: the bytes no index entry or timing pointer uses any more are filled with 0xFF - unless a
+    // clip still in use overlaps them (two names can share one clip's bytes).
+    void poisonUnused()
+    {
+        if (!envOn("VENDETTA_ANIM_POISON"))
+            return;
+        uint32_t bytes = 0;
+        for (const auto &[from, to] : g_unused)
+        {
+            bool inUse = false;
+            for (const std::vector<Clip> &clips : g_clips)
+                for (const Clip &clip : clips)
+                    if (clip.address < to && clip.address + clip.size > from)
+                        inUse = true;
+            if (inUse)
+                continue;
+            std::memset(g_rdram + from, 0xFF, to - from);
+            bytes += to - from;
+        }
+        std::cerr << "[anim] VENDETTA_ANIM_POISON: " << bytes << " unused bytes filled with 0xFF (" << g_unused.size()
+                  << " ranges)" << std::endl;
     }
 
     void dumpClips()
@@ -371,6 +605,8 @@ namespace vendetta_animations
         readClips();
         dumpClips(); // the game's own bytes, before any mod
         applyMods();
+        poisonUnused();
+        vendetta_store::report();
         if (envOn("VENDETTA_ANIMLIST"))
             listClips();
     }

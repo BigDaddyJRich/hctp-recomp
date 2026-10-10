@@ -267,7 +267,12 @@ namespace vendetta_mods
                 std::cerr << "[mods] off (VENDETTA_MODS=0)" << std::endl;
                 return mods;
             }
-            const std::filesystem::path root = PS2Runtime::getIoPaths().elfDirectory.parent_path() / "mods";
+            // VENDETTA_MODS_DIR=<folder>: another mods folder (test runs)
+            const char *dir = std::getenv("VENDETTA_MODS_DIR");
+            const std::filesystem::path root = dir && *dir ? std::filesystem::path(dir)
+                                                           : PS2Runtime::getIoPaths().elfDirectory.parent_path() / "mods";
+            if (dir && *dir)
+                std::cerr << "[mods] folder " << root.string() << " (VENDETTA_MODS_DIR)" << std::endl;
             std::error_code ec;
             if (!std::filesystem::is_directory(root, ec))
                 return mods;
