@@ -21,6 +21,9 @@
 //  - "replace": "animations": game clips (by the names in the tables at 0x25A790 / 0x259AB8) get new bytes; the index
 //    entry points at them. A replacement changes the clip everywhere the game uses it; mods apply in load order, so a
 //    later mod's replacement of the same clip wins.
+//  - "wrestlers": a game wrestler's moveset slots ({ "84": "Jericho Entrance" }): a new animation in a slot gets a
+//    move of its own (a copy of the slot's move with the clip changed); the move records are copied to the store with
+//    room for them. FUN_00102938 (play a moveset slot) reads the slot before it starts the clip, so it is hooked too.
 //
 // VENDETTA_MODS=0        the plain game (mods\ ignored)
 // VENDETTA_ANIMLOG=1     each clip a fighter starts (FUN_00132158: fighter in a0, clip id in a1), with its name
@@ -59,6 +62,12 @@ namespace vendetta_animations
     constexpr uint32_t kFzuiBank1 = 0x24u;     // ... + 0x24: bank 1's timing records (one per clip id)
     constexpr uint32_t kFzuiSize = 38u;
     constexpr uint32_t kMaxClipId = 4095u;     // a move record's clip field is 12 bits (FUN_0011c608)
+    constexpr uint32_t kRecords = 0x14u;       // ... + 0x14: the move records (stride + 0x04, count + 0x08)
+    constexpr uint32_t kMovesets = 0x7Cu;      // ... + 0x7C + 16 x attire: that attire's moveset (128 u16 slots)
+    constexpr uint32_t kCharacters = 0x27E100u; // the character table: one 0x20 row per wrestler attire (+0 / +4 names)
+    constexpr uint32_t kAttires = 59u;         // rows with a moveset (59-62 are the empty "Character A-D")
+    constexpr uint32_t kSlots = 128u;
+    constexpr uint32_t kPlaySlot = 0x102938u;  // play a moveset slot (fighter, wrestler, slot) - reads the slot first
     constexpr uint32_t kReadSlots = 0x1E25F00u; // the game's 32 disc reads in flight (0 = free)
     constexpr uint32_t kPlayClip = 0x132158u;
     constexpr uint32_t kExpectedCount0 = 821u;
@@ -77,6 +86,7 @@ namespace vendetta_animations
     uint8_t *g_rdram = nullptr;
     std::vector<Clip> g_clips[2];
     PS2Runtime::RecompiledFunction g_originalPlayClip = nullptr;
+    PS2Runtime::RecompiledFunction g_originalPlaySlot = nullptr;
 
     uint32_t read32(uint32_t address)
     {
@@ -173,6 +183,8 @@ namespace vendetta_animations
             why = "the move data holds " + std::to_string(read32(kWaza + 8u)) + " moves, not 999";
         else if (read32(kWaza + kFzuiStride) != kFzuiSize || read32(kWaza + kFzuiBank1) - 0x100000u >= 0x1F00000u)
             why = "the clip timing records aren't laid out as in the original game";
+        else if (upper(guestString(read32(kCharacters))) != "BRIGGS" || read32(kWaza + 4u) != 25u)
+            why = "the character table or the move records aren't where the original game keeps them";
         else if (guestString(read32(kNames1)).empty() || guestString(read32(kNames0)).empty())
             why = "the clip name tables are not where the original game keeps them";
         else
@@ -512,6 +524,211 @@ namespace vendetta_animations
         std::cerr << std::endl;
     }
 
+    // A move record field (25 bytes, bit-packed MSB-first, FUN_0011c608): field 28 = the clip, at bit 163, 12 bits.
+    constexpr uint32_t kClipBit = 163u, kClipBits = 12u;
+
+    uint32_t recordField(const uint8_t *record, uint32_t bit, uint32_t bits)
+    {
+        uint32_t value = 0;
+        for (uint32_t i = 0; i < bits; ++i, ++bit)
+            value = (value << 1u) | ((record[bit >> 3u] >> (7u - (bit & 7u))) & 1u);
+        return value;
+    }
+    void setRecordField(uint8_t *record, uint32_t bit, uint32_t bits, uint32_t value)
+    {
+        for (uint32_t i = 0; i < bits; ++i, ++bit)
+        {
+            const uint8_t mask = static_cast<uint8_t>(1u << (7u - (bit & 7u)));
+            if ((value >> (bits - 1u - i)) & 1u)
+                record[bit >> 3u] |= mask;
+            else
+                record[bit >> 3u] &= static_cast<uint8_t>(~mask);
+        }
+    }
+
+    // A wrestler attire's moveset: 128 u16 slots (flags in bits 12-15, the move record in bits 0-11; 0xFFFF = empty),
+    // pointed to by the WAZA struct at +0x7C + 16 x record (record = the attire's row in the character table).
+    uint32_t movesetAddress(uint32_t attire)
+    {
+        uint32_t address = read32(kWaza + kMovesets + 16u * attire);
+        if (std::memcmp(g_rdram + (address & PS2_RAM_MASK), "WWAZ", 4) == 0)
+            address += 8u; // the block's tag and size
+        return address;
+    }
+
+    // The character table's rows (one per wrestler attire) whose name - full or short - is `name` (any case).
+    std::vector<uint32_t> attiresOf(const std::string &name)
+    {
+        std::vector<uint32_t> rows;
+        const std::string want = upper(name);
+        for (uint32_t row = 0; row < kAttires; ++row)
+        {
+            const uint32_t entry = kCharacters + 0x20u * row;
+            if (upper(guestString(read32(entry))) == want || upper(guestString(read32(entry + 4u))) == want)
+                rows.push_back(row);
+        }
+        return rows;
+    }
+
+    // "wrestlers": { "<wrestler>": "<file>" }: the file lists moveset slots and what goes in them -
+    // { "84": "Jericho Entrance" } - only the listed slots change. A new animation in a slot gets its own move: a copy
+    // of the slot's move with the clip changed (so it keeps the slot's behaviour - an intro stays an intro), and the
+    // clip takes the replaced clip's timing record (camera, frame markers) unless it already has one. The game's
+    // 999 move records are copied to the store with room for the new ones (*(0x2331C8 + 0x14), count at + 0x08).
+    void applyWrestlers()
+    {
+        std::unordered_map<std::string, uint32_t> newClips; // a new animation's name -> its clip id
+        for (uint32_t i = kExpectedCount1; i < g_clips[1].size(); ++i)
+            newClips[upper(g_clips[1][i].name)] = i;
+
+        struct Change
+        {
+            uint32_t clip;
+            std::string modName;
+            std::string wrestler;
+            std::string animation;
+        };
+        std::map<std::pair<uint32_t, uint32_t>, Change> changes; // (attire, slot) -> what goes there
+        for (const vendetta_mods::Mod &mod : vendetta_mods::loadedMods())
+        {
+            const vendetta_mods::Json *wrestlers = mod.manifest.find("wrestlers");
+            if (!wrestlers)
+                continue;
+            if (!wrestlers->isObject())
+            {
+                std::cerr << "[mods] " << mod.name << ": \"wrestlers\" should be { \"<wrestler>\": \"<file>\" }" << std::endl;
+                continue;
+            }
+            for (const auto &[wrestler, fileValue] : wrestlers->members)
+            {
+                const std::vector<uint32_t> attires = attiresOf(wrestler);
+                if (attires.empty())
+                {
+                    std::cerr << "[mods] " << mod.name << ": the game has no wrestler called \"" << wrestler << "\" - skipped"
+                              << std::endl;
+                    continue;
+                }
+                const std::filesystem::path file =
+                    fileValue.isString() ? vendetta_mods::modFile(mod, fileValue.text, "wrestler") : std::filesystem::path();
+                std::vector<uint8_t> bytes;
+                vendetta_mods::Json moveset;
+                std::string error;
+                if (file.empty() || !readFile(file, bytes) ||
+                    !vendetta_mods::parseJson(std::string(bytes.begin(), bytes.end()), moveset, error) || !moveset.isObject())
+                {
+                    std::cerr << "[mods] " << mod.name << ": " << wrestler << "'s file can't be read"
+                              << (error.empty() ? "" : ": " + error) << " - skipped" << std::endl;
+                    continue;
+                }
+                for (const auto &[slotText, value] : moveset.members)
+                {
+                    char *end = nullptr;
+                    const long slot = std::strtol(slotText.c_str(), &end, 10);
+                    if (slotText.empty() || *end != '\0' || slot < 0 || slot >= static_cast<long>(kSlots))
+                    {
+                        std::cerr << "[mods] " << mod.name << ": " << wrestler << ": \"" << slotText
+                                  << "\" isn't a moveset slot (0-127) - skipped" << std::endl;
+                        continue;
+                    }
+                    const auto found = value.isString() ? newClips.find(upper(value.text)) : newClips.end();
+                    if (found == newClips.end())
+                    {
+                        std::cerr << "[mods] " << mod.name << ": " << wrestler << " slot " << slot << ": no new animation called \""
+                                  << value.text << "\" (a mod's \"new\" list names them) - skipped" << std::endl;
+                        continue;
+                    }
+                    for (uint32_t attire : attires)
+                    {
+                        Change &change = changes[{attire, static_cast<uint32_t>(slot)}];
+                        if (!change.modName.empty() && change.modName != mod.name)
+                            std::cerr << "[mods] " << mod.name << ": " << wrestler << " slot " << slot << " was also set by "
+                                      << change.modName << " - " << mod.name << "'s is used (later in the load order)" << std::endl;
+                        change = {found->second, mod.name, wrestler, g_clips[1][found->second].name};
+                    }
+                }
+            }
+        }
+        if (changes.empty())
+            return;
+
+        // one new move per (the slot's move, the new clip)
+        const uint32_t stride = read32(kWaza + 4u);
+        const uint32_t oldRecords = read32(kWaza + kRecords);
+        const uint32_t oldCount = read32(kWaza + 8u);
+        std::map<std::pair<uint32_t, uint32_t>, uint32_t> newRecords; // (base record, clip) -> new record
+        std::vector<std::pair<uint32_t, uint32_t>> order;
+        for (auto &[where, change] : changes)
+        {
+            const uint16_t value = read16(movesetAddress(where.first) + 2u * where.second);
+            if (value == 0xFFFFu || (value & 0xFFFu) >= oldCount)
+                continue;
+            const auto key = std::make_pair(static_cast<uint32_t>(value & 0xFFFu), change.clip);
+            if (!newRecords.count(key))
+            {
+                newRecords[key] = oldCount + static_cast<uint32_t>(order.size());
+                order.push_back(key);
+            }
+        }
+        const uint32_t count = oldCount + static_cast<uint32_t>(order.size());
+        if (count > 0x1000u)
+        {
+            std::cerr << "[mods] wrestlers: " << count << " moves needed; a moveset slot holds 12 bits (4,096) - skipped" << std::endl;
+            return;
+        }
+        uint32_t records = 0;
+        if (!order.empty())
+        {
+            records = vendetta_store::allocate(vendetta_store::Area::Boot, count * stride, "move records", 16u, 0u);
+            if (records == 0u)
+                return;
+            uint8_t *to = vendetta_store::host(records);
+            std::memcpy(to, g_rdram + oldRecords, oldCount * stride);
+            uint8_t *fzui = g_rdram + (read32(kWaza + kFzuiBank1) & PS2_RAM_MASK);
+            for (size_t i = 0; i < order.size(); ++i)
+            {
+                const auto [base, clip] = order[i];
+                uint8_t *record = to + (oldCount + i) * stride;
+                std::memcpy(record, to + base * stride, stride);
+                const uint32_t baseClip = recordField(record, kClipBit, kClipBits);
+                setRecordField(record, kClipBit, kClipBits, clip);
+                // the new clip's timing record: the one of the clip it stands in for, the first time it's used
+                static const uint8_t empty[kFzuiSize] = {};
+                if (std::memcmp(fzui + clip * kFzuiSize, empty, kFzuiSize) == 0 && baseClip < g_clips[1].size())
+                    std::memcpy(fzui + clip * kFzuiSize, fzui + baseClip * kFzuiSize, kFzuiSize);
+            }
+            write32(kWaza + kRecords, records);
+            write32(kWaza + 8u, count);
+            g_unused.push_back({oldRecords, oldRecords + oldCount * stride});
+        }
+
+        const uint32_t recordArray = read32(kWaza + kRecords);
+        uint32_t set = 0;
+        for (auto &[where, change] : changes)
+        {
+            const uint32_t slotAddress = movesetAddress(where.first) + 2u * where.second;
+            const uint16_t value = read16(slotAddress);
+            if (value == 0xFFFFu || (value & 0xFFFu) >= oldCount)
+            {
+                std::cerr << "[mods] " << change.modName << ": " << change.wrestler << " (attire row " << where.first << ") slot "
+                          << where.second << " is empty - a new animation needs a move to copy there (later) - skipped"
+                          << std::endl;
+                continue;
+            }
+            const uint32_t base = value & 0xFFFu;
+            const uint32_t record = newRecords[{base, change.clip}];
+            const uint8_t *baseRecord = g_rdram + (recordArray & PS2_RAM_MASK) + base * stride;
+            const uint32_t baseClip = recordField(baseRecord, kClipBit, kClipBits);
+            const uint16_t newValue = static_cast<uint16_t>((value & 0xF000u) | record);
+            std::memcpy(g_rdram + (slotAddress & PS2_RAM_MASK), &newValue, 2);
+            std::cerr << "[mods] " << change.modName << ": " << change.wrestler << " (attire row " << where.first << ") slot "
+                      << where.second << ": move " << base << " (clip " << baseClip << " "
+                      << (baseClip < g_clips[1].size() ? g_clips[1][baseClip].name : "?") << ") -> move " << record
+                      << " (clip " << change.clip << " " << change.animation << ")" << std::endl;
+            ++set;
+        }
+        std::cerr << "[mods] wrestlers: " << set << " moveset slots set, " << order.size() << " new moves" << std::endl;
+    }
+
     // VENDETTA_ANIM_POISON=1: the bytes no index entry or timing pointer uses any more are filled with 0xFF - unless a
     // clip still in use overlaps them (two names can share one clip's bytes).
     void poisonUnused()
@@ -605,6 +822,7 @@ namespace vendetta_animations
         readClips();
         dumpClips(); // the game's own bytes, before any mod
         applyMods();
+        applyWrestlers();
         poisonUnused();
         vendetta_store::report();
         if (envOn("VENDETTA_ANIMLIST"))
@@ -641,8 +859,19 @@ namespace vendetta_animations
         g_originalPlayClip(rdram, ctx, runtime);
     }
 
+    // A fighter playing a moveset slot (FUN_00102938): it reads the slot before it starts the clip, so the mods must
+    // be in by then too.
+    void playSlot(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        prepare(rdram);
+        g_originalPlaySlot(rdram, ctx, runtime);
+    }
+
     void install(PS2Runtime &runtime)
     {
+        g_originalPlaySlot = runtime.lookupFunction(kPlaySlot);
+        if (g_originalPlaySlot)
+            runtime.replaceFunction(kPlaySlot, playSlot);
         g_originalPlayClip = runtime.lookupFunction(kPlayClip);
         if (g_originalPlayClip)
             runtime.replaceFunction(kPlayClip, playClip);

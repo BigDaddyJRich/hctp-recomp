@@ -11,7 +11,7 @@
 //       "animations": { "N61A1_AP": "animations/Jericho Entrance.bin" }    changed everywhere they are used
 //     },
 //     "new": { "animations": ["animations/Jericho Entrance.bin"] },        things the game doesn't have
-//     "wrestlers": { "Briggs": "wrestlers/Briggs.json" }                  slot changes per wrestler (later)
+//     "wrestlers": { "Briggs": "wrestlers/Briggs.json" }                  moveset slots: { "84": "Jericho Entrance" }
 //   }
 //
 // Load order: mods\order.txt (one mod folder per line; a later one wins when two change the same thing), the others
