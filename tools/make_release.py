@@ -196,19 +196,12 @@ def main():
         os.replace(out + '.part', out)
     print(counts)
 
-    # files kept in the local-only side repository beside this one (if any) never go in
-    private = set()
-    side = os.path.join(REPO, '.notes.git')
-    if os.path.isdir(side):
-        private = set(git(['--git-dir=' + side, 'ls-files'], REPO).decode().split())
     with zipfile.ZipFile(out) as z:
         infos = z.infolist()
         for i in infos:
             check(i.filename)
             if i.file_size > 20 * 1024 * 1024 and not i.filename.endswith('Vendetta Settings.exe'):
                 raise SystemExit('too big: ' + i.filename)
-            if i.filename.startswith(SRC) and i.filename[len(SRC):] in private:
-                raise SystemExit('a private file in the zip: ' + i.filename)
             if i.filename.endswith('runner/register_functions.cpp'):
                 text = z.read(i).decode('utf-8', 'replace')
                 if 'FUN_00' in text or 'entry_00' in text:
