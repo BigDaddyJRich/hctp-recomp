@@ -15,6 +15,9 @@ $r = Split-Path -Parent $PSScriptRoot
 # the real keyboard / controllers are ignored in test runs (only a pad script drives the game): Enter typed elsewhere
 # while the game window had focus skipped the intro movie
 $env:VENDETTA_NO_HOST_INPUT = '1'
+# and the player's settings.toml too (the built-in defaults, no file written); a normal window unless -Max
+if (-not $env:VENDETTA_SETTINGS) { $env:VENDETTA_SETTINGS = 'none' }
+if (-not $Max -and -not $env:VENDETTA_MAXIMISED) { $env:VENDETTA_MAXIMISED = '0' }
 $p = Start-Process -FilePath "$r\PS2Recomp\out\$Build\ps2xRuntime\ps2EntryRunner.exe" -ArgumentList "`"$r\game\SLUS_206.39`"" -WorkingDirectory $r -RedirectStandardOutput "$r\shots\$Name.log" -RedirectStandardError "$r\shots\$Name.log.err" -PassThru
 "started pid $($p.Id)"
 if ($Max) {

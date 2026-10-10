@@ -23,6 +23,8 @@ config/vendetta_functions.csv
 /logs/
 *.log
 imgui.ini
+# the player's settings (the game writes a default one)
+settings.toml
 __pycache__/
 *.pyc
 

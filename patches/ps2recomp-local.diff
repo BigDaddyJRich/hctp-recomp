@@ -2356,10 +2356,10 @@ index 509fd07..71243e7 100644
  
      std::string CodeGenerator::translateVU_VMTIR(const Instruction &inst)
 diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
-index 589d768..0b9331a 100644
+index 589d768..a997be6 100644
 --- a/ps2xRuntime/CMakeLists.txt
 +++ b/ps2xRuntime/CMakeLists.txt
-@@ -383,12 +383,16 @@ add_library(ps2_runtime STATIC
+@@ -383,12 +383,17 @@ add_library(ps2_runtime STATIC
      src/lib/gs/ps2_gs_memory.cpp
      src/lib/gs/gs_frontend.cpp
      src/lib/gs/gs_cpu_backend.cpp
@@ -2372,11 +2372,12 @@ index 589d768..0b9331a 100644
      src/lib/ps2_rom_device.cpp
      src/lib/ps2_vfs.cpp
      src/lib/ps2_runtime.cpp
++    src/lib/ps2_host_settings.cpp
 +    src/lib/ps2_chain.cpp
      src/lib/ps2_vif1_interpreter.cpp
      src/lib/vu/ps2_vu1_core.cpp
      src/lib/vu/ps2_vu1_upper.cpp
-@@ -396,6 +400,27 @@ add_library(ps2_runtime STATIC
+@@ -396,6 +401,27 @@ add_library(ps2_runtime STATIC
      src/lib/games_database.cpp
  )
  
@@ -2404,7 +2405,7 @@ index 589d768..0b9331a 100644
  if(PS2X_ENABLE_RUNTIME_LOGS)
      target_compile_definitions(ps2_runtime PUBLIC
          PS2_RUNTIME_LOGS=1
-@@ -429,6 +454,12 @@ target_compile_definitions(ps2_runtime PRIVATE
+@@ -429,6 +455,12 @@ target_compile_definitions(ps2_runtime PRIVATE
      PS2X_HAS_FFMPEG=$<BOOL:${PS2X_ENABLE_FFMPEG}>
  )
  
@@ -2417,7 +2418,7 @@ index 589d768..0b9331a 100644
  file(GLOB_RECURSE KERNEL_SRC_FILES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/Kernel/*.cpp"
  )
-@@ -462,6 +493,17 @@ else()
+@@ -462,6 +494,17 @@ else()
      )
  endif()
  
@@ -2435,6 +2436,21 @@ index 589d768..0b9331a 100644
  if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
      set_target_properties(ps2EntryRunner PROPERTIES
          UNITY_BUILD ON
+@@ -507,6 +550,14 @@ target_include_directories(ps2_runtime PUBLIC
+ )
+ 
+ target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
++
++# The window's exact fullscreen mode (resolution and refresh rate) through GLFW, which raylib builds in on desktops
++if(NOT PS2X_IS_VITA AND NOT PS2X_IS_ANDROID AND DEFINED raylib_SOURCE_DIR
++   AND EXISTS "${raylib_SOURCE_DIR}/src/external/glfw/include/GLFW/glfw3.h")
++    set_property(SOURCE src/lib/ps2_runtime.cpp APPEND PROPERTY
++        INCLUDE_DIRECTORIES "${raylib_SOURCE_DIR}/src/external/glfw/include")
++    set_property(SOURCE src/lib/ps2_runtime.cpp APPEND PROPERTY COMPILE_DEFINITIONS PS2X_HAS_GLFW=1)
++endif()
+ target_link_libraries(ps2EntryRunner
+     PRIVATE
+     ps2_runtime
 diff --git a/ps2xRuntime/cmake/ReleaseMode.cmake b/ps2xRuntime/cmake/ReleaseMode.cmake
 index 92ef0d5..163ceb0 100644
 --- a/ps2xRuntime/cmake/ReleaseMode.cmake
@@ -2564,9 +2580,18 @@ index 4b9242c..3bee601 100644
      std::atomic<uint32_t> m_missingFunctionPolicy{static_cast<uint32_t>(MissingFunctionPolicy::ContinueToTarget)};
      std::atomic<bool> m_missingFunctionReported{false};
 diff --git a/ps2xRuntime/include/ps2_runtime_macros.h b/ps2xRuntime/include/ps2_runtime_macros.h
-index 0f19c9f..0b5c59e 100644
+index 0f19c9f..caa28b8 100644
 --- a/ps2xRuntime/include/ps2_runtime_macros.h
 +++ b/ps2xRuntime/include/ps2_runtime_macros.h
+@@ -154,7 +154,7 @@ static inline uint32_t ps2_plzcw32(uint32_t x)
+ 
+ static inline bool Ps2FastRangeIsContiguous(uint32_t offset, uint32_t bytes)
+ {
+-    return offset <= (PS2_RAM_SIZE - bytes);
++    return offset <= (PS2_RAM_BACKING_SIZE - bytes);
+ }
+ 
+ static inline uint8_t Ps2FastRead8(const uint8_t *rdram, uint32_t addr)
 @@ -623,7 +623,17 @@ inline __m128i ps2_u64_to_epi64_pair(uint64_t value)
  #define FPU_FLOOR_W_S(a) ((int32_t)floorf((float)(a)))
  #define FPU_CVT_S_W(a) ((float)(int32_t)(a))
@@ -4004,6 +4029,60 @@ index 0000000..b9483b6
 +        return phase < Count ? names[phase] : "?";
 +    }
 +}
+diff --git a/ps2xRuntime/include/runtime/ps2_host_settings.h b/ps2xRuntime/include/runtime/ps2_host_settings.h
+new file mode 100644
+index 0000000..50ca90e
+--- /dev/null
++++ b/ps2xRuntime/include/runtime/ps2_host_settings.h
+@@ -0,0 +1,48 @@
++#pragma once
++
++#include <filesystem>
++#include <string>
++
++// The player's settings: settings.toml, written by a settings program or by hand. Read once at start, before anything
++// else reads a switch. A VENDETTA_* switch set in the environment always wins over the file, so test runs and debugging
++// work as before; a setting only fills in a switch that isn't set.
++//
++// Where the file is: VENDETTA_SETTINGS=<path> (or =none: the defaults, no file), else settings.toml next to the
++// program, else in the current folder. When there is none, a commented default is written to the current folder.
++namespace ps2_host_settings
++{
++    enum class WindowMode
++    {
++        Window,
++        Borderless, // a frameless window the size of the screen
++        Fullscreen  // the screen switched to the game's resolution and refresh rate
++    };
++
++    // refresh_rate = "smoothest": the highest rate the screen has that is a multiple of 60 Hz (each of the game's ~60
++    // pictures a second then stays on screen the same time); a screen with none: its highest rate
++    constexpr int kRefreshSmoothest = -1;
++
++    struct Settings
++    {
++        // [display]
++        WindowMode mode = WindowMode::Window;
++        int screen = 1;            // 1 = the main screen
++        bool maximised = true;     // Window only
++        int fullscreenWidth = 0;   // Fullscreen only; 0 = the screen's own resolution
++        int fullscreenHeight = 0;
++        int refreshRate = -1;      // Fullscreen only: Hz, 0 = the screen's own rate, kRefreshSmoothest = the smoothest
++        bool vsync = true;         // wait for the screen before showing each picture
++        bool stretch = false;      // the picture fills the window (false: 4:3, bars at the sides)
++        // [sound]
++        int volume = 100;          // 0..100
++        // [graphics] renderer / scale / filter / sharpening and [sound] reverb set their VENDETTA_* switches
++
++        std::filesystem::path file; // the file they came from (empty: the defaults)
++    };
++
++    // programPath: argv[0] (the program's own path is looked up on Windows)
++    void load(const char *programPath);
++    const Settings &get();
++
++    const char *windowModeName(WindowMode mode);
++}
 diff --git a/ps2xRuntime/include/runtime/ps2_memory.h b/ps2xRuntime/include/runtime/ps2_memory.h
 index ea86a9c..50684a6 100644
 --- a/ps2xRuntime/include/runtime/ps2_memory.h
@@ -4901,7 +4980,7 @@ index 0000000..3bc0f17
 +    bool writtenSince(const PS2Memory *memory, uint64_t since, uint64_t now, uint32_t &begin, uint32_t &end);
 +}
 diff --git a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
-index c5e31c4..3808f3d 100644
+index c5e31c4..2385387 100644
 --- a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 @@ -1,10 +1,18 @@
@@ -5322,6 +5401,15 @@ index c5e31c4..3808f3d 100644
          return;
      }
      const auto &handlers = dmac ? m_dmacHandlers : m_intcHandlers;
+@@ -1296,7 +1570,7 @@ void EeScheduler::setVSyncFlag(uint32_t flagAddress, uint32_t tickAddress)
+     if (tickAddress != 0u)
+     {
+         const uint32_t physical = tickAddress & 0x1FFFFFFFu;
+-        if (m_rdram && physical <= PS2_RAM_SIZE - sizeof(uint64_t))
++        if (m_rdram && physical <= PS2_RAM_BACKING_SIZE - sizeof(uint64_t))
+         {
+             const uint64_t zero = 0u;
+             std::memcpy(m_rdram + physical, &zero, sizeof(zero));
 @@ -1680,10 +1954,69 @@ void EeScheduler::removeFromWaitObject(GuestThread &item)
      item.wait = {};
  }
@@ -5497,6 +5585,15 @@ index c5e31c4..3808f3d 100644
          ++m_vsyncTick;
          m_runtime.memory().gs().vsyncTick.store(m_vsyncTick, std::memory_order_release);
          if ((m_vsyncTick & 1u) != 0u)
+@@ -1881,7 +2278,7 @@ void EeScheduler::processEvent(const EeEvent &event)
+         if (m_vsyncTickAddress != 0u)
+         {
+             const uint32_t physical = m_vsyncTickAddress & 0x1FFFFFFFu;
+-            if (m_rdram && physical <= PS2_RAM_SIZE - sizeof(uint64_t))
++            if (m_rdram && physical <= PS2_RAM_BACKING_SIZE - sizeof(uint64_t))
+             {
+                 std::memcpy(m_rdram + physical, &m_vsyncTick, sizeof(m_vsyncTick));
+             }
 @@ -1889,6 +2286,7 @@ void EeScheduler::processEvent(const EeEvent &event)
          m_vsyncFlagAddress = 0u;
          m_vsyncTickAddress = 0u;
@@ -5537,7 +5634,15 @@ index c5e31c4..3808f3d 100644
          SET_GPR_U32(&invocation.context, 28, alarm.gp);
          SET_GPR_U32(&invocation.context, 29, 0u);
          SET_GPR_U32(&invocation.context, 31, 0u);
-@@ -1994,8 +2403,39 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
+@@ -1987,15 +2396,46 @@ void EeScheduler::writeGuestU32(uint32_t address, uint32_t value)
+         return;
+     }
+     const uint32_t physical = address & 0x1FFFFFFFu;
+-    if (!m_rdram || physical > PS2_RAM_SIZE - sizeof(value))
++    if (!m_rdram || physical > PS2_RAM_BACKING_SIZE - sizeof(value))
+     {
+         return;
+     }
      std::memcpy(m_rdram + physical, &value, sizeof(value));
  }
  
@@ -6080,7 +6185,7 @@ index 0000000..0dc6966
 +
 +#endif
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
-index 56a978e..7fb2062 100644
+index 56a978e..e33763a 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/CD.cpp
 @@ -1,3 +1,5 @@
@@ -6209,6 +6314,15 @@ index 56a978e..7fb2062 100644
  
          struct CdReadArgs
          {
+@@ -226,7 +334,7 @@ namespace ps2_stubs
+                 return 0;
+             }
+ 
+-            const uint64_t maxBytes = static_cast<uint64_t>(PS2_RAM_SIZE - offset);
++            const uint64_t maxBytes = static_cast<uint64_t>(PS2_RAM_BACKING_SIZE - offset);
+             const uint64_t clamped = std::min<uint64_t>(requested, maxBytes);
+             return static_cast<size_t>(clamped);
+         };
 @@ -317,6 +425,9 @@ namespace ps2_stubs
          {
              g_cdStreamingLbn = selected.lbn + selected.sectors;
@@ -6241,6 +6355,15 @@ index 56a978e..7fb2062 100644
      }
  
      void sceCdPosToInt(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+@@ -489,7 +606,7 @@ namespace ps2_stubs
+ 
+             uint32_t offset = buf & PS2_RAM_MASK;
+             size_t bytes = static_cast<size_t>(sectors) * kCdSectorSize;
+-            const size_t maxBytes = PS2_RAM_SIZE - offset;
++            const size_t maxBytes = PS2_RAM_BACKING_SIZE - offset;
+             if (bytes > maxBytes)
+             {
+                 bytes = maxBytes;
 @@ -652,11 +769,13 @@ namespace ps2_stubs
      {
          restartCdStreamAt(getRegU32(ctx, 4), runtime);
@@ -6263,6 +6386,15 @@ index 56a978e..7fb2062 100644
      }
  
      void sceCdStPause(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+@@ -796,7 +916,7 @@ namespace ps2_stubs
+                 const uint64_t destination64 = static_cast<uint64_t>(state.buffer) + static_cast<uint64_t>(state.sectorsRead) * kCdSectorSize;
+                 const uint32_t destination = static_cast<uint32_t>(destination64);
+                 const uint32_t offset = destination & PS2_RAM_MASK;
+-                const size_t maxBytes = PS2_RAM_SIZE - offset;
++                const size_t maxBytes = PS2_RAM_BACKING_SIZE - offset;
+                 sectors = std::min<uint32_t>(sectors, static_cast<uint32_t>(maxBytes / kCdSectorSize));
+ 
+                 if (sectors == 0u)
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/Compatibility.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/Compatibility.cpp
 index 9f8f59f..5beeb91 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/Compatibility.cpp
@@ -6439,7 +6571,7 @@ index 9c54919..aeb02ef 100644
  
              setReturnS32(ctx, result);
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h b/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h
-index b1bb6d8..cbd6659 100644
+index b1bb6d8..7f6516f 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/Helpers/Support.h
 @@ -1,5 +1,9 @@
@@ -6487,6 +6619,22 @@ index b1bb6d8..cbd6659 100644
 +        file.clear(); // a read past the end leaves the rest zero, as before; the next read starts clean
          g_lastCdError = 0;
          return true;
+     }
+@@ -588,13 +606,13 @@ namespace
+         std::ptrdiff_t offset = ptr_u8 - rdram;
+ 
+         // Check if is in rdram range
+-        if (offset >= 0 && static_cast<size_t>(offset) < PS2_RAM_SIZE)
++        if (offset >= 0 && static_cast<size_t>(offset) < PS2_RAM_BACKING_SIZE)
+         {
+             return PS2_RAM_BASE + static_cast<uint32_t>(offset);
+         }
+         else
+         {
+-            std::cerr << "Warning: hostPtrToPs2Addr failed - host pointer " << hostPtr << " is outside rdram range [" << static_cast<void *>(rdram) << ", " << static_cast<void *>(rdram + PS2_RAM_SIZE) << ")" << std::endl;
++            std::cerr << "Warning: hostPtrToPs2Addr failed - host pointer " << hostPtr << " is outside rdram range [" << static_cast<void *>(rdram) << ", " << static_cast<void *>(rdram + PS2_RAM_BACKING_SIZE) << ")" << std::endl;
+             return 0;
+         }
      }
 @@ -773,6 +791,23 @@ namespace
          return out;
@@ -6600,9 +6748,18 @@ index b1bb6d8..cbd6659 100644
  
      private:
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/LibC.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/LibC.cpp
-index d467c4b..402c73d 100644
+index d467c4b..72d3682 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/LibC.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/LibC.cpp
+@@ -42,7 +42,7 @@ namespace ps2_stubs
+             {
+                 return (offset < PS2_SCRATCHPAD_SIZE) ? (PS2_SCRATCHPAD_SIZE - offset) : 0u;
+             }
+-            return (offset < PS2_RAM_SIZE) ? (PS2_RAM_SIZE - offset) : 0u;
++            return (offset < PS2_RAM_BACKING_SIZE) ? (PS2_RAM_BACKING_SIZE - offset) : 0u;
+         }
+ 
+     }
 @@ -50,7 +50,8 @@ namespace ps2_stubs
      void malloc(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
      {
@@ -6719,7 +6876,7 @@ index d467c4b..402c73d 100644
          }
  
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp
-index 44eaef4..1c1ad02 100644
+index 44eaef4..3883bc0 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/MPEG.cpp
 @@ -1,5 +1,7 @@
@@ -6751,6 +6908,24 @@ index 44eaef4..1c1ad02 100644
                  playback.sawSequenceEnd = true;
                  playback.cdStreamGeneration = g_mpeg_stub_state.cdStreamGeneration;
              }
+@@ -1481,7 +1490,7 @@ namespace ps2_stubs
+             {
+                 const uint32_t curAddr = addr + static_cast<uint32_t>(copied);
+                 const uint32_t offset = curAddr & PS2_RAM_MASK;
+-                size_t chunk = std::min<size_t>(size - copied, PS2_RAM_SIZE - offset);
++                size_t chunk = std::min<size_t>(size - copied, PS2_RAM_BACKING_SIZE - offset);
+                 if (chunk == 0u)
+                 {
+                     break;
+@@ -1521,7 +1530,7 @@ namespace ps2_stubs
+ 
+             const uint32_t base = ringBaseAddr & PS2_RAM_MASK;
+             const uint32_t data = dataAddr & PS2_RAM_MASK;
+-            if (ringBaseAddr != 0u && ringSize != 0u && ringSize <= PS2_RAM_SIZE)
++            if (ringBaseAddr != 0u && ringSize != 0u && ringSize <= PS2_RAM_BACKING_SIZE)
+             {
+                 const uint32_t ringOffset = (data - base) & PS2_RAM_MASK;
+                 if (ringOffset < ringSize)
 @@ -1590,7 +1599,7 @@ namespace ps2_stubs
                  return;
              }
@@ -6886,6 +7061,15 @@ index 44eaef4..1c1ad02 100644
              const uint32_t outWidth = align16(width);
              const uint32_t outHeight = align16(height);
              const uint32_t macroblockColumns = outWidth / 16u;
+@@ -1889,7 +2010,7 @@ namespace ps2_stubs
+             {
+                 const uint32_t curAddr = dataAddr + static_cast<uint32_t>(copied);
+                 const uint32_t offset = curAddr & PS2_RAM_MASK;
+-                const size_t chunk = std::min<size_t>(static_cast<size_t>(byteCount) - copied, PS2_RAM_SIZE - offset);
++                const size_t chunk = std::min<size_t>(static_cast<size_t>(byteCount) - copied, PS2_RAM_BACKING_SIZE - offset);
+                 const uint8_t *src = getConstMemPtr(rdram, curAddr);
+                 if (!src || chunk == 0u)
+                 {
 @@ -1898,7 +2019,38 @@ namespace ps2_stubs
                  feedElementaryStream(playback, src, chunk);
                  copied += chunk;
@@ -7423,6 +7607,28 @@ index 6eb35d9..7cf2526 100644
          PS2_IF_AGRESSIVE_LOGS({
              const std::string logLine = sanitizeForLog(rendered);
              uint32_t count = 0;
+diff --git a/ps2xRuntime/src/lib/Kernel/Syscalls/Common.h b/ps2xRuntime/src/lib/Kernel/Syscalls/Common.h
+index c0b13bf..2814c7c 100644
+--- a/ps2xRuntime/src/lib/Kernel/Syscalls/Common.h
++++ b/ps2xRuntime/src/lib/Kernel/Syscalls/Common.h
+@@ -45,7 +45,7 @@ inline bool resolveEeGuestRange(uint32_t address, size_t size, uint32_t &offset,
+         return size <= PS2_SCRATCHPAD_SIZE && offset <= PS2_SCRATCHPAD_SIZE - size;
+     }
+ 
+-    if (address < PS2_RAM_SIZE)
++    if (address < PS2_RAM_BACKING_SIZE)
+     {
+         offset = address;
+     }
+@@ -58,7 +58,7 @@ inline bool resolveEeGuestRange(uint32_t address, size_t size, uint32_t &offset,
+     {
+         return false;
+     }
+-    return size <= PS2_RAM_SIZE && offset <= PS2_RAM_SIZE - size;
++    return size <= PS2_RAM_BACKING_SIZE && offset <= PS2_RAM_BACKING_SIZE - size;
+ }
+ 
+ template <typename T>
 diff --git a/ps2xRuntime/src/lib/Kernel/Syscalls/Helpers/State.h b/ps2xRuntime/src/lib/Kernel/Syscalls/Helpers/State.h
 index d6b7549..3a92b84 100644
 --- a/ps2xRuntime/src/lib/Kernel/Syscalls/Helpers/State.h
@@ -12614,7 +12820,7 @@ index a8f9fa8..34aad62 100644
      void InitLookupTables()
      {
 diff --git a/ps2xRuntime/src/lib/ps2_audio.cpp b/ps2xRuntime/src/lib/ps2_audio.cpp
-index 6bb6494..d6c2011 100644
+index 6bb6494..686e029 100644
 --- a/ps2xRuntime/src/lib/ps2_audio.cpp
 +++ b/ps2xRuntime/src/lib/ps2_audio.cpp
 @@ -1,6 +1,9 @@
@@ -12693,6 +12899,24 @@ index 6bb6494..d6c2011 100644
  PS2AudioBackend::PS2AudioBackend() : m_impl(std::make_unique<Impl>())
  {
  }
+@@ -95,7 +155,7 @@ void PS2AudioBackend::onVagTransfer(const uint8_t *rdram, uint32_t srcAddr, uint
+         return;
+ 
+     const uint32_t physAddr = srcAddr & PS2_RAM_MASK;
+-    if (physAddr + sizeBytes > PS2_RAM_SIZE)
++    if (physAddr + sizeBytes > PS2_RAM_BACKING_SIZE)
+         return;
+ 
+     std::vector<int16_t> pcm;
+@@ -173,7 +233,7 @@ void PS2AudioBackend::onSoundCommand(uint32_t sid, uint32_t rpcNum,
+             {
+                 uint32_t cand = 0;
+                 std::memcpy(&cand, sendBuf + off, sizeof(cand));
+-                if (cand >= kMinPlausibleAddr && (cand <= PS2_RAM_MASK || (cand & ~PS2_RAM_MASK) == 0))
++                if (cand >= kMinPlausibleAddr && (cand < PS2_RAM_SIZE))
+                     sampleAddr = cand;
+             }
+         }
 @@ -307,6 +367,60 @@ void PS2AudioBackend::playDecodedSample(uint32_t sampleKey, DecodedSample &sampl
  #endif
  }
@@ -13551,6 +13775,446 @@ index c9aa2c6..25ae0ea 100644
              {
                  uint32_t bytes = m_memoryBytes;
                  ImGui::InputScalar("Address", ImGuiDataType_U32, &m_memoryAddress, nullptr, nullptr, "%08X", ImGuiInputTextFlags_CharsHexadecimal);
+diff --git a/ps2xRuntime/src/lib/ps2_host_settings.cpp b/ps2xRuntime/src/lib/ps2_host_settings.cpp
+new file mode 100644
+index 0000000..f05b1c3
+--- /dev/null
++++ b/ps2xRuntime/src/lib/ps2_host_settings.cpp
+@@ -0,0 +1,434 @@
++#include "runtime/ps2_host_settings.h"
++
++#include <algorithm>
++#include <cctype>
++#include <cstdio>
++#include <cstdlib>
++#include <fstream>
++#include <iostream>
++#include <map>
++#include <sstream>
++#include <system_error>
++
++#if defined(_WIN32)
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#include <windows.h>
++#endif
++
++namespace ps2_host_settings
++{
++    namespace
++    {
++        Settings g_settings;
++
++        // What a missing file is replaced by: every setting, at its default, with what it does.
++        const char *kDefaultFile =
++            "# The game's settings. A settings program writes this file; you can also edit it by hand.\n"
++            "# A VENDETTA_* switch set in the environment wins over a line here.\n"
++            "\n"
++            "[display]\n"
++            "mode = \"window\"          # \"window\", \"borderless\" (a frameless window the size of the screen) or \"fullscreen\"\n"
++            "screen = 1               # which screen: 1 = the main one\n"
++            "maximised = true         # start maximised (window only)\n"
++            "fullscreen_width = 0     # fullscreen resolution; 0 = the screen's own\n"
++            "fullscreen_height = 0\n"
++            "refresh_rate = \"smoothest\" # fullscreen only: \"smoothest\" (the highest multiple of 60 Hz the screen has),\n"
++            "                         # a number such as 60 or 120, or 0 = the screen's own\n"
++            "vsync = true             # wait for the screen before showing each picture (no tearing)\n"
++            "shape = \"4:3\"            # \"4:3\" (as on the PS2, bars at the sides) or \"stretch\" (fill the window)\n"
++            "\n"
++            "[graphics]\n"
++            "renderer = \"gpu\"         # \"gpu\" (the graphics card) or \"cpu\"\n"
++            "scale = 8                # how much sharper than the PS2: 1, 2, 4, 8 or 16\n"
++            "filter = \"fsr\"           # scaling to the window: \"fsr\", \"smooth\" or \"blocky\"\n"
++            "sharpening = 75          # 0-100, with \"fsr\"\n"
++            "\n"
++            "[sound]\n"
++            "volume = 100             # 0-100\n"
++            "reverb = true            # the echo the PS2's sound chip adds in matches\n";
++
++        std::string trim(const std::string &text)
++        {
++            size_t begin = 0;
++            size_t end = text.size();
++            while (begin < end && std::isspace(static_cast<unsigned char>(text[begin])))
++                ++begin;
++            while (end > begin && std::isspace(static_cast<unsigned char>(text[end - 1])))
++                --end;
++            return text.substr(begin, end - begin);
++        }
++
++        std::string lower(std::string text)
++        {
++            std::transform(text.begin(), text.end(), text.begin(),
++                           [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
++            return text;
++        }
++
++        // The TOML this file needs: [section], key = "string" | number | true / false, # comments. Values come back
++        // unquoted, keyed "section.key".
++        std::map<std::string, std::string> parse(std::istream &in, const std::filesystem::path &file)
++        {
++            std::map<std::string, std::string> values;
++            std::string section;
++            std::string line;
++            int lineNumber = 0;
++            while (std::getline(in, line))
++            {
++                ++lineNumber;
++                bool inString = false;
++                for (size_t i = 0; i < line.size(); ++i)
++                {
++                    if (line[i] == '"')
++                        inString = !inString;
++                    else if (line[i] == '#' && !inString)
++                    {
++                        line.resize(i);
++                        break;
++                    }
++                }
++                line = trim(line);
++                if (line.empty())
++                    continue;
++                if (line.front() == '[' && line.back() == ']')
++                {
++                    section = lower(trim(line.substr(1, line.size() - 2)));
++                    continue;
++                }
++                const size_t equals = line.find('=');
++                if (equals == std::string::npos)
++                {
++                    std::cerr << "[settings] " << file.string() << ":" << lineNumber << ": not \"key = value\": " << line
++                              << std::endl;
++                    continue;
++                }
++                std::string key = lower(trim(line.substr(0, equals)));
++                std::string value = trim(line.substr(equals + 1));
++                if (value.size() >= 2 && value.front() == '"' && value.back() == '"')
++                    value = value.substr(1, value.size() - 2);
++                values[section.empty() ? key : section + "." + key] = value;
++            }
++            return values;
++        }
++
++        std::filesystem::path programDirectory(const char *programPath)
++        {
++#if defined(_WIN32)
++            wchar_t buffer[MAX_PATH];
++            const DWORD length = GetModuleFileNameW(nullptr, buffer, MAX_PATH);
++            if (length > 0 && length < MAX_PATH)
++                return std::filesystem::path(buffer).parent_path();
++#endif
++            if (programPath && *programPath)
++            {
++                std::error_code error;
++                const std::filesystem::path path = std::filesystem::absolute(programPath, error);
++                if (!error)
++                    return path.parent_path();
++            }
++            return {};
++        }
++
++        bool environmentSet(const char *name)
++        {
++            const char *value = std::getenv(name);
++            return value && *value;
++        }
++
++        // A setting fills in a switch only when the environment doesn't set it.
++        void fillSwitch(const char *name, const std::string &value)
++        {
++            if (environmentSet(name))
++                return;
++#if defined(_WIN32)
++            _putenv_s(name, value.c_str());
++#else
++            setenv(name, value.c_str(), 0);
++#endif
++        }
++
++        class Reader
++        {
++        public:
++            Reader(std::map<std::string, std::string> values, std::filesystem::path file)
++                : m_values(std::move(values)), m_file(std::move(file)) {}
++
++            bool peek(const std::string &key, std::string &out) const
++            {
++                const auto it = m_values.find(key);
++                if (it == m_values.end())
++                    return false;
++                out = it->second;
++                return true;
++            }
++
++            // the raw value (removed from the map, so what is left at the end was not understood)
++            bool take(const std::string &key, std::string &out)
++            {
++                const auto it = m_values.find(key);
++                if (it == m_values.end())
++                    return false;
++                out = it->second;
++                m_values.erase(it);
++                return true;
++            }
++
++            void integer(const std::string &key, int &out, int minimum, int maximum)
++            {
++                std::string text;
++                if (!take(key, text))
++                    return;
++                char *end = nullptr;
++                const long value = std::strtol(text.c_str(), &end, 10);
++                if (end == text.c_str() || *end != '\0' || value < minimum || value > maximum)
++                {
++                    warn(key, text, "a whole number from " + std::to_string(minimum) + " to " + std::to_string(maximum));
++                    return;
++                }
++                out = static_cast<int>(value);
++            }
++
++            void boolean(const std::string &key, bool &out)
++            {
++                std::string text;
++                if (!take(key, text))
++                    return;
++                const std::string value = lower(text);
++                if (value == "true")
++                    out = true;
++                else if (value == "false")
++                    out = false;
++                else
++                    warn(key, text, "true or false");
++            }
++
++            // one of the given words; returns its index or -1 (absent or not understood)
++            int choice(const std::string &key, std::initializer_list<const char *> words)
++            {
++                std::string text;
++                if (!take(key, text))
++                    return -1;
++                const std::string value = lower(text);
++                int index = 0;
++                std::string list;
++                for (const char *word : words)
++                {
++                    if (value == word)
++                        return index;
++                    list += (index ? ", " : "") + std::string("\"") + word + "\"";
++                    ++index;
++                }
++                warn(key, text, list);
++                return -1;
++            }
++
++            void reportLeftovers() const
++            {
++                for (const auto &[key, value] : m_values)
++                    std::cerr << "[settings] " << m_file.string() << ": " << key << " is not a setting (ignored)" << std::endl;
++            }
++
++        private:
++            void warn(const std::string &key, const std::string &text, const std::string &expected) const
++            {
++                std::cerr << "[settings] " << m_file.string() << ": " << key << " = " << text << " is not " << expected
++                          << "; the default is used" << std::endl;
++            }
++
++            std::map<std::string, std::string> m_values;
++            std::filesystem::path m_file;
++        };
++
++        void apply(Reader &reader)
++        {
++            Settings &s = g_settings;
++            switch (reader.choice("display.mode", {"window", "borderless", "fullscreen"}))
++            {
++            case 1:
++                s.mode = WindowMode::Borderless;
++                break;
++            case 2:
++                s.mode = WindowMode::Fullscreen;
++                break;
++            case 0:
++                s.mode = WindowMode::Window;
++                break;
++            default:
++                break;
++            }
++            reader.integer("display.screen", s.screen, 1, 16);
++            reader.boolean("display.maximised", s.maximised);
++            reader.integer("display.fullscreen_width", s.fullscreenWidth, 0, 16384);
++            reader.integer("display.fullscreen_height", s.fullscreenHeight, 0, 16384);
++            std::string refresh;
++            if (reader.peek("display.refresh_rate", refresh) && lower(refresh) == "smoothest")
++                reader.take("display.refresh_rate", refresh); // the default
++            else
++                reader.integer("display.refresh_rate", s.refreshRate, 0, 1000);
++            reader.boolean("display.vsync", s.vsync);
++            if (const int shape = reader.choice("display.shape", {"4:3", "stretch"}); shape >= 0)
++                s.stretch = shape == 1;
++            reader.integer("sound.volume", s.volume, 0, 100);
++
++            // the ones the runtime already reads as switches
++            if (const int renderer = reader.choice("graphics.renderer", {"gpu", "cpu"}); renderer >= 0)
++                fillSwitch("VENDETTA_GS", renderer == 0 ? "gpu" : "cpu");
++            int scale = 0;
++            reader.integer("graphics.scale", scale, 1, 16);
++            if (scale == 1 || scale == 2 || scale == 4 || scale == 8 || scale == 16)
++                fillSwitch("VENDETTA_SSAA", std::to_string(scale));
++            else if (scale != 0)
++                std::cerr << "[settings] graphics.scale = " << scale << " is not 1, 2, 4, 8 or 16; the default is used"
++                          << std::endl;
++            if (const int filter = reader.choice("graphics.filter", {"fsr", "smooth", "blocky"}); filter >= 0)
++                fillSwitch("VENDETTA_FILTER", filter == 0 ? "fsr" : (filter == 1 ? "bilinear" : "nearest"));
++            int sharpening = -1;
++            reader.integer("graphics.sharpening", sharpening, 0, 100);
++            if (sharpening >= 0)
++            {
++                // FSR's sharpening is in stops, 0 = the most: 100% = 0 stops, 0% = 2 stops
++                std::ostringstream stops;
++                stops << 2.0 * (100 - sharpening) / 100.0;
++                fillSwitch("VENDETTA_SHARPEN", stops.str());
++            }
++            std::string reverbText;
++            if (reader.take("sound.reverb", reverbText))
++            {
++                const std::string value = lower(reverbText);
++                if (value == "false")
++                    fillSwitch("VENDETTA_REVERB", "0");
++                else if (value != "true")
++                    std::cerr << "[settings] sound.reverb = " << reverbText << " is not true or false; the default is used"
++                              << std::endl;
++            }
++        }
++
++        // The switches for the new settings, for tests and debugging (they win over the file, like the others)
++        void applyEnvironment()
++        {
++            Settings &s = g_settings;
++            if (const char *mode = std::getenv("VENDETTA_WINDOW"); mode && *mode)
++            {
++                const std::string value = lower(mode);
++                if (value == "window")
++                    s.mode = WindowMode::Window;
++                else if (value == "borderless")
++                    s.mode = WindowMode::Borderless;
++                else if (value == "fullscreen")
++                    s.mode = WindowMode::Fullscreen;
++                else
++                    std::cerr << "[settings] VENDETTA_WINDOW=" << mode << " not understood (window, borderless or fullscreen)"
++                              << std::endl;
++            }
++            if (const char *value = std::getenv("VENDETTA_SCREEN"); value && *value)
++                s.screen = std::clamp(std::atoi(value), 1, 16);
++            if (const char *value = std::getenv("VENDETTA_MAXIMISED"); value && *value)
++                s.maximised = std::string(value) != "0";
++            if (const char *value = std::getenv("VENDETTA_FULLSCREEN_SIZE"); value && *value) // e.g. 1920x1080
++            {
++                int width = 0;
++                int height = 0;
++                if (std::sscanf(value, "%dx%d", &width, &height) == 2 && width > 0 && height > 0)
++                {
++                    s.fullscreenWidth = width;
++                    s.fullscreenHeight = height;
++                }
++            }
++            if (const char *value = std::getenv("VENDETTA_REFRESH"); value && *value)
++                s.refreshRate = lower(value) == "smoothest" ? kRefreshSmoothest : std::clamp(std::atoi(value), 0, 1000);
++            if (const char *value = std::getenv("VENDETTA_VSYNC"); value && *value)
++                s.vsync = std::string(value) != "0";
++            if (const char *value = std::getenv("VENDETTA_VOLUME"); value && *value)
++                s.volume = std::clamp(std::atoi(value), 0, 100);
++            if (const char *value = std::getenv("VENDETTA_ASPECT"); value && *value)
++                s.stretch = std::string(value) == "fill";
++        }
++    }
++
++    void load(const char *programPath)
++    {
++        g_settings = Settings{};
++        std::filesystem::path file;
++        std::error_code error;
++        const char *chosen = std::getenv("VENDETTA_SETTINGS");
++        if (chosen && *chosen)
++        {
++            if (lower(chosen) != "none")
++                file = chosen;
++        }
++        else
++        {
++            const std::filesystem::path besideProgram = programDirectory(programPath) / "settings.toml";
++            if (std::filesystem::exists(besideProgram, error))
++                file = besideProgram;
++            else
++            {
++                const std::filesystem::path folder = std::filesystem::current_path(error);
++                if (!error)
++                    file = folder / "settings.toml";
++            }
++        }
++        const bool writeDefault = !file.empty() && !std::filesystem::exists(file, error);
++
++        if (writeDefault)
++        {
++            std::ofstream out(file, std::ios::binary);
++            if (out && (out << kDefaultFile))
++                std::cerr << "[settings] wrote the default settings to " << file.string() << std::endl;
++            else
++                file.clear(); // a folder we can't write to: the defaults
++        }
++
++        if (!file.empty())
++        {
++            std::ifstream in(file, std::ios::binary);
++            if (in)
++            {
++                Reader reader(parse(in, file), file);
++                apply(reader);
++                reader.reportLeftovers();
++                g_settings.file = file;
++            }
++            else
++                std::cerr << "[settings] can't read " << file.string() << "; the defaults are used" << std::endl;
++        }
++        applyEnvironment();
++
++        const Settings &s = g_settings;
++        std::cerr << "[settings] " << (s.file.empty() ? std::string("defaults") : s.file.string()) << ": "
++                  << windowModeName(s.mode) << ", screen " << s.screen
++                  << (s.mode == WindowMode::Window ? (s.maximised ? ", maximised" : "") : "")
++                  << (s.mode == WindowMode::Fullscreen
++                          ? ", " + (s.fullscreenWidth ? std::to_string(s.fullscreenWidth) + "x" + std::to_string(s.fullscreenHeight)
++                                                      : std::string("screen's resolution")) +
++                                (s.refreshRate > 0 ? " at " + std::to_string(s.refreshRate) + " Hz"
++                                                   : std::string(s.refreshRate == kRefreshSmoothest ? " at the smoothest rate"
++                                                                                                    : " at the screen's rate"))
++                          : std::string(""))
++                  << ", vsync " << (s.vsync ? "on" : "off") << ", " << (s.stretch ? "stretched" : "4:3")
++                  << ", volume " << s.volume << "%" << std::endl;
++    }
++
++    const Settings &get()
++    {
++        return g_settings;
++    }
++
++    const char *windowModeName(WindowMode mode)
++    {
++        switch (mode)
++        {
++        case WindowMode::Borderless:
++            return "borderless";
++        case WindowMode::Fullscreen:
++            return "fullscreen";
++        default:
++            return "window";
++        }
++    }
++}
 diff --git a/ps2xRuntime/src/lib/ps2_iop_host.cpp b/ps2xRuntime/src/lib/ps2_iop_host.cpp
 index 8d46e03..a1a4eda 100644
 --- a/ps2xRuntime/src/lib/ps2_iop_host.cpp
@@ -13612,7 +14276,7 @@ index 6bd1835..98b4db0 100644
      {
          return !runtime || runtime->canBindIopRpc(sid);
 diff --git a/ps2xRuntime/src/lib/ps2_memory.cpp b/ps2xRuntime/src/lib/ps2_memory.cpp
-index 37b6a4d..641b75f 100644
+index 37b6a4d..67c8ae5 100644
 --- a/ps2xRuntime/src/lib/ps2_memory.cpp
 +++ b/ps2xRuntime/src/lib/ps2_memory.cpp
 @@ -1,4 +1,8 @@
@@ -13920,6 +14584,27 @@ index 37b6a4d..641b75f 100644
  }
  
  uint32_t PS2Memory::translateAddress(uint32_t virtualAddress)
+@@ -678,7 +796,7 @@ uint8_t PS2Memory::read8(uint32_t address)
+     {
+         return m_scratchpad[physAddr];
+     }
+-    if (physAddr < PS2_RAM_SIZE)
++    if (physAddr < PS2_RAM_BACKING_SIZE)
+     {
+         return m_rdram[physAddr];
+     }
+@@ -714,9 +832,9 @@ uint16_t PS2Memory::read16(uint32_t address)
+     {
+         return loadScalar<uint16_t>(m_scratchpad, physAddr, PS2_SCRATCHPAD_SIZE, "read16 scratchpad", address);
+     }
+-    if (physAddr < PS2_RAM_SIZE)
++    if (physAddr < PS2_RAM_BACKING_SIZE)
+     {
+-        return loadScalar<uint16_t>(m_rdram, physAddr, PS2_RAM_SIZE, "read16 rdram", address);
++        return loadScalar<uint16_t>(m_rdram, physAddr, PS2_RAM_BACKING_SIZE, "read16 rdram", address);
+     }
+     uint32_t vuOffset = 0;
+     uint32_t vuLimit = 0;
 @@ -744,6 +862,7 @@ uint32_t PS2Memory::read32(uint32_t address)
  
      if (isGsPrivReg(address))
@@ -13928,6 +14613,18 @@ index 37b6a4d..641b75f 100644
          uint32_t off = address & 7;
          const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
          if (regOff == kGsCsrRegOffset)
+@@ -765,9 +884,9 @@ uint32_t PS2Memory::read32(uint32_t address)
+     {
+         return loadScalar<uint32_t>(m_scratchpad, physAddr, PS2_SCRATCHPAD_SIZE, "read32 scratchpad", address);
+     }
+-    if (physAddr < PS2_RAM_SIZE)
++    if (physAddr < PS2_RAM_BACKING_SIZE)
+     {
+-        return loadScalar<uint32_t>(m_rdram, physAddr, PS2_RAM_SIZE, "read32 rdram", address);
++        return loadScalar<uint32_t>(m_rdram, physAddr, PS2_RAM_BACKING_SIZE, "read32 rdram", address);
+     }
+     uint32_t vuOffset = 0;
+     uint32_t vuLimit = 0;
 @@ -792,6 +911,7 @@ uint64_t PS2Memory::read64(uint32_t address)
  
      if (isGsPrivReg(address))
@@ -13936,6 +14633,39 @@ index 37b6a4d..641b75f 100644
          const uint32_t regOff = (address - PS2_GS_PRIV_REG_BASE) & ~0x7u;
          if (regOff == kGsCsrRegOffset)
          {
+@@ -808,9 +928,9 @@ uint64_t PS2Memory::read64(uint32_t address)
+     {
+         return loadScalar<uint64_t>(m_scratchpad, physAddr, PS2_SCRATCHPAD_SIZE, "read64 scratchpad", address);
+     }
+-    if (physAddr < PS2_RAM_SIZE)
++    if (physAddr < PS2_RAM_BACKING_SIZE)
+     {
+-        return loadScalar<uint64_t>(m_rdram, physAddr, PS2_RAM_SIZE, "read64 rdram", address);
++        return loadScalar<uint64_t>(m_rdram, physAddr, PS2_RAM_BACKING_SIZE, "read64 rdram", address);
+     }
+     uint32_t vuOffset = 0;
+     uint32_t vuLimit = 0;
+@@ -845,9 +965,9 @@ __m128i PS2Memory::read128(uint32_t address)
+         inRange(physAddr, sizeof(__m128i), PS2_SCRATCHPAD_SIZE, "read128 scratchpad", address);
+         return _mm_loadu_si128(reinterpret_cast<__m128i *>(&m_scratchpad[physAddr]));
+     }
+-    if (physAddr < PS2_RAM_SIZE)
++    if (physAddr < PS2_RAM_BACKING_SIZE)
+     {
+-        inRange(physAddr, sizeof(__m128i), PS2_RAM_SIZE, "read128 rdram", address);
++        inRange(physAddr, sizeof(__m128i), PS2_RAM_BACKING_SIZE, "read128 rdram", address);
+         return _mm_loadu_si128(reinterpret_cast<__m128i *>(&m_rdram[physAddr]));
+     }
+     uint32_t vuOffset = 0;
+@@ -872,7 +992,7 @@ void PS2Memory::write8(uint32_t address, uint8_t value)
+     {
+         m_scratchpad[physAddr] = value;
+     }
+-    else if (physAddr < PS2_RAM_SIZE)
++    else if (physAddr < PS2_RAM_BACKING_SIZE)
+     {
+         m_rdram[physAddr] = value;
+     }
 @@ -887,6 +1007,7 @@ void PS2Memory::write8(uint32_t address, uint8_t value)
              if (vuMem == m_vu0Code)
                  markVU0CodeModified();
@@ -13944,6 +14674,18 @@ index 37b6a4d..641b75f 100644
                  markVU1CodeModified();
              return;
          }
+@@ -916,9 +1037,9 @@ void PS2Memory::write16(uint32_t address, uint16_t value)
+     {
+         storeScalar<uint16_t>(m_scratchpad, physAddr, PS2_SCRATCHPAD_SIZE, value, "write16 scratchpad", address);
+     }
+-    else if (physAddr < PS2_RAM_SIZE)
++    else if (physAddr < PS2_RAM_BACKING_SIZE)
+     {
+-        storeScalar<uint16_t>(m_rdram, physAddr, PS2_RAM_SIZE, value, "write16 rdram", address);
++        storeScalar<uint16_t>(m_rdram, physAddr, PS2_RAM_BACKING_SIZE, value, "write16 rdram", address);
+     }
+     else
+     {
 @@ -930,6 +1051,7 @@ void PS2Memory::write16(uint32_t address, uint16_t value)
              if (vuMem == m_vu0Code)
                  markVU0CodeModified();
@@ -13969,6 +14711,21 @@ index 37b6a4d..641b75f 100644
          }
          else if (uint64_t *reg = gsRegPtr(gs_regs, address))
          {
+@@ -977,12 +1102,12 @@ void PS2Memory::write32(uint32_t address, uint32_t value)
+     {
+         storeScalar<uint32_t>(m_scratchpad, physAddr, PS2_SCRATCHPAD_SIZE, value, "write32 scratchpad", address);
+     }
+-    else if (physAddr < PS2_RAM_SIZE)
++    else if (physAddr < PS2_RAM_BACKING_SIZE)
+     {
+         // Check if this might be code modification
+         markModified(address, 4);
+ 
+-        storeScalar<uint32_t>(m_rdram, physAddr, PS2_RAM_SIZE, value, "write32 rdram", address);
++        storeScalar<uint32_t>(m_rdram, physAddr, PS2_RAM_BACKING_SIZE, value, "write32 rdram", address);
+     }
+     else
+     {
 @@ -994,6 +1119,7 @@ void PS2Memory::write32(uint32_t address, uint32_t value)
              if (vuMem == m_vu0Code)
                  markVU0CodeModified();
@@ -13993,6 +14750,19 @@ index 37b6a4d..641b75f 100644
          }
          else if (uint64_t *reg = gsRegPtr(gs_regs, address))
          {
+@@ -1034,10 +1163,10 @@ void PS2Memory::write64(uint32_t address, uint64_t value)
+     {
+         storeScalar<uint64_t>(m_scratchpad, physAddr, PS2_SCRATCHPAD_SIZE, value, "write64 scratchpad", address);
+     }
+-    else if (physAddr < PS2_RAM_SIZE)
++    else if (physAddr < PS2_RAM_BACKING_SIZE)
+     {
+         markModified(address, 8);
+-        storeScalar<uint64_t>(m_rdram, physAddr, PS2_RAM_SIZE, value, "write64 rdram", address);
++        storeScalar<uint64_t>(m_rdram, physAddr, PS2_RAM_BACKING_SIZE, value, "write64 rdram", address);
+     }
+     else
+     {
 @@ -1049,6 +1178,7 @@ void PS2Memory::write64(uint32_t address, uint64_t value)
              if (vuMem == m_vu0Code)
                  markVU0CodeModified();
@@ -14013,6 +14783,19 @@ index 37b6a4d..641b75f 100644
          return;
      }
  
+@@ -1090,10 +1223,10 @@ void PS2Memory::write128(uint32_t address, __m128i value)
+         inRange(physAddr, sizeof(__m128i), PS2_SCRATCHPAD_SIZE, "write128 scratchpad", address);
+         _mm_storeu_si128(reinterpret_cast<__m128i *>(&m_scratchpad[physAddr]), value);
+     }
+-    else if (physAddr < PS2_RAM_SIZE)
++    else if (physAddr < PS2_RAM_BACKING_SIZE)
+     {
+         markModified(address, 16);
+-        inRange(physAddr, sizeof(__m128i), PS2_RAM_SIZE, "write128 rdram", address);
++        inRange(physAddr, sizeof(__m128i), PS2_RAM_BACKING_SIZE, "write128 rdram", address);
+         _mm_storeu_si128(reinterpret_cast<__m128i *>(&m_rdram[physAddr]), value);
+     }
+     else
 @@ -1107,6 +1240,7 @@ void PS2Memory::write128(uint32_t address, __m128i value)
              if (vuMem == m_vu0Code)
                  markVU0CodeModified();
@@ -14188,6 +14971,24 @@ index 37b6a4d..641b75f 100644
          return true;
      }
  
+@@ -1364,7 +1460,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+                         else
+                         {
+                             base2 = m_rdram;
+-                            maxSz2 = PS2_RAM_SIZE;
++                            maxSz2 = PS2_RAM_BACKING_SIZE;
+                         }
+ 
+                         while (bytes > 0)
+@@ -1389,7 +1485,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+                         tagPhys = translateAddress(localTagAddr);
+ 
+                         const uint8_t *localBase = tagScratch ? m_scratchpad : m_rdram;
+-                        const uint32_t localMax = tagScratch ? PS2_SCRATCHPAD_SIZE : PS2_RAM_SIZE;
++                        const uint32_t localMax = tagScratch ? PS2_SCRATCHPAD_SIZE : PS2_RAM_BACKING_SIZE;
+                         if (tagPhys + 16u > localMax)
+                             return;
+ 
 @@ -1403,6 +1499,8 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                      const bool transferTagData = isVifChannel && (chcr & 0x40u) != 0u;
  
@@ -14197,6 +14998,15 @@ index 37b6a4d..641b75f 100644
                      uint32_t lastTagUpper = (chcr >> 16) & 0xFFFFu;
  
                      while (tagsProcessed < kMaxChainTags)
+@@ -1428,7 +1526,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
+                         else
+                         {
+                             tagBase = m_rdram;
+-                            tagMax = PS2_RAM_SIZE;
++                            tagMax = PS2_RAM_BACKING_SIZE;
+                         }
+                         if (physTag + 16 > tagMax)
+                             break;
 @@ -1441,6 +1539,7 @@ bool PS2Memory::writeIORegister(uint32_t address, uint32_t value)
                          uint32_t addr = static_cast<uint32_t>((tag >> 32) & 0x7FFFFFFF);
                          lastTagUpper = static_cast<uint32_t>((tag >> 16) & 0xFFFFu);
@@ -14294,6 +15104,15 @@ index 37b6a4d..641b75f 100644
  bool PS2Memory::tryProcessScratchpadDma(uint32_t channelBase, uint32_t chcr)
  {
      static constexpr uint32_t kSprFromChannel = 0x1000D000u;
+@@ -1610,7 +1784,7 @@ bool PS2Memory::tryProcessScratchpadDma(uint32_t channelBase, uint32_t chcr)
+         return false;
+     }
+ 
+-    if (mainOffset > PS2_RAM_SIZE || byteCount > PS2_RAM_SIZE - mainOffset)
++    if (mainOffset > PS2_RAM_BACKING_SIZE || byteCount > PS2_RAM_BACKING_SIZE - mainOffset)
+         return false;
+ 
+     const bool fromScratchpad = channelBase == kSprFromChannel;
 @@ -1660,6 +1834,60 @@ void PS2Memory::completeDmacChannel(uint32_t channelBase, uint32_t cause)
      queueCompletedDmacCause(cause);
  }
@@ -14381,7 +15200,19 @@ index 37b6a4d..641b75f 100644
                      bytesLeft -= chunk;
                      srcPhys += chunk;
                  }
-@@ -1734,7 +1963,7 @@ void PS2Memory::processPendingTransfers()
+@@ -1725,16 +1954,16 @@ void PS2Memory::processPendingTransfers()
+                 uint32_t bytesLeft = sizeBytes;
+                 while (bytesLeft >= 16)
+                 {
+-                    if (srcPhys >= PS2_RAM_SIZE)
++                    if (srcPhys >= PS2_RAM_BACKING_SIZE)
+                         srcPhys = 0;
+                     uint32_t chunk = bytesLeft;
+-                    if (srcPhys + chunk > PS2_RAM_SIZE)
+-                        chunk = PS2_RAM_SIZE - srcPhys;
++                    if (srcPhys + chunk > PS2_RAM_BACKING_SIZE)
++                        chunk = PS2_RAM_BACKING_SIZE - srcPhys;
+                     if (chunk == 0)
                          break;
                      m_seenGifCopy = true;
                      m_gifCopyCount.fetch_add(1, std::memory_order_relaxed);
@@ -14390,6 +15221,21 @@ index 37b6a4d..641b75f 100644
                      bytesLeft -= chunk;
                      srcPhys += chunk;
                  }
+@@ -1785,11 +2014,11 @@ void PS2Memory::processPendingTransfers()
+                 uint32_t bytesLeft = sizeBytes;
+                 while (bytesLeft > 0)
+                 {
+-                    if (srcPhys >= PS2_RAM_SIZE)
++                    if (srcPhys >= PS2_RAM_BACKING_SIZE)
+                         srcPhys = 0;
+                     uint32_t chunk = bytesLeft;
+-                    if (srcPhys + chunk > PS2_RAM_SIZE)
+-                        chunk = PS2_RAM_SIZE - srcPhys;
++                    if (srcPhys + chunk > PS2_RAM_BACKING_SIZE)
++                        chunk = PS2_RAM_BACKING_SIZE - srcPhys;
+                     if (chunk == 0)
+                         break;
+                     processVIF0Data(srcPhys, chunk);
 @@ -1806,7 +2035,7 @@ void PS2Memory::processPendingTransfers()
      {
          if (!p.chainData.empty())
@@ -14408,8 +15254,18 @@ index 37b6a4d..641b75f 100644
                      bytesLeft -= chunk;
                      srcPhys += chunk;
                  }
-@@ -1850,7 +2079,7 @@ void PS2Memory::processPendingTransfers()
-                         chunk = PS2_RAM_SIZE - srcPhys;
+@@ -1843,14 +2072,14 @@ void PS2Memory::processPendingTransfers()
+                 uint32_t bytesLeft = sizeBytes;
+                 while (bytesLeft > 0)
+                 {
+-                    if (srcPhys >= PS2_RAM_SIZE)
++                    if (srcPhys >= PS2_RAM_BACKING_SIZE)
+                         srcPhys = 0;
+                     uint32_t chunk = bytesLeft;
+-                    if (srcPhys + chunk > PS2_RAM_SIZE)
+-                        chunk = PS2_RAM_SIZE - srcPhys;
++                    if (srcPhys + chunk > PS2_RAM_BACKING_SIZE)
++                        chunk = PS2_RAM_BACKING_SIZE - srcPhys;
                      if (chunk == 0)
                          break;
 -                    processVIF1Data(srcPhys, chunk);
@@ -14432,6 +15288,39 @@ index 37b6a4d..641b75f 100644
          m_gifArbiter->drain();
  
      static constexpr uint32_t GIF_CHANNEL = 0x1000A000;
+@@ -1976,11 +2211,11 @@ void PS2Memory::processGIFPacket(uint32_t srcPhysAddr, uint32_t qwCount)
+     uint32_t bytesLeft = sizeBytes;
+     while (bytesLeft >= 16)
+     {
+-        if (srcPhysAddr >= PS2_RAM_SIZE)
++        if (srcPhysAddr >= PS2_RAM_BACKING_SIZE)
+             srcPhysAddr = 0;
+         uint32_t chunk = bytesLeft;
+-        if (srcPhysAddr + chunk > PS2_RAM_SIZE)
+-            chunk = PS2_RAM_SIZE - srcPhysAddr;
++        if (srcPhysAddr + chunk > PS2_RAM_BACKING_SIZE)
++            chunk = PS2_RAM_BACKING_SIZE - srcPhysAddr;
+         if (chunk == 0)
+             break;
+ 
+@@ -2027,7 +2262,7 @@ bool PS2Memory::tryProcessNativeGifImageUploadChain(GS &gs, uint32_t tadr, uint3
+             const bool scratch = isScratchpad(guestAddr);
+             const uint32_t phys = translateAddress(guestAddr);
+             const uint8_t *base = scratch ? m_scratchpad : m_rdram;
+-            const uint32_t limit = scratch ? PS2_SCRATCHPAD_SIZE : PS2_RAM_SIZE;
++            const uint32_t limit = scratch ? PS2_SCRATCHPAD_SIZE : PS2_RAM_BACKING_SIZE;
+             if (!base || phys > limit || bytes > limit - phys)
+                 return false;
+             out = base + phys;
+@@ -2219,7 +2454,7 @@ bool PS2Memory::tryProcessNativeGifPackedChain(GS &gs, uint32_t tadr, uint32_t c
+             const bool scratch = isScratchpad(guestAddr);
+             const uint32_t phys = translateAddress(guestAddr);
+             const uint8_t *base = scratch ? m_scratchpad : m_rdram;
+-            const uint32_t limit = scratch ? PS2_SCRATCHPAD_SIZE : PS2_RAM_SIZE;
++            const uint32_t limit = scratch ? PS2_SCRATCHPAD_SIZE : PS2_RAM_BACKING_SIZE;
+             if (!base || phys > limit || bytes > limit - phys)
+                 return false;
+             out = base + phys;
 @@ -2280,6 +2515,8 @@ int PS2Memory::pollDmaRegisters()
  
  uint32_t PS2Memory::readIORegister(uint32_t address)
@@ -14560,15 +15449,16 @@ index 8590f14..eb147f8 100644
          if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))
              clearBit(PAD_UP);
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..aa759de 100644
+index 45cb9d2..11d4f8f 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
-@@ -1,3 +1,4 @@
+@@ -1,3 +1,5 @@
 +#include "runtime/ps2_host_profile.h"
++#include "runtime/ps2_host_settings.h"
  #include "ps2_runtime.h"
  #include "ps2_log.h"
  #include "ps2_stubs.h"
-@@ -18,6 +19,7 @@
+@@ -18,6 +20,7 @@
  #include <stdexcept>
  #include <fstream>
  #include <algorithm>
@@ -14576,7 +15466,18 @@ index 45cb9d2..aa759de 100644
  #include <array>
  #include <cstring>
  #include <limits>
-@@ -85,12 +87,30 @@ struct ProgramHeader
+@@ -26,6 +29,10 @@
+ #include <thread>
+ #include <unordered_map>
+ #include <sstream>
++#if defined(PS2X_HAS_GLFW)
++#define GLFW_INCLUDE_NONE
++#include <GLFW/glfw3.h>
++#endif
+ 
+ namespace ps2_stubs
+ {
+@@ -85,12 +92,30 @@ struct ProgramHeader
      uint32_t align;
  };
  
@@ -14607,18 +15508,90 @@ index 45cb9d2..aa759de 100644
  
      constexpr uint32_t COP0_CAUSE_EXCCODE_MASK = 0x0000007Cu;
      constexpr uint32_t COP0_CAUSE_BD = 0x80000000u;
-@@ -373,10 +393,97 @@ namespace
+@@ -373,10 +398,171 @@ namespace
      }
  }
  
 -static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint32_t &outHeight)
 +namespace
- {
--    static uint64_t s_lastPresentationTick = std::numeric_limits<uint64_t>::max();
--    static bool s_hasLatchedInitialFrame = false;
++{
 +    int s_frameTextureFilter = TEXTURE_FILTER_BILINEAR;
 +    // The graphics card's picture: (covered share of the video mode's width) / (share of its height), for the aspect.
 +    float s_presentAspectScale = 1.0f;
++}
++
++// The window as the settings ask (ps2_host_settings): which screen, maximised, borderless, or fullscreen at a chosen
++// resolution and refresh rate. raylib's own fullscreen asks for any refresh rate (GLFW then takes the screen's highest),
++// so the mode is set again through GLFW, built into raylib on desktops: the rate asked for, or the screen's current one.
++static void applyWindowSettings()
++{
++#if !defined(PLATFORM_VITA)
++    const ps2_host_settings::Settings &settings = ps2_host_settings::get();
++    const int monitorCount = GetMonitorCount();
++    const int monitor = std::clamp(settings.screen - 1, 0, std::max(0, monitorCount - 1));
++    if (settings.screen > monitorCount)
++        std::cerr << "[window] screen " << settings.screen << " not found (" << monitorCount << " screens); using screen "
++                  << (monitor + 1) << std::endl;
++    if (monitorCount > 1 && monitor != GetCurrentMonitor())
++        SetWindowMonitor(monitor);
++    switch (settings.mode)
++    {
++    case ps2_host_settings::WindowMode::Window:
++        if (settings.maximised)
++            MaximizeWindow();
++        break;
++    case ps2_host_settings::WindowMode::Borderless:
++        ToggleBorderlessWindowed();
++        ClearWindowState(FLAG_WINDOW_TOPMOST); // raylib makes it always-on-top; Alt-Tab and other windows should still work
++        break;
++    case ps2_host_settings::WindowMode::Fullscreen:
++    {
++        const int width = settings.fullscreenWidth > 0 ? settings.fullscreenWidth : GetMonitorWidth(monitor);
++        const int height = settings.fullscreenHeight > 0 ? settings.fullscreenHeight : GetMonitorHeight(monitor);
++        SetWindowSize(width, height);
++        ToggleFullscreen();
++#if defined(PS2X_HAS_GLFW)
++        int count = 0;
++        GLFWmonitor **monitors = glfwGetMonitors(&count);
++        GLFWwindow *window = glfwGetCurrentContext();
++        if (window && monitors && monitor < count)
++        {
++            // the rates this screen has at this size (GLFW takes the closest one to what is asked)
++            int modeCount = 0;
++            const GLFWvidmode *modes = glfwGetVideoModes(monitors[monitor], &modeCount);
++            std::vector<int> rates;
++            for (int i = 0; i < modeCount; ++i)
++                if (modes[i].width == width && modes[i].height == height &&
++                    std::find(rates.begin(), rates.end(), modes[i].refreshRate) == rates.end())
++                    rates.push_back(modes[i].refreshRate);
++            std::sort(rates.begin(), rates.end());
++            const GLFWvidmode *current = glfwGetVideoMode(monitors[monitor]);
++            int rate = settings.refreshRate > 0 ? settings.refreshRate : (current ? current->refreshRate : GLFW_DONT_CARE);
++            if (settings.refreshRate == ps2_host_settings::kRefreshSmoothest && !rates.empty())
++            {
++                // The game makes ~60 pictures a second: at a multiple of 60 Hz (59 / 60, 119 / 120, 239 / 240 …) each one
++                // stays on screen the same time. The highest such rate; a screen with none: its highest rate.
++                rate = rates.back();
++                for (int r : rates) // ascending: the last match is the highest
++                    if (r % 60 == 0 || (r + 1) % 60 == 0)
++                        rate = r;
++            }
++            std::cerr << "[window] fullscreen " << width << "x" << height << " at " << rate << " Hz"
++                      << (settings.refreshRate == ps2_host_settings::kRefreshSmoothest ? " (the smoothest)" : "")
++                      << "; the screen has";
++            for (int r : rates)
++                std::cerr << " " << r;
++            std::cerr << (rates.empty() ? " no mode of that size" : " Hz") << std::endl;
++            glfwSetWindowMonitor(window, monitors[monitor], 0, 0, width, height, rate);
++        }
++#endif
++        break;
++    }
++    }
++    std::cerr << "[window] " << ps2_host_settings::windowModeName(settings.mode) << " on screen " << (monitor + 1) << " of "
++              << monitorCount << "; the screen now " << GetMonitorWidth(monitor) << "x" << GetMonitorHeight(monitor) << " at "
++              << GetMonitorRefreshRate(monitor) << " Hz; vsync " << (settings.vsync ? "on" : "off") << std::endl;
++#endif
 +}
 +
 +// VENDETTA_WINDOW_PACING=timer: the window refreshes on its own 60-a-second timer, as before (else once per new picture)
@@ -14680,7 +15653,9 @@ index 45cb9d2..aa759de 100644
 +
 +// true = a new picture was uploaded
 +static bool UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint32_t &outHeight)
-+{
+ {
+-    static uint64_t s_lastPresentationTick = std::numeric_limits<uint64_t>::max();
+-    static bool s_hasLatchedInitialFrame = false;
 +    // the scaling filter can change at any time (the debug panel); FSR is done on the graphics card, the window then
 +    // only places its picture (drawn at exactly the window's size)
 +    const int wantedFilter =
@@ -14708,7 +15683,7 @@ index 45cb9d2..aa759de 100644
      static uint32_t s_lastDisplayFbp = std::numeric_limits<uint32_t>::max();
      static uint32_t s_lastSourceFbp = std::numeric_limits<uint32_t>::max();
      static bool s_lastPreferred = false;
-@@ -386,35 +493,29 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -386,35 +572,29 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      static std::vector<uint8_t> s_scratch;
      static std::vector<uint8_t> s_uploadBuffer(DEFAULT_FB_SIZE, 0u);
  
@@ -14757,7 +15732,7 @@ index 45cb9d2..aa759de 100644
          UpdateTexture(tex, blank.data);
          UnloadImage(blank);
          outWidth = FB_WIDTH;
-@@ -422,7 +523,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -422,7 +602,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
          s_lastWidth = outWidth;
          s_lastHeight = outHeight;
          s_hasUploadedFrame = true;
@@ -14766,7 +15741,7 @@ index 45cb9d2..aa759de 100644
      }
  
      PS2_IF_AGRESSIVE_LOGS({
-@@ -435,7 +536,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -435,7 +615,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
              height != s_lastHeight)
          {
              std::cout << "[frame:upload] idx=" << s_uploadDebugCount
@@ -14775,7 +15750,7 @@ index 45cb9d2..aa759de 100644
                        << " displayFbp=" << displayFbp
                        << " sourceFbp=" << sourceFbp
                        << " size=" << width << "x" << height
-@@ -475,6 +576,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -475,6 +655,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      outWidth = width;
      outHeight = height;
      s_hasUploadedFrame = true;
@@ -14783,7 +15758,7 @@ index 45cb9d2..aa759de 100644
  }
  
  PS2Runtime::PS2Runtime()
-@@ -503,8 +605,8 @@ PS2Runtime::PS2Runtime()
+@@ -503,8 +684,8 @@ PS2Runtime::PS2Runtime()
      m_guestHeapLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
      m_guestHeapSuggestedBase = kGuestHeapDefaultBase;
      m_guestHeapConfigured = false;
@@ -14794,7 +15769,7 @@ index 45cb9d2..aa759de 100644
  }
  
  void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
-@@ -599,6 +701,12 @@ ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx,
+@@ -599,6 +780,12 @@ ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx,
      return m_iopSubsystem->handleRpc(request);
  }
  
@@ -14807,7 +15782,7 @@ index 45cb9d2..aa759de 100644
  void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransfer &transfer)
  {
      auto scope = m_iopHost->enterCall(nullptr, rdram);
-@@ -607,6 +715,7 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
+@@ -607,6 +794,7 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
  
  void PS2Runtime::advanceIopEeCycles(uint64_t eeCycles) noexcept
  {
@@ -14815,7 +15790,7 @@ index 45cb9d2..aa759de 100644
      m_iopSubsystem->runEeCycles(eeCycles);
  }
  
-@@ -665,45 +774,32 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -665,45 +853,32 @@ bool PS2Runtime::syncCoreSubsystems()
      }
  
      m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
@@ -14876,16 +15851,26 @@ index 45cb9d2..aa759de 100644
      resetIop();
      m_vu0.reset();
      m_vu1.reset();
-@@ -736,7 +832,7 @@ bool PS2Runtime::initialize(const char *title)
+@@ -731,12 +906,16 @@ bool PS2Runtime::initialize(const char *title)
+ #if defined(PLATFORM_VITA)
+         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
+ #else
+-        SetConfigFlags(FLAG_WINDOW_RESIZABLE);
++        const ps2_host_settings::Settings &settings = ps2_host_settings::get();
++        SetConfigFlags(FLAG_WINDOW_RESIZABLE | (settings.vsync ? FLAG_VSYNC_HINT : 0u));
+         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
++        applyWindowSettings();
          InitAudioDevice();
          m_audioBackend.setAudioReady(IsAudioDeviceReady());
++        if (IsAudioDeviceReady())
++            SetMasterVolume(static_cast<float>(settings.volume) / 100.0f);
  #endif
 -        SetTargetFPS(60);
 +        SetTargetFPS(windowTimerPacing() ? 60 : 0);
          if (m_debugUiInitCallback)
          {
              m_debugUiInitCallback(*this, m_debugUiUserData);
-@@ -971,9 +1067,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+@@ -971,9 +1150,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
      }
      {
          std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
@@ -14897,7 +15882,7 @@ index 45cb9d2..aa759de 100644
      }
  
      LoadedModule module;
-@@ -1013,6 +1108,13 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+@@ -1013,6 +1191,13 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
      return true;
  }
  
@@ -14911,7 +15896,7 @@ index 45cb9d2..aa759de 100644
  const PS2Runtime::IoPaths &PS2Runtime::getIoPaths()
  {
      return runtimeIoPaths();
-@@ -1316,6 +1418,16 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
+@@ -1316,6 +1501,16 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
              << " policy=" << static_cast<uint32_t>(policy)
              << " trace=" << formatDispatchHistory()
              << std::dec;
@@ -14928,7 +15913,7 @@ index 45cb9d2..aa759de 100644
  
          static std::mutex s_missingFunctionLogMutex;
          {
-@@ -1396,14 +1508,32 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
+@@ -1396,14 +1591,32 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
  
      RecompiledFunction targetFn = lookupFunction(targetPc);
      const uint32_t entryPc = ctx->pc;
@@ -14963,7 +15948,7 @@ index 45cb9d2..aa759de 100644
      {
          ctx->pc = fallthroughPc;
      }
-@@ -1945,12 +2075,96 @@ uint32_t PS2Runtime::guestRealloc(uint32_t guestAddr, uint32_t newSize, uint32_t
+@@ -1945,12 +2158,96 @@ uint32_t PS2Runtime::guestRealloc(uint32_t guestAddr, uint32_t newSize, uint32_t
      return newAddr;
  }
  
@@ -15060,7 +16045,7 @@ index 45cb9d2..aa759de 100644
  
      std::lock_guard<std::mutex> lock(m_guestHeapMutex);
      ensureGuestHeapInitializedLocked();
-@@ -2039,10 +2253,36 @@ uint16_t PS2Runtime::Load16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
+@@ -2039,10 +2336,36 @@ uint16_t PS2Runtime::Load16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
      }
  }
  
@@ -15097,7 +16082,7 @@ index 45cb9d2..aa759de 100644
          return m_memory.read32(vaddr);
      }
      catch (const std::exception &)
-@@ -2056,6 +2296,8 @@ uint64_t PS2Runtime::Load64(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
+@@ -2056,6 +2379,8 @@ uint64_t PS2Runtime::Load64(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
  {
      try
      {
@@ -15106,7 +16091,7 @@ index 45cb9d2..aa759de 100644
          return m_memory.read64(vaddr);
      }
      catch (const std::exception &)
-@@ -2187,6 +2429,14 @@ void PS2Runtime::requestStop()
+@@ -2187,6 +2512,14 @@ void PS2Runtime::requestStop()
      {
          m_eeScheduler->requestStop();
      }
@@ -15121,7 +16106,7 @@ index 45cb9d2..aa759de 100644
  }
  
  bool PS2Runtime::isStopRequested() const
-@@ -2339,8 +2589,12 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
+@@ -2339,8 +2672,12 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
      raiseCop0Exception(ctx, EXCEPTION_INTEGER_OVERFLOW);
  }
  
@@ -15134,7 +16119,7 @@ index 45cb9d2..aa759de 100644
      m_stopRequested.store(false, std::memory_order_relaxed);
      ps2_stubs::resetSifState();
      resetIop();
-@@ -2361,12 +2615,27 @@ void PS2Runtime::run()
+@@ -2361,12 +2698,27 @@ void PS2Runtime::run()
      Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
      Texture2D frameTex = LoadTextureFromImage(blank);
      UnloadImage(blank);
@@ -15162,7 +16147,7 @@ index 45cb9d2..aa759de 100644
          try
          {
              m_eeScheduler->reset(m_memory.getRDRAM(), m_cpuContext);
-@@ -2422,7 +2691,23 @@ void PS2Runtime::run()
+@@ -2422,7 +2774,23 @@ void PS2Runtime::run()
          });
          uint32_t presentWidth = FB_WIDTH;
          uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
@@ -15187,7 +16172,7 @@ index 45cb9d2..aa759de 100644
  
          BeginDrawing();
          ClearBackground(BLACK);
-@@ -2430,13 +2715,23 @@ void PS2Runtime::run()
+@@ -2430,13 +2798,27 @@ void PS2Runtime::run()
          const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
          const float screenWidth = static_cast<float>(GetScreenWidth());
          const float screenHeight = static_cast<float>(GetScreenHeight());
@@ -15195,13 +16180,17 @@ index 45cb9d2..aa759de 100644
 -        const float dstWidth = srcWidth * scale;
 -        const float dstHeight = srcHeight * scale;
 +        // A PS2 picture fills a 4:3 TV whatever the frame buffer's width (512-wide menus and 640-wide movies alike);
-+        // scaling by pixels made 512 × 448 screens look squeezed. VENDETTA_ASPECT=16:9 stretches to widescreen.
++        // scaling by pixels made 512 × 448 screens look squeezed. VENDETTA_ASPECT=16:9 stretches to widescreen; the
++        // setting shape = "stretch" (VENDETTA_ASPECT=fill) fills the window whatever its shape.
 +        static const float displayAspect = []
 +        {
 +            const char *aspect = std::getenv("VENDETTA_ASPECT");
-+            return (aspect && std::string(aspect) == "16:9") ? 16.0f / 9.0f : 4.0f / 3.0f;
++            if (aspect && std::string(aspect) == "16:9")
++                return 16.0f / 9.0f;
++            return ps2_host_settings::get().stretch ? 0.0f : 4.0f / 3.0f;
 +        }();
-+        const float aspect = displayAspect * s_presentAspectScale;
++        const float aspect = displayAspect > 0.0f ? displayAspect * s_presentAspectScale
++                                                  : screenWidth / std::max(1.0f, screenHeight);
 +        // whole pixels: an FSR picture is drawn at exactly this size, one texel per pixel
 +        const float dstHeight = std::round(std::min(screenHeight, screenWidth / aspect));
 +        const float dstWidth = std::round(std::min(screenWidth, dstHeight * aspect));
@@ -15216,7 +16205,7 @@ index 45cb9d2..aa759de 100644
              dstWidth,
              dstHeight};
          DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
-@@ -2459,6 +2754,9 @@ void PS2Runtime::run()
+@@ -2459,6 +2841,9 @@ void PS2Runtime::run()
      {
          gameThread.join();
      }
@@ -15227,7 +16216,7 @@ index 45cb9d2..aa759de 100644
      if (m_debugUiInitialized && m_debugUiShutdownCallback)
      {
 diff --git a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
-index b02c7ca..ad10a9f 100644
+index b02c7ca..8021142 100644
 --- a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
 +++ b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
 @@ -1,6 +1,12 @@
@@ -15243,6 +16232,38 @@ index b02c7ca..ad10a9f 100644
  
  enum VIFCmd : uint8_t
  {
+@@ -83,12 +89,12 @@ namespace
+ 
+ void PS2Memory::processVIF0Data(uint32_t srcPhys, uint32_t sizeBytes)
+ {
+-    if (sizeBytes == 0u || srcPhys >= PS2_RAM_SIZE)
++    if (sizeBytes == 0u || srcPhys >= PS2_RAM_BACKING_SIZE)
+         return;
+ 
+     const uint64_t requestedEnd = static_cast<uint64_t>(srcPhys) + static_cast<uint64_t>(sizeBytes);
+-    if (requestedEnd > static_cast<uint64_t>(PS2_RAM_SIZE))
+-        sizeBytes = PS2_RAM_SIZE - srcPhys;
++    if (requestedEnd > static_cast<uint64_t>(PS2_RAM_BACKING_SIZE))
++        sizeBytes = PS2_RAM_BACKING_SIZE - srcPhys;
+ 
+     processVIF0Data(m_rdram + srcPhys, sizeBytes);
+ }
+@@ -285,12 +291,12 @@ void PS2Memory::processVIF0Data(const uint8_t *data, uint32_t sizeBytes)
+ 
+ void PS2Memory::processVIF1Data(uint32_t srcPhys, uint32_t sizeBytes)
+ {
+-    if (sizeBytes == 0u || srcPhys >= PS2_RAM_SIZE)
++    if (sizeBytes == 0u || srcPhys >= PS2_RAM_BACKING_SIZE)
+         return;
+ 
+     const uint64_t requestedEnd = static_cast<uint64_t>(srcPhys) + static_cast<uint64_t>(sizeBytes);
+-    if (requestedEnd > static_cast<uint64_t>(PS2_RAM_SIZE))
+-        sizeBytes = PS2_RAM_SIZE - srcPhys;
++    if (requestedEnd > static_cast<uint64_t>(PS2_RAM_BACKING_SIZE))
++        sizeBytes = PS2_RAM_BACKING_SIZE - srcPhys;
+ 
+     processVIF1Data(m_rdram + srcPhys, sizeBytes);
+ }
 @@ -476,8 +482,37 @@ void PS2Memory::processVIF1Data(const uint8_t *data, uint32_t sizeBytes)
                      copyBytes = PS2_VU1_CODE_SIZE - destAddr;
                  if (pos + copyBytes <= sizeBytes)
@@ -15259,7 +16280,7 @@ index b02c7ca..ad10a9f 100644
 +                        for (uint32_t i = 0; i < copyBytes; ++i)
 +                            hash = (hash ^ data[pos + i]) * 1099511628211ull;
 +                        const uint8_t *rdram = m_rdram;
-+                        const uint64_t source = (data + pos >= rdram && data + pos < rdram + PS2_RAM_SIZE)
++                        const uint64_t source = (data + pos >= rdram && data + pos < rdram + PS2_RAM_BACKING_SIZE)
 +                                                    ? static_cast<uint64_t>(data + pos - rdram)
 +                                                    : ~0ull;
 +                        if (seen.insert(hash ^ (static_cast<uint64_t>(destAddr) << 48)).second)
@@ -17111,3 +18132,22 @@ index 6974254..6fe0609 100644
 +            target[c] = result[c];
 +    return true;
 +}
+diff --git a/ps2xRuntime/src/main.cpp b/ps2xRuntime/src/main.cpp
+index 563bcbd..375c5cc 100644
+--- a/ps2xRuntime/src/main.cpp
++++ b/ps2xRuntime/src/main.cpp
+@@ -1,4 +1,5 @@
+ #include "ps2_runtime.h"
++#include "runtime/ps2_host_settings.h"
+ #include "games_database.h"
+ #if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA)
+ #include "ps2_debug_panel.h"
+@@ -170,6 +171,8 @@ int main(int argc, char *argv[])
+     redirectStdioToLogcat();
+ #endif
+     setupTerminateLogger();
++    // before anything reads a VENDETTA_* switch: the settings fill in the ones the environment doesn't set
++    ps2_host_settings::load(argc > 0 ? argv[0] : nullptr);
+ 
+     try
+     {
