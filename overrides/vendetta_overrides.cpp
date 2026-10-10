@@ -20,6 +20,7 @@
 #include <vector>
 
 void installVendettaAnimations(PS2Runtime &runtime); // vendetta_animations.cpp: body animations from mods\ (a folder)
+void installVendettaMovies(PS2Runtime &runtime);     // vendetta_movies.cpp: VENDETTA_MOVIELOG, the movie picture flips
 
 namespace
 {
@@ -235,6 +236,9 @@ namespace
                         uint64_t stacks[kMaxStacks][kStackDepth];
                         size_t stackLens[kMaxStacks] = {};
                         size_t stackSamples = 0;
+                        uint64_t frameStallStacks[kMaxStacks][kStackDepth];
+                        size_t frameStallLens[kMaxStacks] = {};
+                        size_t frameStallSamples = 0;
                         uint32_t stallPhases[TrackCount][Count] = {};
                         uint64_t stallTick = 0;
                         uint32_t stallMs = 0;
@@ -259,12 +263,37 @@ namespace
                             std::memcpy(&nowFrames, rt->memory().getRDRAM() + 0x258134u, 4);
                             if (nowFrames != seenFrames)
                             {
+                                // "[frame-stall]": no new game frame for 300 ms or more although the vblanks may go on
+                                // (the game itself held up, e.g. in a runtime call) — the game thread's call stacks
+                                if (msSinceFrame >= 300u && frameStallSamples > 0u)
+                                {
+                                    std::map<std::string, uint32_t> seen;
+                                    for (size_t i = 0; i < frameStallSamples; ++i)
+                                        ++seen[describeStack(frameStallStacks[i], frameStallLens[i])];
+                                    std::vector<std::pair<uint32_t, std::string>> ranked;
+                                    for (auto &[stack, count] : seen)
+                                        ranked.emplace_back(count, stack);
+                                    std::sort(ranked.rbegin(), ranked.rend());
+                                    std::string text = "[frame-stall] " + std::to_string(msSinceFrame) + " ms without a game frame";
+                                    for (size_t i = 0; i < ranked.size() && i < 4u; ++i)
+                                        text += "\n[frame-stall]   " + std::to_string(ranked[i].first) + "/" + std::to_string(frameStallSamples) +
+                                                " game thread: " + ranked[i].second;
+                                    std::fprintf(stderr, "%s\n", text.c_str());
+                                }
+                                frameStallSamples = 0;
                                 seenFrames = nowFrames;
                                 longestGap = std::max(longestGap, msSinceFrame);
                                 msSinceFrame = 0;
                             }
                             else
+                            {
                                 ++msSinceFrame;
+                                if (msSinceFrame >= 100u && msSinceFrame % 10u == 0u && frameStallSamples < kMaxStacks)
+                                {
+                                    frameStallLens[frameStallSamples] = stackScan(GameTrack, frameStallStacks[frameStallSamples], kStackDepth);
+                                    ++frameStallSamples;
+                                }
+                            }
                             {
                                 const uint32_t nowVblanks = static_cast<uint32_t>(rt->memory().gs().vsyncTick.load(std::memory_order_acquire));
                                 const uint32_t slot = samples % kWindow;
@@ -465,6 +494,7 @@ namespace
         startHostProfile(runtime);
         startFreezeWatch(runtime);
         installVendettaAnimations(runtime);
+        installVendettaMovies(runtime);
         PS2Runtime::IoPaths paths = PS2Runtime::getIoPaths();
         const std::filesystem::path image = paths.elfDirectory.parent_path() / "disc" / "SLUS-20639.iso";
         if (!std::filesystem::exists(image))

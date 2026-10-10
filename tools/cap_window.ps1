@@ -20,7 +20,9 @@ $r = New-Object W2+RECT; [void][W2]::GetWindowRect($h, [ref]$r)
 $clock = [Diagnostics.Stopwatch]::StartNew()
 for ($i = 0; $i -lt $Count; $i++) {
   while ($clock.ElapsedMilliseconds -lt $i * $IntervalMs) { Start-Sleep -Milliseconds 5 }
-  $bmp = New-Object Drawing.Bitmap ([Math]::Max(1, $r.R - $r.L)), ([Math]::Max(1, $r.B - $r.T))
+  # 24-bit, no alpha: PrintWindow leaves pure-black pixels of the game's picture with alpha 0 in a 32-bit bitmap, and
+  # picture viewers show those as white specks (they are black on screen)
+  $bmp = New-Object Drawing.Bitmap ([Math]::Max(1, $r.R - $r.L)), ([Math]::Max(1, $r.B - $r.T)), ([Drawing.Imaging.PixelFormat]::Format24bppRgb)
   $g = [Drawing.Graphics]::FromImage($bmp); $dc = $g.GetHdc(); [void][W2]::PrintWindow($h, $dc, 2); $g.ReleaseHdc($dc)
   $file = if ($Count -gt 1) { $Out -replace '\.png$', ('-{0:D2}.png' -f $i) } else { $Out }
   $bmp.Save($file); $g.Dispose(); $bmp.Dispose(); "saved $file at $($clock.ElapsedMilliseconds) ms"
