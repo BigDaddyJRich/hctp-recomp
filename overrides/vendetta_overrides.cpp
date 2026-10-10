@@ -24,6 +24,7 @@
 void installVendettaAnimations(PS2Runtime &runtime); // vendetta_animations.cpp: body animations from mods\ (a folder)
 void installVendettaMovies(PS2Runtime &runtime);     // vendetta_movies.cpp: VENDETTA_MOVIELOG, the movie picture flips
 void installVendettaIop();                           // vendetta_iop.cpp: IOP routines run natively (SNDDRV's mixer)
+void installVendettaWidescreen(PS2Runtime &runtime); // vendetta_widescreen.cpp: the match's view widened (VENDETTA_WIDESCREEN)
 
 namespace
 {
@@ -552,6 +553,7 @@ namespace
         installVendettaAnimations(runtime);
         installVendettaMovies(runtime);
         installVendettaIop();
+        installVendettaWidescreen(runtime);
         PS2Runtime::IoPaths paths = PS2Runtime::getIoPaths();
         const std::filesystem::path image = paths.elfDirectory.parent_path() / "disc" / "SLUS-20639.iso";
         if (!std::filesystem::exists(image))

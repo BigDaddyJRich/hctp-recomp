@@ -2911,7 +2911,7 @@ index 2421f9e..53d30c7 100644
 +    bool m_stopWorkers = false;
  };
 diff --git a/ps2xRuntime/include/runtime/gs/gs_frontend.h b/ps2xRuntime/include/runtime/gs/gs_frontend.h
-index 4c3f641..8cff0f0 100644
+index 4c3f641..fac06ff 100644
 --- a/ps2xRuntime/include/runtime/gs/gs_frontend.h
 +++ b/ps2xRuntime/include/runtime/gs/gs_frontend.h
 @@ -2,13 +2,16 @@
@@ -2945,7 +2945,22 @@ index 4c3f641..8cff0f0 100644
      bool processNativePackedGIFPacket(const uint8_t *data, uint32_t sizeBytes);
      void uploadImageNative(uint64_t bitbltbuf,
                             uint64_t trxpos,
-@@ -129,6 +135,54 @@ public:
+@@ -116,6 +122,14 @@ public:
+                            uint32_t sizeBytes);
+     void writeRegister(uint8_t regAddr, uint64_t value);
+ 
++    // Widescreen (runtime/ps2_widescreen.h): the game's rule for its 2-D layer (a HUD drawn over the 3-D scene). In a
++    // wide frame those primitives are held until the picture is shown, grouped into elements (primitives that touch)
++    // and each squeezed back to its 4:3 shape around the screen's left edge, right edge or centre, by the third of the
++    // screen it sits in - so the HUD keeps its shape and its corners. The graphics card's renderer only (the held GIF
++    // packets are patched where each vertex's X sits).
++    using OverlayRule = bool (*)(const struct GSDrawState &state);
++    void setWidescreenOverlayRule(OverlayRule rule) { m_overlayRule = rule; }
++
+     const uint8_t *lockDisplaySnapshot(uint32_t &outSize);
+     void unlockDisplaySnapshot();
+     uint32_t getLastDisplayBaseBytes() const;
+@@ -129,6 +143,54 @@ public:
      bool isDebugHistoryPaused() const;
      void setDebugHistoryPaused(bool paused);
      bool getPreferredDisplaySource(GSFrameReg &outSource, uint32_t &outDestFbp) const;
@@ -3000,7 +3015,7 @@ index 4c3f641..8cff0f0 100644
      void latchHostPresentationFrame();
      bool copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
                                            uint32_t &outWidth,
-@@ -172,7 +226,27 @@ private:
+@@ -172,7 +234,27 @@ private:
      bool tryProcessNativeImageUploadPacket(const uint8_t *data, uint32_t sizeBytes);
      GSPrimitiveBatch buildDrawBatch(int vertexCount) const;
      void updatePreferredDisplaySourceForDraw(const GSPrimitiveBatch &batch);
@@ -3029,7 +3044,7 @@ index 4c3f641..8cff0f0 100644
  
  
      GSContext &activeContext();
-@@ -191,6 +265,20 @@ private:
+@@ -191,6 +273,20 @@ private:
  
      uint8_t m_curR = 0x80, m_curG = 0x80, m_curB = 0x80, m_curA = 0x80;
      float m_curQ = 1.0f;
@@ -3050,7 +3065,58 @@ index 4c3f641..8cff0f0 100644
      float m_curS = 0.0f, m_curT = 0.0f;
      uint16_t m_curU = 0, m_curV = 0;
      uint8_t m_curFog = 0;
-@@ -241,7 +329,30 @@ private:
+@@ -213,6 +309,50 @@ private:
+ 
+     static constexpr int kMaxVerts = 6;
+     GSVertex m_vtxQueue[kMaxVerts];
++
++    // Widescreen overlay (setWidescreenOverlayRule): where each queued vertex's XYZ sits (packet serial, byte offset;
++    // serial 0 = not in a packet that can be held), the packets held for the graphics card, the 2-D layer's primitives.
++    struct VertexSource
++    {
++        uint64_t packet = 0;
++        uint32_t offset = 0;
++    };
++    struct HeldGpuData
++    {
++        uint64_t packet = 0; // 0 = a register write
++        uint8_t path = 0;
++        uint8_t regAddr = 0;
++        uint64_t regValue = 0;
++        std::vector<uint8_t> bytes;
++    };
++    struct OverlayPrimitive
++    {
++        float minX = 0.0f, minY = 0.0f, maxX = 0.0f, maxY = 0.0f; // screen pixels (after XYOFFSET)
++        float ofx = 0.0f;                                          // XYOFFSET's X, pixels
++        float width = 512.0f;                                      // the frame buffer's width
++        uint8_t count = 0;
++        VertexSource vertices[3];
++    };
++    OverlayRule m_overlayRule = nullptr;
++    VertexSource m_vtxSource[kMaxVerts];
++    const uint8_t *m_packetData = nullptr; // the packet being read when it may be held, else null
++    const uint8_t *m_regSource = nullptr;  // the register write being read (inside m_packetData)
++    uint64_t m_packetSerial = 0;
++    bool m_holding = false;
++    size_t m_heldBytes = 0;
++    std::vector<HeldGpuData> m_held;
++    std::vector<OverlayPrimitive> m_overlay;
++    bool beginOverlayPacket(const uint8_t *data);
++    void forwardGpuGif(uint8_t path, const uint8_t *data, uint32_t sizeBytes);
++    void forwardGpuReg(uint8_t regAddr, uint64_t value);
++    void recordOverlayPrimitive(const struct GSPrimitiveBatch &batch, int vertexCount);
++    void flushOverlayUnlocked();
++    VertexSource currentVertexSource() const
++    {
++        if (!m_packetData || !m_regSource)
++            return {};
++        return {m_packetSerial, static_cast<uint32_t>(m_regSource - m_packetData)};
++    }
+     int m_vtxCount = 0;
+     int m_vtxIndex = 0;
+ 
+@@ -241,7 +381,30 @@ private:
      uint64_t m_debugLastVsyncTick = UINT64_MAX;
      bool m_debugHistoryPaused = true;
  
@@ -5036,6 +5102,65 @@ index 0000000..3bc0f17
 +    // the bytes written between two generations as one range [begin, end) (begin == end: none); false when the log
 +    // no longer reaches back that far (then anything may have changed)
 +    bool writtenSince(const PS2Memory *memory, uint64_t since, uint64_t now, uint32_t &begin, uint32_t &end);
++}
+diff --git a/ps2xRuntime/include/runtime/ps2_widescreen.h b/ps2xRuntime/include/runtime/ps2_widescreen.h
+new file mode 100644
+index 0000000..beccad8
+--- /dev/null
++++ b/ps2xRuntime/include/runtime/ps2_widescreen.h
+@@ -0,0 +1,53 @@
++#pragma once
++// Widescreen for games drawn for a 4:3 TV: the game's view is widened by game-specific code (its projection), which
++// marks each frame it draws that way; the window then shows those frames at the target shape and everything else
++// (menus, movies) at 4:3. The game's frame buffer keeps its size: a wide frame is drawn squeezed into it and stretched
++// back by the window.
++//
++// VENDETTA_WIDESCREEN=<w>:<h> (e.g. 16:9, 21:9, 16:10) or 1 (= 16:9); unset / 0 = off.
++#include <atomic>
++#include <chrono>
++#include <cstdio>
++#include <cstdlib>
++
++namespace ps2_widescreen
++{
++    // The shape (width / height) wide frames are shown at; 0 = widescreen off.
++    inline float targetAspect()
++    {
++        static const float aspect = []
++        {
++            const char *value = std::getenv("VENDETTA_WIDESCREEN");
++            if (!value || !*value || (value[0] == '0' && value[1] == '\0'))
++                return 0.0f;
++            float w = 0.0f, h = 0.0f;
++            if (std::sscanf(value, "%f:%f", &w, &h) == 2 && w > 0.0f && h > 0.0f)
++                return w / h;
++            return 16.0f / 9.0f;
++        }();
++        return aspect;
++    }
++
++    namespace detail
++    {
++        inline std::atomic<int64_t> &lastWideFrame()
++        {
++            static std::atomic<int64_t> value{INT64_MIN / 2};
++            return value;
++        }
++        inline int64_t nowMs()
++        {
++            return std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now().time_since_epoch())
++                .count();
++        }
++    }
++
++    // Game code: the frame being drawn is wide.
++    inline void markWideFrame() { detail::lastWideFrame().store(detail::nowMs(), std::memory_order_relaxed); }
++
++    // A wide frame was drawn in the last `holdMs` milliseconds (the window shows the target shape).
++    inline bool wideNow(int64_t holdMs = 250)
++    {
++        return targetAspect() > 0.0f && detail::nowMs() - detail::lastWideFrame().load(std::memory_order_relaxed) <= holdMs;
++    }
 +}
 diff --git a/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp b/ps2xRuntime/src/lib/Kernel/EeScheduler.cpp
 index c5e31c4..2385387 100644
@@ -9848,10 +9973,10 @@ index f0ad507..00ffcc6 100644
      result.displayFbp = displayFrame.fbp;
      result.sourceFbp = selected.fbp;
 diff --git a/ps2xRuntime/src/lib/gs/gs_frontend.cpp b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
-index 5658928..aff11f3 100644
+index 5658928..f61e657 100644
 --- a/ps2xRuntime/src/lib/gs/gs_frontend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
-@@ -1,5 +1,8 @@
+@@ -1,8 +1,17 @@
 +#include "runtime/ps2_host_profile.h"
  #include "runtime/gs/gs_frontend.h"
  #include "runtime/gs/gs_cpu_backend.h"
@@ -9859,8 +9984,17 @@ index 5658928..aff11f3 100644
 +#include "runtime/gs/gs_gpu_backend.h"
  #include "ps2_log.h"
  #include "runtime/ps2_memory.h"
++#include "runtime/ps2_widescreen.h"
  #include <atomic>
-@@ -106,25 +109,210 @@ namespace
++#include <string>
++#include <unordered_set>
++#include <unordered_map>
++#include <chrono>
++#include <cstdlib>
+ #include <algorithm>
+ #include <cmath>
+ #include <cstdio>
+@@ -106,25 +115,216 @@ namespace
  
  
  GS::GS()
@@ -9937,6 +10071,8 @@ index 5658928..aff11f3 100644
 +    std::vector<uint8_t> gpu;
 +    m_backend->Sync(GSSyncReason::DebugReadback);
 +    m_backend->SnapshotVram(cpu);
++    if (m_holding)
++        flushOverlayUnlocked();
 +    m_gpu->snapshotVram(gpu);
 +    const size_t bytes = std::min(cpu.size(), gpu.size());
 +    if (bytes == 0u)
@@ -10068,11 +10204,15 @@ index 5658928..aff11f3 100644
      std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
 +    KickGuard kick(*this);
 +    if (m_gpu)
++        m_held.clear();
++        m_overlay.clear();
++        m_holding = false;
++        m_heldBytes = 0;
 +        m_gpu->reset();
      std::memset(m_ctx, 0, sizeof(m_ctx));
      m_prim = {};
      m_primRegister = {};
-@@ -164,7 +352,12 @@ void GS::reset()
+@@ -164,7 +364,12 @@ void GS::reset()
          m_backend->Flush();
          m_backend->Sync(GSSyncReason::Reset);
          m_backend->Reset();
@@ -10085,7 +10225,7 @@ index 5658928..aff11f3 100644
      {
          std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
          m_hostPresentationFrame.clear();
-@@ -200,10 +393,12 @@ void GS::snapshotVRAM()
+@@ -200,10 +405,12 @@ void GS::snapshotVRAM()
      // Presentation/debug snapshots run outside m_stateMutex so the EE can keep
      // feeding the GS while a backend performs host-side conversion. Keep the
      // selected backend alive and unswappable for the duration of the call.
@@ -10098,7 +10238,7 @@ index 5658928..aff11f3 100644
      m_backend->Sync(GSSyncReason::DebugReadback);
      m_backend->SnapshotVram(snapshot);
      std::lock_guard<std::mutex> lock(m_snapshotMutex);
-@@ -503,19 +698,55 @@ void GS::refreshDisplaySnapshot()
+@@ -503,19 +710,55 @@ void GS::refreshDisplaySnapshot()
      snapshotVRAM();
  }
  
@@ -10165,12 +10305,132 @@ index 5658928..aff11f3 100644
      request.contextFrames[0] = m_ctx[0].frame;
      request.contextFrames[1] = m_ctx[1].frame;
      request.preferredSource = m_preferredDisplaySourceFrame;
-@@ -524,11 +755,142 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
+@@ -524,55 +767,249 @@ GSPresentationRequest GS::buildPresentationRequestUnlocked() const
      return request;
  }
  
+-void GS::latchHostPresentationFrame()
++namespace
+ {
+-    GSPresentationRequest request{};
++    // VENDETTA_HUDLOG=<seconds>[,<frames>][,all]: from the first presentation after that many seconds, every primitive
++    // of the next <frames> pictures (default 1) drawn with the depth test off (TEST.ZTE = 0) or as a sprite - the 2-D
++    // layers such as a HUD - or every primitive with "all": type, screen box (after XYOFFSET), frame buffer, texture,
++    // TEST. Kept in memory and printed when the frames are done (printing each line slowed the game below a frame).
++    struct HudLog
+     {
+-        std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+-        if (!m_backend || !m_privRegs)
++        enum Phase
+         {
+-            std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
+-            m_hostPresentationFrame.clear();
+-            m_hasHostPresentationFrame = false;
+-            m_hostPresentationWidth = m_hostPresentationHeight = 0u;
++            Off,
++            Waiting,
++            Capturing,
++            Done,
++        };
++        Phase phase = Off;
++        double from = 0.0;
++        int frames = 1;
++        bool all = false;
++        std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
++        std::string text;
++    };
++    HudLog s_hudLog = []
++    {
++        HudLog log;
++        if (const char *value = std::getenv("VENDETTA_HUDLOG"))
++        {
++            log.phase = HudLog::Waiting;
++            std::sscanf(value, "%lf,%d", &log.from, &log.frames);
++            log.frames = std::max(1, log.frames);
++            log.all = std::strstr(value, "all") != nullptr;
++        }
++        return log;
++    }();
++    bool s_hudLogArmed = false; // the time has come: capture from the next presentation
++    uint32_t s_hudPacket = 0, s_hudTag = 0, s_hudPath = 0; // which packet / tag / path a logged primitive came in
++
++    void hudLogPrimitive(const GSPrimitiveBatch &batch)
++    {
++        if (s_hudLog.phase == HudLog::Waiting)
++        {
++            s_hudLogArmed = std::chrono::duration<double>(std::chrono::steady_clock::now() - s_hudLog.start).count() >= s_hudLog.from;
++            return;
++        }
++        if (s_hudLog.phase != HudLog::Capturing)
+             return;
++        const GSContext &ctx = batch.state.context;
++        if (!s_hudLog.all && (ctx.test & 0x10000u) != 0u && batch.state.prim.type != GS_PRIM_SPRITE)
++            return;
++        const float ox = static_cast<float>(ctx.xyoffset.ofx) / 16.0f, oy = static_cast<float>(ctx.xyoffset.ofy) / 16.0f;
++        float minX = 1e9f, minY = 1e9f, maxX = -1e9f, maxY = -1e9f;
++        for (uint32_t i = 0; i < batch.vertexCount; ++i)
++        {
++            minX = std::min(minX, batch.vertices[i].x - ox);
++            maxX = std::max(maxX, batch.vertices[i].x - ox);
++            minY = std::min(minY, batch.vertices[i].y - oy);
++            maxY = std::max(maxY, batch.vertices[i].y - oy);
+         }
+-        request = buildPresentationRequestUnlocked();
++        char line[256];
++        std::snprintf(line, sizeof(line), "[hud] pk=%u tag=%u path=%u ctxt=%u type=%u box=(%.1f,%.1f)-(%.1f,%.1f) fbp=0x%x tme=%u tex=0x%x/psm0x%x abe=%u test=0x%llx rgba=%u,%u,%u,%u\n",
++                      s_hudPacket, s_hudTag, s_hudPath, static_cast<unsigned>(batch.state.prim.ctxt), static_cast<unsigned>(batch.state.prim.type), minX, minY, maxX, maxY,
++                      ctx.frame.fbp, batch.state.prim.tme, ctx.tex0.tbp0, ctx.tex0.psm, batch.state.prim.abe,
++                      static_cast<unsigned long long>(ctx.test), batch.vertices[0].r, batch.vertices[0].g, batch.vertices[0].b,
++                      batch.vertices[0].a);
++        s_hudLog.text += line;
+     }
+ 
+-    PresentationFrame frame{};
++    void hudLogPresentation()
+     {
+-        std::lock_guard<std::mutex> backendLock(m_backendLifetimeMutex);
+-        if (m_backend)
++        if (s_hudLog.phase == HudLog::Waiting && s_hudLogArmed)
+         {
+-            m_backend->Flush();
+-            m_backend->Sync(GSSyncReason::Presentation);
+-            frame = m_backend->Present(request);
++            s_hudLog.phase = HudLog::Capturing;
++            s_hudLog.text += "[hud] P (capture starts)\n";
++        }
++        else if (s_hudLog.phase == HudLog::Capturing)
++        {
++            s_hudLog.text += "[hud] P\n";
++            if (--s_hudLog.frames == 0)
++            {
++                s_hudLog.phase = HudLog::Done;
++                std::fputs(s_hudLog.text.c_str(), stderr);
++                std::fflush(stderr);
++                s_hudLog.text.clear();
++            }
+         }
+     }
++}
+ 
+-    const bool hasFrame = static_cast<bool>(frame);
+-    const uint32_t displayFbp = frame.displayFbp;
+-    const uint32_t sourceFbp = frame.sourceFbp;
+-    const uint32_t width = frame.width;
+-    const uint32_t height = frame.height;
+-    const bool usedPreferred = frame.usedPreferred;
+-    {
+-        std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
+-        m_hostPresentationFrame = std::move(frame.pixels);
+-        m_hostPresentationWidth = width;
+-        m_hostPresentationHeight = height;
+-        m_hostPresentationDisplayFbp = displayFbp;
+-        m_hostPresentationSourceFbp = sourceFbp;
+-        m_hostPresentationUsedPreferred = usedPreferred;
+-        m_hasHostPresentationFrame = hasFrame;
 +void GS::presentUnlocked(const GSDisplayRegs &regs, uint64_t vsyncTick, bool force)
 +{
++    if (m_holding)
++        flushOverlayUnlocked(); // the frame's 2-D layer, placed for widescreen, before the picture
 +    const GSPresentationRequest request = completePresentationRequestUnlocked(regs, vsyncTick);
 +    const bool flip = !m_hasPresented || regs != m_lastPresentedRegs;
 +    // The same display registers, the same request and no write to GS memory since: the same picture.
@@ -10178,7 +10438,9 @@ index 5658928..aff11f3 100644
 +    {
 +        ps2_host_profile::count(ps2_host_profile::GsPresentsSkipped);
 +        return;
-+    }
+     }
++    if (s_hudLog.phase != HudLog::Off)
++        hudLogPresentation();
 +    m_vramWrittenSincePresent = false;
 +    m_hasPresented = true;
 +    m_lastPresentRequest = request;
@@ -10298,66 +10560,34 @@ index 5658928..aff11f3 100644
 +    if (m_gpu)
 +        m_gpu->shutdown();
 +}
-+
- void GS::latchHostPresentationFrame()
- {
--    GSPresentationRequest request{};
+ 
+-    if (hasFrame)
++void GS::latchHostPresentationFrame()
++{
 +    gateForeignCall();
      {
          std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
+-        recordPresentDebugEventUnlocked(displayFbp, sourceFbp, width, height, usedPreferred);
 +        KickGuard kick(*this);
-         if (!m_backend || !m_privRegs)
-         {
-             std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
-@@ -537,42 +899,13 @@ void GS::latchHostPresentationFrame()
-             m_hostPresentationWidth = m_hostPresentationHeight = 0u;
-             return;
-         }
--        request = buildPresentationRequestUnlocked();
++        if (!m_backend || !m_privRegs)
++        {
++            std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
++            m_hostPresentationFrame.clear();
++            m_hasHostPresentationFrame = false;
++            m_hostPresentationWidth = m_hostPresentationHeight = 0u;
++            return;
++        }
 +        presentUnlocked(captureDisplayRegs(*m_privRegs), m_privRegs->vsyncTick.load(std::memory_order_acquire), true);
 +        m_backend->Sync(GSSyncReason::DebugReadback); // a renderer thread has published it once this returns
      }
--
-     PresentationFrame frame{};
--    {
--        std::lock_guard<std::mutex> backendLock(m_backendLifetimeMutex);
--        if (m_backend)
--        {
--            m_backend->Flush();
--            m_backend->Sync(GSSyncReason::Presentation);
--            frame = m_backend->Present(request);
--        }
--    }
--
--    const bool hasFrame = static_cast<bool>(frame);
--    const uint32_t displayFbp = frame.displayFbp;
--    const uint32_t sourceFbp = frame.sourceFbp;
--    const uint32_t width = frame.width;
--    const uint32_t height = frame.height;
--    const bool usedPreferred = frame.usedPreferred;
--    {
--        std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
--        m_hostPresentationFrame = std::move(frame.pixels);
--        m_hostPresentationWidth = width;
--        m_hostPresentationHeight = height;
--        m_hostPresentationDisplayFbp = displayFbp;
--        m_hostPresentationSourceFbp = sourceFbp;
--        m_hostPresentationUsedPreferred = usedPreferred;
--        m_hasHostPresentationFrame = hasFrame;
--    }
--
--    if (hasFrame)
--    {
--        std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
--        recordPresentDebugEventUnlocked(displayFbp, sourceFbp, width, height, usedPreferred);
--    }
++    PresentationFrame frame{};
 +    takePresentation(m_latchedSeq, frame);
 +    std::lock_guard<std::mutex> presentationLock(m_presentationMutex);
 +    m_hostPresentationFrame = std::move(frame.pixels);
  }
  
  bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
-@@ -638,13 +971,27 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
+@@ -638,13 +1075,46 @@ bool GS::copyLatchedHostPresentationFrame(std::vector<uint8_t> &outPixels,
      return true;
  }
  
@@ -10371,8 +10601,27 @@ index 5658928..aff11f3 100644
 +    ps2_host_profile::setPhase(ps2_host_profile::Gs);
      if (!data || sizeBytes < 16 || !m_backend)
          return;
-+    if (m_gpu)
-+        m_gpu->gif(path, data, sizeBytes); // the raw bytes: the graphics card's GS keeps its own tag state per path
++    // the raw bytes: the graphics card's GS keeps its own tag state per path. In a widescreen frame with an overlay
++    // rule they go after this front end has read them (a held 2-D layer is patched first).
++    const bool late = m_gpu && beginOverlayPacket(data);
++    if (m_gpu && !late)
++        m_gpu->gif(path, data, sizeBytes);
++    struct LateForward
++    {
++        GS &gs;
++        bool on;
++        uint8_t path;
++        const uint8_t *data;
++        uint32_t size;
++        ~LateForward()
++        {
++            if (on)
++                gs.forwardGpuGif(path, data, size);
++            gs.m_packetData = nullptr;
++        }
++    } lateForward{*this, late, path, data, sizeBytes};
++    ++s_hudPacket;
++    s_hudPath = path;
  
 -    if (tryProcessNativeImageUploadPacket(data, sizeBytes))
 +    GifContinuation &continuation = m_gifContinuation[path & 3u];
@@ -10387,7 +10636,7 @@ index 5658928..aff11f3 100644
          return;
  
      PS2_IF_AGRESSIVE_LOGS({
-@@ -668,7 +1015,6 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
+@@ -668,7 +1138,6 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
          }
      });
  
@@ -10395,7 +10644,15 @@ index 5658928..aff11f3 100644
      while (offset + 16 <= sizeBytes)
      {
          uint64_t tagLo = loadLE64(data + offset);
-@@ -695,55 +1041,107 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
+@@ -684,6 +1153,7 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
+             nreg = 16;
+ 
+         recordGifTagDebugEventUnlocked(sizeBytes, nloop, flg, nreg);
++        ++s_hudTag;
+ 
+         bool pre = ((tagLo >> 46) & 1) != 0;
+         if (pre)
+@@ -695,61 +1165,135 @@ void GS::processGIFPacket(const uint8_t *data, uint32_t sizeBytes)
          for (uint32_t i = 0; i < nreg; ++i)
              regs[i] = static_cast<uint8_t>((tagHi >> (i * 4)) & 0xF);
  
@@ -10483,14 +10740,23 @@ index 5658928..aff11f3 100644
 +                return offset;
 +            const uint64_t lo = loadLE64(data + offset);
 +            const uint64_t hi = loadLE64(data + offset + 8);
++            m_regSource = data + offset;
 +            offset += 16u;
 +            writeRegisterPacked(tag.regs[tag.regIndex], lo, hi);
++            m_regSource = nullptr;
 +        }
 +        else // REGLIST
-+        {
+         {
+-            uint32_t imageBytes = nloop * 16;
+-            if (offset + imageBytes > sizeBytes)
+-                imageBytes = sizeBytes - offset;
+-            processImageData(data + offset, imageBytes);
+-            offset += imageBytes;
 +            if (offset + 8u > sizeBytes)
 +                return offset;
++            m_regSource = data + offset;
 +            writeRegisterUnlocked(tag.regs[tag.regIndex], loadLE64(data + offset));
++            m_regSource = nullptr;
 +            offset += 8u;
 +            ++tag.regListWords;
 +        }
@@ -10498,24 +10764,19 @@ index 5658928..aff11f3 100644
 +        {
 +            tag.regIndex = 0;
 +            --tag.loopsLeft;
-+        }
-+    }
+         }
+     }
 +    if (tag.flg == GIF_FMT_REGLIST && (tag.regListWords & 1u))
 +    {
 +        if (offset + 8u > sizeBytes)
-         {
--            uint32_t imageBytes = nloop * 16;
--            if (offset + imageBytes > sizeBytes)
--                imageBytes = sizeBytes - offset;
--            processImageData(data + offset, imageBytes);
--            offset += imageBytes;
++        {
 +            // the padding word is in the next packet: keep the tag one more 8-byte step
 +            tag.regListWords = 0;
 +            tag.active = offset + 8u <= sizeBytes;
 +            return offset;
-         }
++        }
 +        offset += 8u;
-     }
++    }
 +    tag.active = false;
 +    return offset;
  }
@@ -10530,12 +10791,47 @@ index 5658928..aff11f3 100644
  
      if (!validatePackedGifPacket(data, sizeBytes))
          return false;
-+    if (m_gpu)
-+        m_gpu->gif(0u, data, sizeBytes); // a whole packet, on a path the GIF arbiter never uses
++    // a whole packet, on a path the GIF arbiter never uses (after it is read in a widescreen frame, as above)
++    const bool late = m_gpu && beginOverlayPacket(data);
++    if (m_gpu && !late)
++        m_gpu->gif(0u, data, sizeBytes);
++    struct LateForward
++    {
++        GS &gs;
++        bool on;
++        const uint8_t *data;
++        uint32_t size;
++        ~LateForward()
++        {
++            if (on)
++                gs.forwardGpuGif(0u, data, size);
++            gs.m_packetData = nullptr;
++        }
++    } lateForward{*this, late, data, sizeBytes};
++    ++s_hudPacket;
++    s_hudPath = 9u; // the native packed path
  
      const bool processed = visitPackedGifPacket(data, sizeBytes, [&](const PackedGifPacketTag &tag)
                                                  {
-@@ -783,7 +1181,9 @@ void GS::uploadImageNative(uint64_t bitbltbuf,
+         m_curQ = 1.0f;
+ 
+         recordGifTagDebugEventUnlocked(sizeBytes, tag.nloop, GIF_FMT_PACKED, tag.nreg);
++        ++s_hudTag;
+ 
+         const bool pre = ((tag.lo >> 46u) & 1u) != 0u;
+         if (pre)
+@@ -762,8 +1306,10 @@ bool GS::processNativePackedGIFPacket(const uint8_t *data, uint32_t sizeBytes)
+             {
+                 const uint64_t lo = loadLE64(data + offset);
+                 const uint64_t hi = loadLE64(data + offset + 8u);
++                m_regSource = data + offset;
+                 offset += 16u;
+                 writeRegisterPacked(tag.regs[r], lo, hi);
++                m_regSource = nullptr;
+             }
+         }
+ 
+@@ -783,7 +1329,9 @@ void GS::uploadImageNative(uint64_t bitbltbuf,
                             const uint8_t *data,
                             uint32_t sizeBytes)
  {
@@ -10545,7 +10841,7 @@ index 5658928..aff11f3 100644
      uploadImageNativeUnlocked(bitbltbuf, trxpos, trxreg, trxdir, data, sizeBytes);
  }
  
-@@ -796,6 +1196,25 @@ void GS::uploadImageNativeUnlocked(uint64_t bitbltbuf,
+@@ -796,6 +1344,25 @@ void GS::uploadImageNativeUnlocked(uint64_t bitbltbuf,
  {
      if (!data || sizeBytes == 0 || !m_backend)
          return;
@@ -10566,12 +10862,44 @@ index 5658928..aff11f3 100644
 +        put(4u, trxdir, GS_REG_TRXDIR);
 +        put(5u, qwords | (1ull << 15) | (2ull << 58), 0u); // NLOOP = the data, EOP, IMAGE
 +        std::memcpy(packet.data() + 6u * 16u, data, qwords * 16u);
-+        m_gpu->gif(0u, packet.data(), static_cast<uint32_t>(packet.size()));
++        forwardGpuGif(0u, packet.data(), static_cast<uint32_t>(packet.size()));
 +    }
  
      writeRegisterUnlocked(GS_REG_BITBLTBUF, bitbltbuf);
      writeRegisterUnlocked(GS_REG_TRXPOS, trxpos);
-@@ -1061,7 +1480,12 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
+@@ -927,6 +1494,7 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
+             }
+         });
+         GSVertex &vtx = m_vtxQueue[m_vtxCount % kMaxVerts];
++        m_vtxSource[m_vtxCount % kMaxVerts] = currentVertexSource();
+         vtx.x = static_cast<float>(x) / 16.0f;
+         vtx.y = static_cast<float>(y) / 16.0f;
+         vtx.z = static_cast<float>(z);
+@@ -964,6 +1532,7 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
+             }
+         });
+         GSVertex &vtx = m_vtxQueue[m_vtxCount % kMaxVerts];
++        m_vtxSource[m_vtxCount % kMaxVerts] = currentVertexSource();
+         vtx.x = static_cast<float>(x) / 16.0f;
+         vtx.y = static_cast<float>(y) / 16.0f;
+         vtx.z = static_cast<float>(z);
+@@ -998,6 +1567,7 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
+             }
+         });
+         GSVertex &vtx = m_vtxQueue[m_vtxCount % kMaxVerts];
++        m_vtxSource[m_vtxCount % kMaxVerts] = currentVertexSource();
+         vtx.x = static_cast<float>(lo & 0xFFFF) / 16.0f;
+         vtx.y = static_cast<float>((lo >> 32) & 0xFFFF) / 16.0f;
+         vtx.z = static_cast<float>((hi >> 4) & 0xFFFFFF);
+@@ -1029,6 +1599,7 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
+             }
+         });
+         GSVertex &vtx = m_vtxQueue[m_vtxCount % kMaxVerts];
++        m_vtxSource[m_vtxCount % kMaxVerts] = currentVertexSource();
+         vtx.x = static_cast<float>(lo & 0xFFFF) / 16.0f;
+         vtx.y = static_cast<float>((lo >> 32) & 0xFFFF) / 16.0f;
+         vtx.z = static_cast<float>(hi & 0xFFFFFFFF);
+@@ -1061,7 +1632,12 @@ void GS::writeRegisterPacked(uint8_t regDesc, uint64_t lo, uint64_t hi)
  
  void GS::writeRegister(uint8_t regAddr, uint64_t value)
  {
@@ -10580,11 +10908,27 @@ index 5658928..aff11f3 100644
 +    KickGuard kick(*this);
 +    // 0x59-0x5F are this front end's own aliases of display registers, which reach the graphics card at presentation
 +    if (m_gpu && (regAddr < 0x59u || regAddr > 0x5Fu))
-+        m_gpu->reg(regAddr, value);
++        forwardGpuReg(regAddr, value);
      writeRegisterUnlocked(regAddr, value);
  }
  
-@@ -1240,6 +1664,14 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
+@@ -1186,6 +1762,7 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
+     case GS_REG_XYZF3:
+     {
+         GSVertex &vtx = m_vtxQueue[m_vtxCount % kMaxVerts];
++        m_vtxSource[m_vtxCount % kMaxVerts] = currentVertexSource();
+         vtx.x = static_cast<float>(value & 0xFFFF) / 16.0f;
+         vtx.y = static_cast<float>((value >> 16) & 0xFFFF) / 16.0f;
+         vtx.z = static_cast<double>((value >> 32) & 0xFFFFFF);
+@@ -1206,6 +1783,7 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
+     case GS_REG_XYZ3:
+     {
+         GSVertex &vtx = m_vtxQueue[m_vtxCount % kMaxVerts];
++        m_vtxSource[m_vtxCount % kMaxVerts] = currentVertexSource();
+         vtx.x = static_cast<float>(value & 0xFFFF) / 16.0f;
+         vtx.y = static_cast<float>((value >> 16) & 0xFFFF) / 16.0f;
+         vtx.z = static_cast<double>((value >> 32) & 0xFFFFFFFF);
+@@ -1240,6 +1818,14 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
          t.csa = static_cast<uint8_t>((value >> 56) & 0x1F);
          t.cld = static_cast<uint8_t>((value >> 61) & 0x7);
          m_backend->LoadClut(t, m_texclut);
@@ -10599,7 +10943,7 @@ index 5658928..aff11f3 100644
          break;
      }
      case GS_REG_CLAMP_1:
-@@ -1392,6 +1824,7 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
+@@ -1392,6 +1978,7 @@ void GS::writeRegisterUnlocked(uint8_t regAddr, uint64_t value)
              command.trxreg = m_trxreg;
              command.direction = m_trxdir;
              m_backend->BeginTransfer(command);
@@ -10607,9 +10951,14 @@ index 5658928..aff11f3 100644
          }
          recordTransferDebugEventUnlocked();
          break;
-@@ -1576,7 +2009,11 @@ void GS::vertexKick(bool drawing)
+@@ -1575,8 +2162,16 @@ void GS::vertexKick(bool drawing)
+     if (drawing && m_backend)
      {
          GSPrimitiveBatch batch = buildDrawBatch(needed);
++        if (s_hudLog.phase != HudLog::Off)
++            hudLogPrimitive(batch);
++        if (m_packetData && m_overlayRule && m_overlayRule(batch.state))
++            recordOverlayPrimitive(batch, needed);
          updatePreferredDisplaySourceForDraw(batch);
 -        m_backend->Submit(batch);
 +        {
@@ -10620,8 +10969,263 @@ index 5658928..aff11f3 100644
          recordDrawDebugEventUnlocked(needed);
      }
  
-@@ -1609,26 +2046,42 @@ void GS::vertexKick(bool drawing)
+@@ -1590,15 +2185,19 @@ void GS::vertexKick(bool drawing)
+         break;
+     case GS_PRIM_LINESTRIP:
+         m_vtxQueue[0] = m_vtxQueue[1];
++        m_vtxSource[0] = m_vtxSource[1];
+         m_vtxCount = 1;
+         break;
+     case GS_PRIM_TRISTRIP:
+         m_vtxQueue[0] = m_vtxQueue[1];
+         m_vtxQueue[1] = m_vtxQueue[2];
++        m_vtxSource[0] = m_vtxSource[1];
++        m_vtxSource[1] = m_vtxSource[2];
+         m_vtxCount = 2;
+         break;
+     case GS_PRIM_TRIFAN:
+         m_vtxQueue[1] = m_vtxQueue[2];
++        m_vtxSource[1] = m_vtxSource[2];
+         m_vtxCount = 2;
+         break;
+     default:
+@@ -1607,28 +2206,277 @@ void GS::vertexKick(bool drawing)
+     }
+ }
  
++// --- widescreen overlay (setWidescreenOverlayRule) ---------------------------------------------------------------
++
++bool GS::beginOverlayPacket(const uint8_t *data)
++{
++    const bool on = m_overlayRule != nullptr && ps2_widescreen::wideNow();
++    if (!on)
++    {
++        if (m_holding)
++            flushOverlayUnlocked();
++        m_packetData = nullptr;
++        return false;
++    }
++    ++m_packetSerial;
++    m_packetData = data;
++    return true;
++}
++
++void GS::forwardGpuGif(uint8_t path, const uint8_t *data, uint32_t sizeBytes)
++{
++    if (!m_gpu)
++        return;
++    if (!m_holding)
++    {
++        m_gpu->gif(path, data, sizeBytes);
++        return;
++    }
++    HeldGpuData held;
++    held.packet = data == m_packetData ? m_packetSerial : ~0ull; // ~0: a packet of our own (never patched)
++    held.path = path;
++    held.bytes.assign(data, data + sizeBytes);
++    m_heldBytes += sizeBytes;
++    m_held.push_back(std::move(held));
++    if (m_heldBytes > (16u << 20)) // a 2-D layer is small: something kept drawing without a picture
++        flushOverlayUnlocked();
++}
++
++void GS::forwardGpuReg(uint8_t regAddr, uint64_t value)
++{
++    if (!m_holding)
++    {
++        m_gpu->reg(regAddr, value);
++        return;
++    }
++    HeldGpuData held;
++    held.regAddr = regAddr;
++    held.regValue = value;
++    m_held.push_back(std::move(held));
++}
++
++void GS::recordOverlayPrimitive(const GSPrimitiveBatch &batch, int vertexCount)
++{
++    const GSContext &ctx = batch.state.context;
++    OverlayPrimitive prim;
++    prim.ofx = static_cast<float>(ctx.xyoffset.ofx) / 16.0f;
++    const float ofy = static_cast<float>(ctx.xyoffset.ofy) / 16.0f;
++    prim.width = static_cast<float>(std::max<uint32_t>(1u, ctx.frame.fbw) * 64u);
++    prim.minX = prim.minY = 1e9f;
++    prim.maxX = prim.maxY = -1e9f;
++    prim.count = static_cast<uint8_t>(std::min(vertexCount, 3));
++    for (uint8_t i = 0; i < prim.count; ++i)
++    {
++        prim.minX = std::min(prim.minX, batch.vertices[i].x - prim.ofx);
++        prim.maxX = std::max(prim.maxX, batch.vertices[i].x - prim.ofx);
++        prim.minY = std::min(prim.minY, batch.vertices[i].y - ofy);
++        prim.maxY = std::max(prim.maxY, batch.vertices[i].y - ofy);
++        prim.vertices[i] = m_vtxSource[i];
++    }
++    m_overlay.push_back(prim);
++    m_holding = true;
++}
++
++void GS::flushOverlayUnlocked()
++{
++    // 1. elements, in drawing order (a later layer sits on top of an earlier one):
++    //  - a primitive joins the element drawn just before it if it touches it and isn't much wider (the letters of a
++    //    name, a bar's parts - but a menu panel drawn over the bars starts an element of its own);
++    //  - then an element drawn inside an earlier, larger one joins it (a menu's text and sliders join its panel), so a
++    //    panel and what is on it move together, while the HUD under the panel keeps its own corner.
++    struct Element
++    {
++        float minX, minY, maxX, maxY, width;
++        std::vector<size_t> prims;
++    };
++    std::vector<Element> elements;
++    constexpr float kGapX = 8.0f, kGapY = 4.0f, kInside = 2.0f;
++    for (size_t i = 0; i < m_overlay.size(); ++i)
++    {
++        const OverlayPrimitive &p = m_overlay[i];
++        if (p.maxX - p.minX >= 0.97f * p.width)
++            continue; // a full-screen layer (a fade, a dimmed background): as it is, and no element grows around it
++        if (!elements.empty())
++        {
++            Element &e = elements.back();
++            const bool touches =
++                p.minX <= e.maxX + kGapX && p.maxX >= e.minX - kGapX && p.minY <= e.maxY + kGapY && p.maxY >= e.minY - kGapY;
++            const bool notMuchWider = (p.maxX - p.minX) <= 2.0f * (e.maxX - e.minX) + 16.0f;
++            if (touches && notMuchWider)
++            {
++                e.minX = std::min(e.minX, p.minX);
++                e.maxX = std::max(e.maxX, p.maxX);
++                e.minY = std::min(e.minY, p.minY);
++                e.maxY = std::max(e.maxY, p.maxY);
++                e.prims.push_back(i);
++                continue;
++            }
++        }
++        elements.push_back({p.minX, p.minY, p.maxX, p.maxY, p.width, {i}});
++    }
++    for (size_t b = 1; b < elements.size();)
++    {
++        const Element &y = elements[b];
++        const auto inside = [&](const Element &x)
++        { return y.minX >= x.minX - kInside && y.maxX <= x.maxX + kInside && y.minY >= x.minY - kInside && y.maxY <= x.maxY + kInside; };
++        const auto touches = [&](const Element &x)
++        { return y.minX <= x.maxX + kGapX && y.maxX >= x.minX - kGapX && y.minY <= x.maxY + kGapY && y.maxY >= x.minY - kGapY; };
++        size_t into = b;
++        // first a neighbour it touches without lying inside it (a score next to its player's bar, under a menu panel),
++        // else the nearest earlier element it lies inside (a menu's text on its panel)
++        for (size_t a = b; a-- > 0;)
++            if (touches(elements[a]) && !inside(elements[a]) &&
++                y.maxX - y.minX <= 2.0f * (elements[a].maxX - elements[a].minX) + 16.0f)
++            {
++                into = a;
++                break;
++            }
++        if (into == b)
++            for (size_t a = b; a-- > 0;)
++                if (inside(elements[a]))
++                {
++                    into = a;
++                    break;
++                }
++        if (into == b)
++        {
++            ++b;
++            continue;
++        }
++        Element &x = elements[into];
++        x.minX = std::min(x.minX, y.minX);
++        x.maxX = std::max(x.maxX, y.maxX);
++        x.minY = std::min(x.minY, y.minY);
++        x.maxY = std::max(x.maxY, y.maxY);
++        x.prims.insert(x.prims.end(), y.prims.begin(), y.prims.end());
++        elements.erase(elements.begin() + static_cast<std::ptrdiff_t>(b));
++    }
++
++    // 2. each element squeezed back to its shape around its anchor: x' = A + k (x - A)
++    const float target = ps2_widescreen::targetAspect();
++    const float k = target > 0.0f ? (4.0f / 3.0f) / target : 1.0f;
++    std::unordered_map<uint64_t, size_t> heldIndex;
++    for (size_t i = 0; i < m_held.size(); ++i)
++        if (m_held[i].packet != 0u && m_held[i].packet != ~0ull)
++            heldIndex[m_held[i].packet] = i;
++    std::unordered_set<uint64_t> patched;
++    uint32_t anchors[3] = {};
++    uint32_t unplaced = 0;
++    static const bool log = std::getenv("VENDETTA_WIDEHUDLOG") != nullptr;
++    std::string logText;
++    for (const Element &e : elements)
++    {
++        const float w = e.width;
++        const float centre = (e.minX + e.maxX) * 0.5f;
++
++        float anchor = w * 0.5f;
++        int kind = 1;
++        if (centre < w / 3.0f)
++            anchor = 0.0f, kind = 0;
++        else if (centre > w * 2.0f / 3.0f)
++            anchor = w, kind = 2;
++        ++anchors[kind];
++        if (log)
++        {
++            char line[160];
++            std::snprintf(line, sizeof(line), " %c(%.0f-%.0f,%.0f-%.0f)x%zu", "LCR"[kind], e.minX, e.maxX, e.minY, e.maxY,
++                          e.prims.size());
++            logText += line;
++        }
++        for (size_t pi : e.prims)
++        {
++            const OverlayPrimitive &p = m_overlay[pi];
++            for (uint8_t v = 0; v < p.count; ++v)
++            {
++                const VertexSource &src = p.vertices[v];
++                const auto held = heldIndex.find(src.packet);
++                if (src.packet == 0u || held == heldIndex.end() || src.offset + 2u > m_held[held->second].bytes.size())
++                {
++                    ++unplaced;
++                    continue;
++                }
++                const uint64_t key = (src.packet << 24) ^ src.offset;
++                if (!patched.insert(key).second)
++                    continue; // a vertex shared by two primitives (a strip): once
++                uint8_t *bytes = m_held[held->second].bytes.data() + src.offset;
++                const uint16_t x = static_cast<uint16_t>(bytes[0] | (bytes[1] << 8));
++                const float screenX = static_cast<float>(x) / 16.0f - p.ofx;
++                const float placed = anchor + k * (screenX - anchor);
++                const long fixed = std::lround((placed + p.ofx) * 16.0f);
++                const uint16_t nx = static_cast<uint16_t>(std::clamp<long>(fixed, 0, 0xFFFF));
++                bytes[0] = static_cast<uint8_t>(nx & 0xFFu);
++                bytes[1] = static_cast<uint8_t>(nx >> 8);
++            }
++        }
++    }
++    if (log)
++    {
++        static auto lastLog = std::chrono::steady_clock::time_point{};
++        const auto now = std::chrono::steady_clock::now();
++        if (now - lastLog > std::chrono::seconds(1))
++        {
++            lastLog = now;
++            std::fprintf(stderr,
++                         "[widescreen] HUD: %zu primitives, %zu elements (left %u, centre %u, right %u), %zu vertices placed, "
++                         "%u not in a held packet;%s\n",
++                         m_overlay.size(), elements.size(), anchors[0], anchors[1], anchors[2], patched.size(), unplaced,
++                         logText.c_str());
++        }
++    }
++
++    // 3. everything held goes to the graphics card, in order
++    std::vector<HeldGpuData> held;
++    held.swap(m_held);
++    m_holding = false;
++    m_heldBytes = 0;
++    m_overlay.clear();
++    for (const HeldGpuData &h : held)
++    {
++        if (h.packet == 0u)
++            m_gpu->reg(h.regAddr, h.regValue);
++        else
++            m_gpu->gif(h.path, h.bytes.data(), static_cast<uint32_t>(h.bytes.size()));
++    }
++}
++
  void GS::processImageData(const uint8_t *data, uint32_t sizeBytes)
  {
 -    if (m_backend)
@@ -10665,7 +11269,7 @@ index 5658928..aff11f3 100644
      return m_backend ? m_backend->ConsumeLocalToHostBytes(dst, maxBytes) : 0u;
  }
  
-@@ -1637,7 +2090,9 @@ void GS::setRasterBackend(std::unique_ptr<GSRasterBackend> backend)
+@@ -1637,7 +2485,9 @@ void GS::setRasterBackend(std::unique_ptr<GSRasterBackend> backend)
      if (!backend)
          backend = std::make_unique<GSCpuBackend>();
  
@@ -10675,7 +11279,7 @@ index 5658928..aff11f3 100644
      std::lock_guard<std::mutex> backendLock(m_backendLifetimeMutex);
      if (m_backend)
      {
-@@ -1657,21 +2112,30 @@ void GS::setRasterBackend(std::unique_ptr<GSRasterBackend> backend)
+@@ -1657,21 +2507,30 @@ void GS::setRasterBackend(std::unique_ptr<GSRasterBackend> backend)
          }
      }
  
@@ -15641,16 +16245,17 @@ index 8590f14..eb147f8 100644
          if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))
              clearBit(PAD_UP);
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..11d4f8f 100644
+index 45cb9d2..6bde76f 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
-@@ -1,3 +1,5 @@
+@@ -1,3 +1,6 @@
 +#include "runtime/ps2_host_profile.h"
 +#include "runtime/ps2_host_settings.h"
++#include "runtime/ps2_widescreen.h"
  #include "ps2_runtime.h"
  #include "ps2_log.h"
  #include "ps2_stubs.h"
-@@ -18,6 +20,7 @@
+@@ -18,6 +21,7 @@
  #include <stdexcept>
  #include <fstream>
  #include <algorithm>
@@ -15658,7 +16263,7 @@ index 45cb9d2..11d4f8f 100644
  #include <array>
  #include <cstring>
  #include <limits>
-@@ -26,6 +29,10 @@
+@@ -26,6 +30,10 @@
  #include <thread>
  #include <unordered_map>
  #include <sstream>
@@ -15669,7 +16274,7 @@ index 45cb9d2..11d4f8f 100644
  
  namespace ps2_stubs
  {
-@@ -85,12 +92,30 @@ struct ProgramHeader
+@@ -85,12 +93,30 @@ struct ProgramHeader
      uint32_t align;
  };
  
@@ -15700,7 +16305,7 @@ index 45cb9d2..11d4f8f 100644
  
      constexpr uint32_t COP0_CAUSE_EXCCODE_MASK = 0x0000007Cu;
      constexpr uint32_t COP0_CAUSE_BD = 0x80000000u;
-@@ -373,10 +398,171 @@ namespace
+@@ -373,10 +399,171 @@ namespace
      }
  }
  
@@ -15875,7 +16480,7 @@ index 45cb9d2..11d4f8f 100644
      static uint32_t s_lastDisplayFbp = std::numeric_limits<uint32_t>::max();
      static uint32_t s_lastSourceFbp = std::numeric_limits<uint32_t>::max();
      static bool s_lastPreferred = false;
-@@ -386,35 +572,29 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -386,35 +573,29 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      static std::vector<uint8_t> s_scratch;
      static std::vector<uint8_t> s_uploadBuffer(DEFAULT_FB_SIZE, 0u);
  
@@ -15924,7 +16529,7 @@ index 45cb9d2..11d4f8f 100644
          UpdateTexture(tex, blank.data);
          UnloadImage(blank);
          outWidth = FB_WIDTH;
-@@ -422,7 +602,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -422,7 +603,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
          s_lastWidth = outWidth;
          s_lastHeight = outHeight;
          s_hasUploadedFrame = true;
@@ -15933,7 +16538,7 @@ index 45cb9d2..11d4f8f 100644
      }
  
      PS2_IF_AGRESSIVE_LOGS({
-@@ -435,7 +615,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -435,7 +616,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
              height != s_lastHeight)
          {
              std::cout << "[frame:upload] idx=" << s_uploadDebugCount
@@ -15942,7 +16547,7 @@ index 45cb9d2..11d4f8f 100644
                        << " displayFbp=" << displayFbp
                        << " sourceFbp=" << sourceFbp
                        << " size=" << width << "x" << height
-@@ -475,6 +655,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -475,6 +656,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      outWidth = width;
      outHeight = height;
      s_hasUploadedFrame = true;
@@ -15950,7 +16555,7 @@ index 45cb9d2..11d4f8f 100644
  }
  
  PS2Runtime::PS2Runtime()
-@@ -503,8 +684,8 @@ PS2Runtime::PS2Runtime()
+@@ -503,8 +685,8 @@ PS2Runtime::PS2Runtime()
      m_guestHeapLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
      m_guestHeapSuggestedBase = kGuestHeapDefaultBase;
      m_guestHeapConfigured = false;
@@ -15961,7 +16566,7 @@ index 45cb9d2..11d4f8f 100644
  }
  
  void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
-@@ -599,6 +780,12 @@ ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx,
+@@ -599,6 +781,12 @@ ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx,
      return m_iopSubsystem->handleRpc(request);
  }
  
@@ -15974,7 +16579,7 @@ index 45cb9d2..11d4f8f 100644
  void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransfer &transfer)
  {
      auto scope = m_iopHost->enterCall(nullptr, rdram);
-@@ -607,6 +794,7 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
+@@ -607,6 +795,7 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
  
  void PS2Runtime::advanceIopEeCycles(uint64_t eeCycles) noexcept
  {
@@ -15982,7 +16587,7 @@ index 45cb9d2..11d4f8f 100644
      m_iopSubsystem->runEeCycles(eeCycles);
  }
  
-@@ -665,45 +853,32 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -665,45 +854,32 @@ bool PS2Runtime::syncCoreSubsystems()
      }
  
      m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
@@ -16043,7 +16648,7 @@ index 45cb9d2..11d4f8f 100644
      resetIop();
      m_vu0.reset();
      m_vu1.reset();
-@@ -731,12 +906,16 @@ bool PS2Runtime::initialize(const char *title)
+@@ -731,12 +907,16 @@ bool PS2Runtime::initialize(const char *title)
  #if defined(PLATFORM_VITA)
          InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
  #else
@@ -16062,7 +16667,7 @@ index 45cb9d2..11d4f8f 100644
          if (m_debugUiInitCallback)
          {
              m_debugUiInitCallback(*this, m_debugUiUserData);
-@@ -971,9 +1150,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+@@ -971,9 +1151,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
      }
      {
          std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
@@ -16074,7 +16679,7 @@ index 45cb9d2..11d4f8f 100644
      }
  
      LoadedModule module;
-@@ -1013,6 +1191,13 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+@@ -1013,6 +1192,13 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
      return true;
  }
  
@@ -16088,7 +16693,7 @@ index 45cb9d2..11d4f8f 100644
  const PS2Runtime::IoPaths &PS2Runtime::getIoPaths()
  {
      return runtimeIoPaths();
-@@ -1316,6 +1501,16 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
+@@ -1316,6 +1502,16 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
              << " policy=" << static_cast<uint32_t>(policy)
              << " trace=" << formatDispatchHistory()
              << std::dec;
@@ -16105,7 +16710,7 @@ index 45cb9d2..11d4f8f 100644
  
          static std::mutex s_missingFunctionLogMutex;
          {
-@@ -1396,14 +1591,32 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
+@@ -1396,14 +1592,32 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
  
      RecompiledFunction targetFn = lookupFunction(targetPc);
      const uint32_t entryPc = ctx->pc;
@@ -16140,7 +16745,7 @@ index 45cb9d2..11d4f8f 100644
      {
          ctx->pc = fallthroughPc;
      }
-@@ -1945,12 +2158,96 @@ uint32_t PS2Runtime::guestRealloc(uint32_t guestAddr, uint32_t newSize, uint32_t
+@@ -1945,12 +2159,96 @@ uint32_t PS2Runtime::guestRealloc(uint32_t guestAddr, uint32_t newSize, uint32_t
      return newAddr;
  }
  
@@ -16237,7 +16842,7 @@ index 45cb9d2..11d4f8f 100644
  
      std::lock_guard<std::mutex> lock(m_guestHeapMutex);
      ensureGuestHeapInitializedLocked();
-@@ -2039,10 +2336,36 @@ uint16_t PS2Runtime::Load16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
+@@ -2039,10 +2337,36 @@ uint16_t PS2Runtime::Load16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
      }
  }
  
@@ -16274,7 +16879,7 @@ index 45cb9d2..11d4f8f 100644
          return m_memory.read32(vaddr);
      }
      catch (const std::exception &)
-@@ -2056,6 +2379,8 @@ uint64_t PS2Runtime::Load64(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
+@@ -2056,6 +2380,8 @@ uint64_t PS2Runtime::Load64(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
  {
      try
      {
@@ -16283,7 +16888,7 @@ index 45cb9d2..11d4f8f 100644
          return m_memory.read64(vaddr);
      }
      catch (const std::exception &)
-@@ -2187,6 +2512,14 @@ void PS2Runtime::requestStop()
+@@ -2187,6 +2513,14 @@ void PS2Runtime::requestStop()
      {
          m_eeScheduler->requestStop();
      }
@@ -16298,7 +16903,7 @@ index 45cb9d2..11d4f8f 100644
  }
  
  bool PS2Runtime::isStopRequested() const
-@@ -2339,8 +2672,12 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
+@@ -2339,8 +2673,12 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
      raiseCop0Exception(ctx, EXCEPTION_INTEGER_OVERFLOW);
  }
  
@@ -16311,7 +16916,7 @@ index 45cb9d2..11d4f8f 100644
      m_stopRequested.store(false, std::memory_order_relaxed);
      ps2_stubs::resetSifState();
      resetIop();
-@@ -2361,12 +2698,27 @@ void PS2Runtime::run()
+@@ -2361,12 +2699,27 @@ void PS2Runtime::run()
      Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
      Texture2D frameTex = LoadTextureFromImage(blank);
      UnloadImage(blank);
@@ -16339,7 +16944,7 @@ index 45cb9d2..11d4f8f 100644
          try
          {
              m_eeScheduler->reset(m_memory.getRDRAM(), m_cpuContext);
-@@ -2422,7 +2774,23 @@ void PS2Runtime::run()
+@@ -2422,7 +2775,23 @@ void PS2Runtime::run()
          });
          uint32_t presentWidth = FB_WIDTH;
          uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
@@ -16364,7 +16969,7 @@ index 45cb9d2..11d4f8f 100644
  
          BeginDrawing();
          ClearBackground(BLACK);
-@@ -2430,13 +2798,27 @@ void PS2Runtime::run()
+@@ -2430,13 +2799,31 @@ void PS2Runtime::run()
          const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
          const float screenWidth = static_cast<float>(GetScreenWidth());
          const float screenHeight = static_cast<float>(GetScreenHeight());
@@ -16381,8 +16986,12 @@ index 45cb9d2..11d4f8f 100644
 +                return 16.0f / 9.0f;
 +            return ps2_host_settings::get().stretch ? 0.0f : 4.0f / 3.0f;
 +        }();
-+        const float aspect = displayAspect > 0.0f ? displayAspect * s_presentAspectScale
-+                                                  : screenWidth / std::max(1.0f, screenHeight);
++        // widescreen: a frame the game drew wide (squeezed into its buffer) is shown at exactly the target shape, filling
++        // a screen of that shape (the TV picture's small covered-share correction would leave thin bars at the sides)
++        const float wideAspect = ps2_widescreen::wideNow() ? ps2_widescreen::targetAspect() : 0.0f;
++        const float aspect = wideAspect > 0.0f        ? wideAspect
++                             : displayAspect > 0.0f ? displayAspect * s_presentAspectScale
++                                                    : screenWidth / std::max(1.0f, screenHeight);
 +        // whole pixels: an FSR picture is drawn at exactly this size, one texel per pixel
 +        const float dstHeight = std::round(std::min(screenHeight, screenWidth / aspect));
 +        const float dstWidth = std::round(std::min(screenWidth, dstHeight * aspect));
@@ -16397,7 +17006,7 @@ index 45cb9d2..11d4f8f 100644
              dstWidth,
              dstHeight};
          DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
-@@ -2459,6 +2841,9 @@ void PS2Runtime::run()
+@@ -2459,6 +2846,9 @@ void PS2Runtime::run()
      {
          gameThread.join();
      }
