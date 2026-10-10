@@ -3,7 +3,7 @@
 #     Vendetta Settings.exe   the settings program with its first-run setup (.NET built in)
 #     READ ME FIRST.txt
 #     python\                 a portable Python (Python's own "embeddable" package; not installed on Windows)
-#     source\                 the build kit: this repository's files (the notes and the game excluded), PS2Recomp at its
+#     source\                 the build kit: this repository's files (as git would commit them), PS2Recomp at its
 #                             pinned commit WITH our patch applied (so no git is needed), paraLLEl-GS + the parts of
 #                             Granite it uses, and deps\ = the libraries PS2Recomp's CMake would clone with git
 # Nothing from the disc or made from the game's code goes in: PS2Recomp comes from git (its working copy holds the
@@ -167,7 +167,7 @@ def main():
             with zipfile.ZipFile(pyzip) as py:
                 for n in py.namelist():
                     z.writestr(TOP + '/python/' + n, py.read(n))
-            # this repository: what git would commit (the notes are excluded locally, the game by .gitignore)
+            # this repository: what git would commit (the game's files are kept out by .gitignore)
             listed = git(['ls-files', '-co', '--exclude-standard', '-z'], REPO).decode().split('\0')
             n = 0
             for rel in listed:
