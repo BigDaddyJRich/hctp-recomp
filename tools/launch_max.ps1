@@ -7,6 +7,6 @@ using System; using System.Runtime.InteropServices;
 public static class Wm { [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd); }
 "@
 $p = Start-Process -FilePath "$r\PS2Recomp\out\fast\ps2xRuntime\ps2EntryRunner.exe" -ArgumentList "`"$r\game\SLUS_206.39`"" -WorkingDirectory $r -RedirectStandardOutput "$r\shots\user.log" -RedirectStandardError "$r\shots\user.log.err" -PassThru
-for ($i = 0; $i -lt 100; $i++) { Start-Sleep -Milliseconds 100; $p.Refresh(); if ($p.MainWindowHandle -ne 0 -and $p.MainWindowTitle -like 'PS2-Recomp*') { break } }
+for ($i = 0; $i -lt 100; $i++) { Start-Sleep -Milliseconds 100; $p.Refresh(); if ($p.MainWindowHandle -ne 0 -and $p.MainWindowTitle -match '^(PS2-Recomp|Def Jam Vendetta)') { break } }
 [void][Wm]::ShowWindow($p.MainWindowHandle, 3)
 "started pid $($p.Id), maximised"
