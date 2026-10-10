@@ -18,7 +18,7 @@ import struct
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-ELF = sys.argv[1] if len(sys.argv) > 1 else os.path.join(ROOT, 'game', 'SLUS_206.39')
+ELF = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.environ.get('VENDETTA_DATA') or ROOT, 'game', 'SLUS_206.39')
 OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ROOT, 'generated', 'vu1_compiled.cpp')
 CODE_SIZE = 0x4000       # VU1 code memory
 CHUNK_PAIRS = 256        # pairs per C++ function (jumps between functions go back through the VU1 loop)

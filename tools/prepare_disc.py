@@ -3,12 +3,14 @@
 #                        (sceCdRead — the ISO volume descriptor at sector 16, DATA.BIN by sector)
 #   game/                every file of the disc; SLUS_206.39 is the executable the recompiler reads, and the runtime
 #                        treats this folder as cdrom0: (IOP modules, file-name opens)
-# usage: python tools/prepare_disc.py <disc.chd | disc.iso>
+# usage: python tools/prepare_disc.py [--check] <disc.chd | disc.iso>
+#   --check: only says whether it is the right disc (prints "ok SLUS-20639"), writes nothing
+#   VENDETTA_DATA=<folder>: where disc/ and game/ go (default: the repository)
 import os
 import shutil
 import sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.environ.get('VENDETTA_DATA') or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'disc'))
 SECTOR = 2048
 SERIAL_FILE = 'SLUS_206.39'
@@ -68,9 +70,13 @@ def walk(src, lba, size, path=''):
 
 
 def main():
-    if len(sys.argv) != 2:
-        sys.exit('usage: python tools/prepare_disc.py <disc.chd | disc.iso>')
-    path = sys.argv[1]
+    args = sys.argv[1:]
+    check_only = bool(args) and args[0] == '--check'
+    if check_only:
+        args = args[1:]
+    if len(args) != 1:
+        sys.exit('usage: python tools/prepare_disc.py [--check] <disc.chd | disc.iso>')
+    path = args[0]
     src = ChdSectors(path) if path.lower().endswith('.chd') else IsoSectors(path)
     pvd = src.read(16, 1)
     if pvd[1:6] != b'CD001':
@@ -81,6 +87,9 @@ def main():
     entries = list(walk(src, root_lba, root_size))
     if not any(p.upper() == '/' + SERIAL_FILE for p, _, _, d in entries if not d):
         sys.exit(f'{SERIAL_FILE} not on this disc — the recomp is for Def Jam Vendetta (USA, SLUS-20639) only')
+    if check_only:
+        print(f'ok SLUS-20639 {vol_blocks} sectors')
+        return
 
     os.makedirs(os.path.join(ROOT, 'disc'), exist_ok=True)
     iso_out = os.path.join(ROOT, 'disc', 'SLUS-20639.iso')
@@ -92,7 +101,10 @@ def main():
             step = 4096
             for lba in range(0, total, step):
                 f.write(src.read(lba, min(step, total - lba)))
-                print(f'\r{iso_out}: {min(lba + step, total)}/{total} sectors', end='', flush=True)
+                if sys.stdout.isatty():
+                    print(f'\r{iso_out}: {min(lba + step, total)}/{total} sectors', end='', flush=True)
+                elif lba // step % 16 == 0:
+                    print(f'{min(lba + step, total)}/{total} sectors', flush=True)  # whole lines, for a progress bar
         print()
     print(f'disc image: {iso_out} ({total} sectors)')
 

@@ -38,7 +38,8 @@ def main():
     lines = ''.join(f'  "{n}@0x{a:08X}",\n' for a, n in sorted(by_addr.items()))
     toml = re.sub(r'^stubs = \[.*?^\]', lambda m: 'stubs = [\n' + lines + ']', ghidra, count=1, flags=re.S | re.M)
     root = ROOT.replace(os.sep, '/')
-    paths = {'input': f'{root}/game/SLUS_206.39', 'output': f'{root}/generated',
+    data = (os.environ.get('VENDETTA_DATA') or ROOT).replace(os.sep, '/')  # where game/ is (an install: beside source/)
+    paths = {'input': f'{data}/game/SLUS_206.39', 'output': f'{root}/generated',
              'ghidra_output': f'{root}/config/vendetta_functions.csv'}
     for key, value in paths.items():
         toml = re.sub(rf'^{key} = .*$', f'{key} = "{value}"', toml, count=1, flags=re.M)

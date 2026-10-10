@@ -1,0 +1,58 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:vm="using:VendettaSettings.ViewModels"
+        xmlns:v="using:VendettaSettings.Views"
+        x:Class="VendettaSettings.Views.MainWindow"
+        x:DataType="vm:MainViewModel"
+        Title="Def Jam Vendetta Recompiled · Settings"
+        Width="1120" Height="700" MinWidth="980" MinHeight="660"
+        Icon="/Assets/icon.ico"
+        WindowStartupLocation="CenterScreen">
+
+    <Panel>
+    <v:SetupView DataContext="{Binding Setup}" IsVisible="{Binding $parent[Window].((vm:MainViewModel)DataContext).InSetup}" />
+    <Grid ColumnDefinitions="228,*" IsVisible="{Binding NotInSetup}">
+        <!-- the side menu -->
+        <Border Background="{StaticResource VNav}" Padding="16,28">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Top" Spacing="6" Margin="4,0,4,26">
+                    <Image Source="/Assets/name.png" Width="188" HorizontalAlignment="Left" />
+                </StackPanel>
+                <StackPanel DockPanel.Dock="Bottom" Spacing="6" Margin="8,0">
+                    <TextBlock Text="{Binding DiscLine}" FontSize="12.5" Classes.good="{Binding HasGame}" Classes.bad="{Binding NoGame}" />
+                    <TextBlock Text="{Binding Version}" FontSize="12.5" Classes="muted" />
+                </StackPanel>
+                <StackPanel Spacing="4">
+                    <Button Classes="nav" Classes.active="{Binding IsPlay}" Command="{Binding ShowPlayCommand}">
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <PathIcon Width="15" Height="15" Data="M6,3 L21,12 L6,21 Z" />
+                            <TextBlock Text="Play" />
+                        </StackPanel>
+                    </Button>
+                    <Button Classes="nav" Classes.active="{Binding IsSettings}" Command="{Binding ShowSettingsCommand}">
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <PathIcon Width="15" Height="15" Data="M3,5 H21 V7.5 H3 Z M3,16.5 H21 V19 H3 Z M14,2.5 H17.5 V10 H14 Z M6.5,14 H10 V21.5 H6.5 Z" />
+                            <TextBlock Text="Settings" />
+                        </StackPanel>
+                    </Button>
+                    <Button Classes="nav" Classes.active="{Binding IsAbout}" Command="{Binding ShowAboutCommand}">
+                        <StackPanel Orientation="Horizontal" Spacing="12">
+                            <PathIcon Width="15" Height="15" Data="F0 M12,2 A10,10 0 1 1 11.99,2 Z M10.75,10 H13.25 V17.5 H10.75 Z M10.75,6 H13.25 V8.5 H10.75 Z" />
+                            <TextBlock Text="About" />
+                        </StackPanel>
+                    </Button>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- the pages -->
+        <Panel Grid.Column="1">
+            <v:PlayView IsVisible="{Binding IsPlay}" />
+            <Panel IsVisible="{Binding IsSettings}">
+                <v:SettingsView DataContext="{Binding Settings}" />
+            </Panel>
+            <v:AboutView IsVisible="{Binding IsAbout}" />
+        </Panel>
+    </Grid>
+    </Panel>
+</Window>

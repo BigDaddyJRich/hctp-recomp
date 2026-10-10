@@ -1,0 +1,171 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:VendettaSettings.ViewModels"
+             x:Class="VendettaSettings.Views.SetupView"
+             x:DataType="vm:SetupViewModel">
+    <Grid ColumnDefinitions="340,*">
+        <!-- the steps -->
+        <Border Background="{StaticResource VNav}" Padding="32,36">
+            <DockPanel>
+                <StackPanel DockPanel.Dock="Top" Spacing="6" Margin="0,0,0,36">
+                    <Image Source="/Assets/name.png" Width="230" HorizontalAlignment="Left" />
+                </StackPanel>
+                <TextBlock DockPanel.Dock="Bottom" Classes="hint" TextWrapping="Wrap" LineHeight="19"
+                           Text="No game files come with this download. The game is built here, from your own copy, and never leaves your PC." />
+                <StackPanel Spacing="20">
+                    <Grid ColumnDefinitions="32,*" ColumnSpacing="14">
+                        <Panel>
+                            <Border Classes="stepnow" IsVisible="{Binding IsDiscPage}"><TextBlock Text="1" /></Border>
+                            <Border Classes="stepdone" IsVisible="{Binding IsBuildPage}"><TextBlock Text="✓" /></Border>
+                        </Panel>
+                        <StackPanel Grid.Column="1" Spacing="2">
+                            <TextBlock Text="Choose your disc" FontWeight="SemiBold" FontSize="15" />
+                            <TextBlock Classes="hint" Text="PS2 · USA · SLUS-20639" />
+                        </StackPanel>
+                    </Grid>
+                    <Grid ColumnDefinitions="32,*" ColumnSpacing="14">
+                        <Panel>
+                            <Border Classes="stepnext" IsVisible="{Binding IsDiscPage}"><TextBlock Text="2" /></Border>
+                            <Border Classes="stepnext" IsVisible="{Binding HasError}"><TextBlock Text="2" /></Border>
+                            <Border Classes="stepnow" IsVisible="{Binding BuildingNow}"><TextBlock Text="2" /></Border>
+                            <Border Classes="stepdone" IsVisible="{Binding Done}"><TextBlock Text="✓" /></Border>
+                        </Panel>
+                        <StackPanel Grid.Column="1" Spacing="2">
+                            <TextBlock Text="Build the game" FontWeight="SemiBold" FontSize="15" />
+                            <TextBlock Classes="hint" Text="once, about 20–30 minutes" />
+                        </StackPanel>
+                    </Grid>
+                    <Grid ColumnDefinitions="32,*" ColumnSpacing="14">
+                        <Border Classes="stepnext"><TextBlock Text="3" /></Border>
+                        <StackPanel Grid.Column="1" Spacing="2">
+                            <TextBlock Text="Your settings" FontWeight="SemiBold" FontSize="15" Classes="muted" />
+                            <TextBlock Classes="hint" Text="display, sound, controls" />
+                        </StackPanel>
+                    </Grid>
+                </StackPanel>
+            </DockPanel>
+        </Border>
+
+        <!-- step 1: the disc -->
+        <DockPanel Grid.Column="1" Margin="48,40" IsVisible="{Binding IsDiscPage}">
+            <StackPanel DockPanel.Dock="Top" Spacing="6" Margin="0,0,0,20">
+                <TextBlock Classes="cap" Text="STEP 1 OF 3" Foreground="{StaticResource VBad}" />
+                <TextBlock Classes="h1" Text="CHOOSE YOUR DISC" />
+                <TextBlock Classes="muted" FontSize="13" TextWrapping="Wrap"
+                           Text="Your own copy of Def Jam Vendetta for PlayStation 2, the USA version (SLUS-20639), as an .iso or .chd file." />
+            </StackPanel>
+            <Grid DockPanel.Dock="Bottom" ColumnDefinitions="*,Auto" Margin="0,16,0,0">
+                <CheckBox IsChecked="{Binding MakeShortcuts}" Content="Desktop shortcuts to the game and to Settings" VerticalAlignment="Center" />
+                <Button Grid.Column="1" Classes="accent" Content="Next: build the game" Command="{Binding BuildCommand}"
+                        IsEnabled="{Binding CanBuild}" />
+            </Grid>
+            <StackPanel Spacing="14">
+                <Border x:Name="DropZone" BorderBrush="#3a363f" BorderThickness="2" CornerRadius="12" Padding="20,16"
+                        DragDrop.AllowDrop="True" Background="Transparent">
+                    <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="18">
+                        <PathIcon Width="30" Height="30" Foreground="#a7a2ad"
+                                  Data="F1 M12,2 A10,10 0 1 1 11.99,2 Z M12,9 A3,3 0 1 0 12.01,9 Z" />
+                        <TextBlock Grid.Column="1" VerticalAlignment="Center" FontSize="15" Foreground="#cfcad4"
+                                   Text="Drop the disc file here" />
+                        <Button Grid.Column="2" Classes="outline" Content="Browse…" Click="OnBrowse" />
+                    </Grid>
+                </Border>
+
+                <TextBlock Classes="hint" Text="Checking the disc…" IsVisible="{Binding Checking}" />
+
+                <Border Background="#12261b" BorderBrush="#23573a" BorderThickness="1" CornerRadius="12" Padding="18,14"
+                        IsVisible="{Binding ShowDiscOk}">
+                    <StackPanel Spacing="10">
+                        <TextBlock Text="✓ Def Jam Vendetta found" FontWeight="SemiBold" FontSize="15" Foreground="{StaticResource VGood}" />
+                        <Grid ColumnDefinitions="90,*" RowDefinitions="Auto,Auto,Auto,Auto" ColumnSpacing="12" RowSpacing="4">
+                            <TextBlock Foreground="#8fb7a0" FontSize="13.5" Text="Console" />
+                            <TextBlock Grid.Column="1" Foreground="#e3f1e8" FontSize="13.5" Text="PlayStation 2" />
+                            <TextBlock Grid.Row="1" Foreground="#8fb7a0" FontSize="13.5" Text="Region" />
+                            <TextBlock Grid.Row="1" Grid.Column="1" Foreground="#e3f1e8" FontSize="13.5" Text="USA (NTSC-U)" />
+                            <TextBlock Grid.Row="2" Foreground="#8fb7a0" FontSize="13.5" Text="Serial" />
+                            <TextBlock Grid.Row="2" Grid.Column="1" Foreground="#e3f1e8" FontSize="13.5" Text="SLUS-20639" />
+                            <TextBlock Grid.Row="3" Foreground="#8fb7a0" FontSize="13.5" Text="File" />
+                            <TextBlock Grid.Row="3" Grid.Column="1" Classes="mono" Foreground="#b9d8c6" TextWrapping="Wrap"
+                                       Text="{Binding DiscPath}" />
+                        </Grid>
+                    </StackPanel>
+                </Border>
+
+                <Border Background="#2a1418" BorderBrush="#5a2630" BorderThickness="1" CornerRadius="12" Padding="18,14"
+                        IsVisible="{Binding ShowDiscBad}">
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="That's not the disc this needs" FontWeight="SemiBold" FontSize="15" Foreground="{StaticResource VBad}" />
+                        <TextBlock FontSize="13.5" Foreground="#f0c9cf" TextWrapping="Wrap" Text="{Binding DiscProblem}" />
+                        <TextBlock Classes="mono" Foreground="#c99aa2" TextWrapping="Wrap" Text="{Binding DiscPath}" />
+                    </StackPanel>
+                </Border>
+
+                <Border Background="#12261b" BorderBrush="#23573a" BorderThickness="1" CornerRadius="12" Padding="18,14"
+                        IsVisible="{Binding DiscAlreadyRead}">
+                    <TextBlock Foreground="{StaticResource VGood}" FontSize="14.5" TextWrapping="Wrap"
+                               Text="✓ Your disc was already read in an earlier try: Next carries on from there (or choose the disc again)." />
+                </Border>
+
+                <Border Background="{StaticResource VPanel}" CornerRadius="10" Padding="16,14">
+                    <StackPanel Spacing="4">
+                        <TextBlock FontSize="14.5" Text="Everything stays in this folder, next to this program" />
+                        <TextBlock Classes="mono" TextWrapping="Wrap" Text="{Binding FolderPath}" />
+                        <TextBlock Classes="hint" FontSize="11.5" Margin="0,6,0,0" TextWrapping="Wrap" Text="{Binding SpaceLine}" />
+                    </StackPanel>
+                </Border>
+            </StackPanel>
+        </DockPanel>
+
+        <!-- step 2: building -->
+        <DockPanel Grid.Column="1" Margin="48,40" IsVisible="{Binding IsBuildPage}">
+            <StackPanel DockPanel.Dock="Top" Spacing="6" Margin="0,0,0,22">
+                <TextBlock Classes="cap" Text="STEP 2 OF 3" Foreground="{StaticResource VBad}" />
+                <TextBlock Classes="h1" Text="{Binding Title}" />
+            </StackPanel>
+            <Grid DockPanel.Dock="Bottom" ColumnDefinitions="Auto,*,Auto" Margin="0,16,0,0">
+                <Button Classes="outline" Content="Cancel" Command="{Binding CancelCommand}" IsVisible="{Binding Building}" />
+                <StackPanel Orientation="Horizontal" Spacing="10" IsVisible="{Binding HasError}">
+                    <Button Classes="outline" Content="Back" Command="{Binding BackCommand}" />
+                    <Button Classes="outline" Content="Open the log" Command="{Binding OpenLogCommand}" />
+                </StackPanel>
+                <Button Grid.Column="2" Classes="accent" Content="Try again" Command="{Binding TryAgainCommand}"
+                        IsVisible="{Binding HasError}" />
+                <Button Grid.Column="2" Classes="accent" Content="Continue: your settings" Command="{Binding ContinueCommand}"
+                        IsEnabled="{Binding Done}" IsVisible="{Binding !HasError}" />
+            </Grid>
+            <StackPanel Spacing="18">
+                <StackPanel Spacing="8">
+                    <Grid ColumnDefinitions="*,Auto">
+                        <TextBlock Text="{Binding PercentText}" FontWeight="SemiBold" FontSize="14" />
+                        <TextBlock Grid.Column="1" Classes="muted" FontSize="14" Text="{Binding TimeLine}" />
+                    </Grid>
+                    <ProgressBar Minimum="0" Maximum="1" Value="{Binding Percent}" Height="10" CornerRadius="5"
+                                 Classes.done="{Binding Done}" />
+                </StackPanel>
+                <ItemsControl ItemsSource="{Binding Steps}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:SetupStep">
+                            <Border Classes="steprow" Classes.now="{Binding IsNow}" Height="40" Padding="10,0" Margin="-10,0"
+                                    CornerRadius="8">
+                                <StackPanel Orientation="Horizontal" Spacing="12" VerticalAlignment="Center">
+                                    <TextBlock Width="22" FontWeight="Bold" Text="{Binding Mark}"
+                                               Classes.good="{Binding IsDone}" Classes.warn="{Binding IsNow}" />
+                                    <TextBlock FontSize="15" Text="{Binding Label}" Classes.strong="{Binding IsNow}" />
+                                </StackPanel>
+                            </Border>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+                <Border Background="#2a1418" BorderBrush="#5a2630" BorderThickness="1" CornerRadius="12" Padding="18,14"
+                        IsVisible="{Binding HasError}">
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="What went wrong" FontWeight="SemiBold" FontSize="15" Foreground="{StaticResource VBad}" />
+                        <TextBlock FontSize="13.5" Foreground="#f0c9cf" TextWrapping="Wrap" Text="{Binding Error}" />
+                        <TextBlock Classes="hint" TextWrapping="Wrap" Text="{Binding LogPath, StringFormat='Everything it printed: {0}'}" />
+                    </StackPanel>
+                </Border>
+                <TextBlock Classes="mono muted" TextTrimming="CharacterEllipsis" Text="{Binding LastLine}" />
+            </StackPanel>
+        </DockPanel>
+    </Grid>
+</UserControl>

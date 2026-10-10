@@ -2356,10 +2356,10 @@ index 509fd07..71243e7 100644
  
      std::string CodeGenerator::translateVU_VMTIR(const Instruction &inst)
 diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
-index 589d768..a997be6 100644
+index 589d768..55b032d 100644
 --- a/ps2xRuntime/CMakeLists.txt
 +++ b/ps2xRuntime/CMakeLists.txt
-@@ -383,12 +383,17 @@ add_library(ps2_runtime STATIC
+@@ -383,12 +383,18 @@ add_library(ps2_runtime STATIC
      src/lib/gs/ps2_gs_memory.cpp
      src/lib/gs/gs_frontend.cpp
      src/lib/gs/gs_cpu_backend.cpp
@@ -2369,6 +2369,7 @@ index 589d768..a997be6 100644
      src/lib/ps2_iop_host.cpp
      src/lib/ps2_memory.cpp
      src/lib/ps2_pad.cpp
++    src/lib/ps2_pad_rumble.cpp
      src/lib/ps2_rom_device.cpp
      src/lib/ps2_vfs.cpp
      src/lib/ps2_runtime.cpp
@@ -2377,7 +2378,7 @@ index 589d768..a997be6 100644
      src/lib/ps2_vif1_interpreter.cpp
      src/lib/vu/ps2_vu1_core.cpp
      src/lib/vu/ps2_vu1_upper.cpp
-@@ -396,6 +401,27 @@ add_library(ps2_runtime STATIC
+@@ -396,6 +402,27 @@ add_library(ps2_runtime STATIC
      src/lib/games_database.cpp
  )
  
@@ -2405,7 +2406,7 @@ index 589d768..a997be6 100644
  if(PS2X_ENABLE_RUNTIME_LOGS)
      target_compile_definitions(ps2_runtime PUBLIC
          PS2_RUNTIME_LOGS=1
-@@ -429,6 +455,12 @@ target_compile_definitions(ps2_runtime PRIVATE
+@@ -429,6 +456,12 @@ target_compile_definitions(ps2_runtime PRIVATE
      PS2X_HAS_FFMPEG=$<BOOL:${PS2X_ENABLE_FFMPEG}>
  )
  
@@ -2418,7 +2419,7 @@ index 589d768..a997be6 100644
  file(GLOB_RECURSE KERNEL_SRC_FILES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/Kernel/*.cpp"
  )
-@@ -462,6 +494,17 @@ else()
+@@ -462,6 +495,17 @@ else()
      )
  endif()
  
@@ -2436,10 +2437,13 @@ index 589d768..a997be6 100644
  if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
      set_target_properties(ps2EntryRunner PROPERTIES
          UNITY_BUILD ON
-@@ -507,6 +550,14 @@ target_include_directories(ps2_runtime PUBLIC
+@@ -507,6 +551,17 @@ target_include_directories(ps2_runtime PUBLIC
  )
  
  target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
++if(WIN32)
++    target_link_libraries(ps2_runtime PRIVATE xinput) # the pads' motors on the PC's controllers (ps2_pad_rumble)
++endif()
 +
 +# The window's exact fullscreen mode (resolution and refresh rate) through GLFW, which raylib builds in on desktops
 +if(NOT PS2X_IS_VITA AND NOT PS2X_IS_ANDROID AND DEFINED raylib_SOURCE_DIR
@@ -4097,10 +4101,10 @@ index 0000000..b9483b6
 +}
 diff --git a/ps2xRuntime/include/runtime/ps2_host_settings.h b/ps2xRuntime/include/runtime/ps2_host_settings.h
 new file mode 100644
-index 0000000..50ca90e
+index 0000000..434f2a5
 --- /dev/null
 +++ b/ps2xRuntime/include/runtime/ps2_host_settings.h
-@@ -0,0 +1,48 @@
+@@ -0,0 +1,52 @@
 +#pragma once
 +
 +#include <filesystem>
@@ -4138,6 +4142,10 @@ index 0000000..50ca90e
 +        bool stretch = false;      // the picture fills the window (false: 4:3, bars at the sides)
 +        // [sound]
 +        int volume = 100;          // 0..100
++        // [controls]
++        int multitapPort = 1;      // the port with a multitap (4 pads there): 0 = port 1, 1 = port 2, -1 = none.
++                                   // Def Jam Vendetta wants it in port 2: with one in port 1 it stops reading pad 1A.
++        bool vibration[4] = {true, true, true, true}; // per player (the Nth pad)
 +        // [graphics] renderer / scale / filter / sharpening and [sound] reverb set their VENDETTA_* switches
 +
 +        std::filesystem::path file; // the file they came from (empty: the defaults)
@@ -4273,6 +4281,62 @@ index ea86a9c..95396d6 100644
      bool tryProcessScratchpadDma(uint32_t channelBase, uint32_t chcr);
      void completeDmacChannel(uint32_t channelBase, uint32_t cause);
      void queueCompletedDmacCause(uint32_t cause);
+diff --git a/ps2xRuntime/include/runtime/ps2_pad.h b/ps2xRuntime/include/runtime/ps2_pad.h
+index 7755fe6..01e7ca5 100644
+--- a/ps2xRuntime/include/runtime/ps2_pad.h
++++ b/ps2xRuntime/include/runtime/ps2_pad.h
+@@ -13,4 +13,31 @@ public:
+     bool readState(int port, int slot, uint8_t *data, size_t size);
+ };
+ 
++// Which PC controller is which PS2 pad. Two ports, and on a port with a multitap (ps2_host_settings: the controls'
++// multitapPort) four slots, A-D. The PC's controllers fill the pads in a fixed order: the first goes in port 1, the
++// next ones in port 2 — slot A, then B, C, D when port 2 has the multitap (as a PS2 with a multitap in port 2 and a
++// pad in port 1). With the multitap in port 1 instead: 1A, 1B, 1C, 1D, then 2. The keyboard stands in for the first
++// pad while no controller is plugged in.
++namespace ps2_pad_layout
++{
++    constexpr int kPortCount = 2;
++    constexpr int kSlotCount = 4; // a multitap's slots A-D
++
++    // 4 on the multitap's port, else 1 (scePadGetSlotMax)
++    int slotCount(int port);
++    // where the Nth pad goes (0 = the first): false when there is no such place
++    bool padPlace(int index, int &port, int &slot);
++    // the Nth pad of (port, slot), or -1 when that place isn't used
++    int padIndex(int port, int slot);
++    // the PC controller (raylib's gamepad number) for (port, slot), or -1 when none is plugged in for it.
++    // VENDETTA_PADS=<n> (tests): the first n places count as plugged in, with no controller behind them.
++    int hostController(int port, int slot);
++    // a controller (or a test's VENDETTA_PADS) is in this place: real pads in slots B-D appear only when plugged in
++    bool connected(int port, int slot);
++    // When (port, slot)'s controller is an XInput one (GLFW names those "Xbox Controller", "Wireless Xbox
++    // Controller" or "XInput ..."): how many XInput controllers come before it (GLFW numbers them in XInput's
++    // order), else -1. Its name in name (may be null).
++    int xinputOrder(int port, int slot, const char **name = nullptr);
++}
++
+ #endif
+diff --git a/ps2xRuntime/include/runtime/ps2_pad_rumble.h b/ps2xRuntime/include/runtime/ps2_pad_rumble.h
+new file mode 100644
+index 0000000..002dd69
+--- /dev/null
++++ b/ps2xRuntime/include/runtime/ps2_pad_rumble.h
+@@ -0,0 +1,14 @@
++#pragma once
++
++#include <cstdint>
++
++// The pads' motors on the PC's controllers. A DualShock 2 has a small motor (on / off) and a large one (0-255);
++// libpad's scePadSetActDirect sends both. On Windows they go to the controller behind the pad (ps2_pad_layout) when it
++// is an XInput one (Xbox controllers, and others through Steam Input or DS4Windows): the large motor to its left
++// (low-frequency) motor, the small one to its right. Off for a player whose vibration setting is off.
++namespace ps2_pad_rumble
++{
++    void set(int port, int slot, bool smallMotor, uint8_t largeMotor);
++    // every motor off (the game closing)
++    void stopAll();
++}
 diff --git a/ps2xRuntime/include/runtime/ps2_vu1.h b/ps2xRuntime/include/runtime/ps2_vu1.h
 index 67c8184..633a964 100644
 --- a/ps2xRuntime/include/runtime/ps2_vu1.h
@@ -7481,10 +7545,10 @@ index 564d873..78877f4 100644
                      if (std::filesystem::exists(oldHostPath, ec) && !ec &&
                          std::filesystem::exists(newHostPath.parent_path(), ec) && !ec)
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
-index b50a4cf..a561998 100644
+index b50a4cf..11fe646 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
 +++ b/ps2xRuntime/src/lib/Kernel/Stubs/Pad.cpp
-@@ -1,4 +1,9 @@
+@@ -1,5 +1,12 @@
 +#include <utility>
 +#include <vector>
 +#include <string>
@@ -7492,9 +7556,12 @@ index b50a4cf..a561998 100644
  #include "Common.h"
 +#include <cstdlib>
  #include "Pad.h"
++#include "runtime/ps2_pad.h"
++#include "runtime/ps2_pad_rumble.h"
  
  namespace ps2_stubs
-@@ -7,6 +12,7 @@ namespace ps2_stubs
+ {
+@@ -7,6 +14,7 @@ namespace ps2_stubs
      {
          constexpr uint8_t kPadModeDigital = 0x41;
          constexpr uint8_t kPadModeDualShock = 0x73;
@@ -7502,27 +7569,40 @@ index b50a4cf..a561998 100644
          constexpr uint8_t kPadAnalogCenter = 0x80;
          constexpr int32_t kPadTypeDigital = 4;
          constexpr int32_t kPadTypeDualShock = 7;
-@@ -94,14 +100,29 @@ namespace ps2_stubs
+@@ -14,7 +22,7 @@ namespace ps2_stubs
+         constexpr int32_t kPadStateExecCmd = 5;
+         constexpr int32_t kPadStateStable = 6;
+         constexpr size_t kPadPortCount = 2;
+-        constexpr size_t kPadSlotCount = 1;
++        constexpr size_t kPadSlotCount = 4; // a multitap's slots A-D (ps2_pad_layout: which port has one)
+ 
+         constexpr uint16_t kPadBtnSelect = 1u << 0;
+         constexpr uint16_t kPadBtnL3 = 1u << 1;
+@@ -58,13 +66,15 @@ namespace ps2_stubs
+             uint8_t lastData[32]{};
+             uint32_t readCount = 0u;
+             uint32_t lastReadDataAddr = 0u;
++            bool connected = false;        // a controller in this place (slot A of a port always counts as one)
++            uint8_t actAlign[6] = {0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu, 0xFFu}; // scePadSetActAlign: byte i -> motor
+         };
+ 
+         std::mutex g_padOverrideMutex;
+         std::mutex g_padStateMutex;
+         bool g_padOverrideEnabled = false;
+         PadInputState g_padOverrideState{};
+-        PadPortState g_padPorts[kPadPortCount]{};
++        PadPortState g_padPorts[kPadPortCount][kPadSlotCount]{};
+         int g_padReadLogCount = 0;
+ 
+         uint8_t axisToByte(float axis)
+@@ -94,14 +104,16 @@ namespace ps2_stubs
              return -1;
          }
  
 -        void applyGamepadState(PadInputState &state)
-+        // The Nth connected controller drives port N (the keyboard drives port 0 too, see readPadPortData) —
++        // Each pad has its own controller (ps2_pad_layout; the keyboard drives the first pad too, see readPadPortData) —
 +        // one controller used to drive both ports, so it moved player 1 and player 2 at once.
-+        int findGamepadForPort(int port)
-+        {
-+            int seen = 0;
-+            for (int i = 0; i < 4; ++i)
-+            {
-+                if (IsGamepadAvailable(i) && seen++ == port)
-+                {
-+                    return i;
-+                }
-+            }
-+            return -1;
-+        }
-+
-+        void applyGamepadState(PadInputState &state, int port)
++        void applyGamepadState(PadInputState &state, int port, int slot)
          {
              if (!IsWindowReady())
              {
@@ -7530,11 +7610,40 @@ index b50a4cf..a561998 100644
              }
  
 -            const int gamepad = findFirstGamepad();
-+            const int gamepad = findGamepadForPort(port);
++            const int gamepad = ps2_pad_layout::hostController(port, slot);
              if (gamepad < 0)
              {
                  return;
-@@ -245,7 +266,9 @@ namespace ps2_stubs
+@@ -194,9 +206,12 @@ namespace ps2_stubs
+ 
+         void resetPadStateLocked()
+         {
+-            for (PadPortState &portState : g_padPorts)
++            for (auto &port : g_padPorts)
+             {
+-                portState = PadPortState{};
++                for (PadPortState &portState : port)
++                {
++                    portState = PadPortState{};
++                }
+             }
+         }
+ 
+@@ -206,11 +221,11 @@ namespace ps2_stubs
+             {
+                 return nullptr;
+             }
+-            if (slot < 0 || slot >= static_cast<int>(kPadSlotCount))
++            if (slot < 0 || slot >= static_cast<int>(kPadSlotCount) || slot >= ps2_pad_layout::slotCount(port))
+             {
+                 return nullptr;
+             }
+-            return &g_padPorts[port];
++            return &g_padPorts[port][slot];
+         }
+ 
+         void initializePadPortLocked(PadPortState &portState, uint32_t dmaAddr)
+@@ -245,7 +260,9 @@ namespace ps2_stubs
          void fillPadStatus(uint8_t *data, const PadInputState &state, const PadPortState &portState)
          {
              std::memset(data, 0, 32);
@@ -7545,7 +7654,7 @@ index b50a4cf..a561998 100644
              data[2] = static_cast<uint8_t>(state.buttons & 0xFFu);
              data[3] = static_cast<uint8_t>((state.buttons >> 8) & 0xFFu);
              data[4] = state.rx;
-@@ -260,12 +283,76 @@ namespace ps2_stubs
+@@ -260,12 +277,84 @@ namespace ps2_stubs
              data[13] = pressureValue(state, portState, kPadBtnCircle);
              data[14] = pressureValue(state, portState, kPadBtnCross);
              data[15] = pressureValue(state, portState, kPadBtnSquare);
@@ -7558,9 +7667,10 @@ index b50a4cf..a561998 100644
              data[19] = pressureValue(state, portState, kPadBtnR2);
          }
  
-+        // VENDETTA_PADSCRIPT="70:START,72.5:CROSS,80:DOWN" — scripted presses on port 0 for tests (each held 0.2 s,
-+        // seconds counted from the game's first pad read), added to the real input. Names: START SELECT CROSS CIRCLE SQUARE TRIANGLE
-+        // UP DOWN LEFT RIGHT L1 R1 L2 R2 L3 R3.
++        // VENDETTA_PADSCRIPT="70:START,72.5:CROSS,80:DOWN@3" — scripted presses for tests (each held 0.2 s, seconds
++        // counted from the game's first pad read), added to the real input; "@N" = the Nth pad (ps2_pad_layout's order:
++        // 1 = port 1, then port 2 and its multitap), else the first. Names: START SELECT CROSS CIRCLE SQUARE TRIANGLE
++        // UP DOWN LEFT RIGHT L1 R1 L2 R2 L3 R3. With VENDETTA_PADS=<n> the first n pads count as plugged in.
 +        // VENDETTA_NO_HOST_INPUT=1 (test runs: tools\run_test.ps1 sets it): the real keyboard / controllers are not read,
 +        // so nothing typed elsewhere while the game window has focus reaches the game (Enter = START skipped the intro
 +        // in test runs); a pad script still drives port 0.
@@ -7574,12 +7684,13 @@ index b50a4cf..a561998 100644
 +            return ignored;
 +        }
 +
-+        void applyPadScript(PadInputState &state)
++        void applyPadScript(PadInputState &state, int pad)
 +        {
 +            struct Press
 +            {
 +                double at;
 +                uint16_t mask;
++                int pad;
 +            };
 +            static const std::vector<Press> presses = []()
 +            {
@@ -7604,10 +7715,16 @@ index b50a4cf..a561998 100644
 +                    if (colon != std::string::npos)
 +                    {
 +                        const double at = std::atof(item.substr(0, colon).c_str());
-+                        const std::string name = item.substr(colon + 1);
++                        std::string name = item.substr(colon + 1);
++                        int target = 0;
++                        if (const size_t atSign = name.find('@'); atSign != std::string::npos)
++                        {
++                            target = std::max(1, std::atoi(name.c_str() + atSign + 1)) - 1;
++                            name.resize(atSign);
++                        }
 +                        for (const auto &entry : names)
 +                            if (name == entry.first)
-+                                list.push_back({at, entry.second});
++                                list.push_back({at, entry.second, target});
 +                    }
 +                    start = end + 1;
 +                }
@@ -7618,14 +7735,14 @@ index b50a4cf..a561998 100644
 +            static const auto origin = std::chrono::steady_clock::now();
 +            const double now = std::chrono::duration<double>(std::chrono::steady_clock::now() - origin).count();
 +            for (const Press &press : presses)
-+                if (now >= press.at && now < press.at + 0.2)
++                if (press.pad == pad && now >= press.at && now < press.at + 0.2)
 +                    state.buttons = static_cast<uint16_t>(state.buttons & ~press.mask);
 +        }
 +
          bool readPadPortData(int port, int slot, PS2Runtime *runtime, uint8_t *outData, uint32_t dataAddr)
          {
              if (!outData)
-@@ -308,13 +395,18 @@ namespace ps2_stubs
+@@ -308,13 +397,17 @@ namespace ps2_stubs
                      state.ly = backendData[7];
                      usedBackend = true;
                  }
@@ -7634,53 +7751,217 @@ index b50a4cf..a561998 100644
                  {
 -                    applyGamepadState(state);
 -                    applyKeyboardState(state, portState.analogMode);
-+                    applyGamepadState(state, port);
-+                    if (port == 0)
++                    applyGamepadState(state, port, slot);
++                    if (ps2_pad_layout::padIndex(port, slot) == 0)
 +                    {
 +                        applyKeyboardState(state, portState.analogMode);
 +                    }
                  }
              }
  
-+            if (port == 0)
-+                applyPadScript(state);
++            applyPadScript(state, ps2_pad_layout::padIndex(port, slot));
              fillPadStatus(outData, state, portState);
  
              {
-@@ -470,6 +562,16 @@ namespace ps2_stubs
+@@ -344,6 +437,7 @@ namespace ps2_stubs
+     {
+         (void)rdram;
+         (void)runtime;
++        ps2_pad_rumble::stopAll();
+         {
+             std::lock_guard<std::mutex> lock(g_padStateMutex);
+             resetPadStateLocked();
+@@ -446,19 +540,35 @@ namespace ps2_stubs
+     {
+         (void)rdram;
+         (void)runtime;
+-        // Most games use one slot unless multitap is active.
+-        setReturnS32(ctx, 1);
++        // 4 on the port with the multitap (ps2_host_settings' multitapPort), else 1
++        setReturnS32(ctx, ps2_pad_layout::slotCount(static_cast<int>(getRegU32(ctx, 4))));
+     }
+ 
+     void scePadGetState(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+     {
+         (void)rdram;
+         (void)runtime;
++        const int port = static_cast<int>(getRegU32(ctx, 4));
++        const int slot = static_cast<int>(getRegU32(ctx, 5));
++        // slot A of a port is always there (as before); a multitap's slots B-D only with a controller in them
++        const bool plugged = slot == 0 || ps2_pad_layout::connected(port, slot);
+         std::lock_guard<std::mutex> lock(g_padStateMutex);
+-        PadPortState *portState = lookupPadPortStateLocked(static_cast<int>(getRegU32(ctx, 4)),
+-                                                           static_cast<int>(getRegU32(ctx, 5)));
++        PadPortState *portState = lookupPadPortStateLocked(port, slot);
+         int32_t state = kPadStateDisconnected;
+-        if (portState && portState->open)
++        if (portState && portState->open && plugged != portState->connected)
++        {
++            // plugged in: a fresh pad (digital, no pressure, motors off), as real hardware
++            portState->connected = plugged;
++            portState->analogMode = false;
++            portState->pressureEnabled = false;
++            portState->buttonMask = 0xFFFFu;
++            portState->reqState = 0u;
++            portState->transientState = 0u;
++            std::fill(std::begin(portState->actAlign), std::end(portState->actAlign), uint8_t{0xFFu});
++            if (!plugged)
++                ps2_pad_rumble::set(port, slot, false, 0u);
++        }
++        if (portState && portState->open && portState->connected)
+         {
+             if (portState->transientState != 0u)
+             {
+@@ -470,6 +580,17 @@ namespace ps2_stubs
                  state = kPadStateStable;
              }
          }
 +        // VENDETTA_PADLOG=1: each change of a port's state (what the game's pad loop waits on).
 +        static const bool padLog = std::getenv("VENDETTA_PADLOG") != nullptr;
-+        static int32_t lastState[2] = {-1, -1};
++        static int32_t lastState[kPadPortCount][kPadSlotCount] = {{-1, -1, -1, -1}, {-1, -1, -1, -1}};
 +        const uint32_t logPort = getRegU32(ctx, 4) & 1u;
-+        if (padLog && state != lastState[logPort])
++        const uint32_t logSlot = getRegU32(ctx, 5) & 3u;
++        if (padLog && state != lastState[logPort][logSlot])
 +        {
 +            std::cerr << "[padlog] scePadGetState port=" << getRegU32(ctx, 4) << " slot=" << getRegU32(ctx, 5)
 +                      << " -> " << state << (portState ? "" : " (no port)") << std::endl;
-+            lastState[logPort] = state;
++            lastState[logPort][logSlot] = state;
 +        }
          setReturnS32(ctx, state);
      }
  
-@@ -643,6 +745,16 @@ namespace ps2_stubs
+@@ -589,9 +710,11 @@ namespace ps2_stubs
+         }
+ 
+         portState->open = false;
++        portState->connected = false;
+         portState->pressureEnabled = false;
+         portState->reqState = 0u;
+         portState->transientState = 0u;
++        ps2_pad_rumble::set(static_cast<int>(getRegU32(ctx, 4)), static_cast<int>(getRegU32(ctx, 5)), false, 0u);
+         setReturnS32(ctx, 1);
+     }
+ 
+@@ -610,6 +733,7 @@ namespace ps2_stubs
+         }
+ 
+         portState->open = true;
++        portState->connected = false;      // scePadGetState looks
+         portState->analogMode = false;     // real pads open DIGITAL
+         portState->pressureEnabled = false;
+         portState->buttonMask = 0xFFFFu;
+@@ -637,12 +761,23 @@ namespace ps2_stubs
+         }
+ 
+         ps2TraceGuestRangeWrite(rdram, dataAddr, 32u, "scePadRead", ctx);
+-        if (!readPadPortData(port, slot, runtime, data, dataAddr))
++        if ((slot != 0 && !ps2_pad_layout::connected(port, slot)) || !readPadPortData(port, slot, runtime, data, dataAddr))
+         {
+             setReturnS32(ctx, 0);
              return;
          }
  
 +        static const bool padLog = std::getenv("VENDETTA_PADLOG") != nullptr;
-+        static uint32_t lastButtons[2] = {0x10000u, 0x10000u}; // so the first read is logged too
++        static uint32_t lastButtons[kPadPortCount][kPadSlotCount] = {{0x10000u, 0x10000u, 0x10000u, 0x10000u},
++                                                                      {0x10000u, 0x10000u, 0x10000u, 0x10000u}}; // so the first read is logged too
 +        const uint32_t buttons = (static_cast<uint32_t>(data[2]) << 8) | data[3];
-+        if (padLog && buttons != lastButtons[port & 1])
++        if (padLog && buttons != lastButtons[port & 1][slot & 3])
 +        {
-+            std::cerr << "[padlog] scePadRead port=" << port << " buttons(active low)=0x" << std::hex << buttons
-+                      << std::dec << std::endl;
-+            lastButtons[port & 1] = buttons;
++            std::cerr << "[padlog] scePadRead port=" << port << " slot=" << slot << " buttons(active low)=0x" << std::hex
++                      << buttons << std::dec << std::endl;
++            lastButtons[port & 1][slot & 3] = buttons;
 +        }
 +
          PS2_IF_AGRESSIVE_LOGS({
              if (g_padReadLogCount < 48)
              {
+@@ -685,17 +820,62 @@ namespace ps2_stubs
+         setReturnS32(ctx, 0);
+     }
+ 
++    // scePadSetActAlign(port, slot, align[6]): which byte of scePadSetActDirect's data drives which motor (0 = the
++    // small motor, 1 = the large one, 0xFF = none). Def Jam Vendetta: {0, 1, 0xFF ...} (0x29A380).
+     void scePadSetActAlign(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+     {
+-        (void)rdram;
+         (void)runtime;
++        const uint8_t *align = getConstMemPtr(rdram, getRegU32(ctx, 6));
++        std::lock_guard<std::mutex> lock(g_padStateMutex);
++        PadPortState *portState = lookupPadPortStateLocked(static_cast<int>(getRegU32(ctx, 4)),
++                                                           static_cast<int>(getRegU32(ctx, 5)));
++        if (!portState || !portState->open || !align)
++        {
++            setReturnS32(ctx, 0);
++            return;
++        }
++        std::memcpy(portState->actAlign, align, sizeof(portState->actAlign));
++        portState->reqState = 0u;
++        queueExecCmdStateLocked(*portState);
+         setReturnS32(ctx, 1);
+     }
+ 
++    // scePadSetActDirect(port, slot, data[6]): the motors now — the small one on / off, the large one 0-255 — to the
++    // PC controller behind the pad (ps2_pad_rumble). VENDETTA_PADLOG=1 logs each change.
+     void scePadSetActDirect(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+     {
+-        (void)rdram;
+         (void)runtime;
++        const int port = static_cast<int>(getRegU32(ctx, 4));
++        const int slot = static_cast<int>(getRegU32(ctx, 5));
++        const uint8_t *data = getConstMemPtr(rdram, getRegU32(ctx, 6));
++        bool smallMotor = false;
++        uint8_t largeMotor = 0u;
++        {
++            std::lock_guard<std::mutex> lock(g_padStateMutex);
++            const PadPortState *portState = lookupPadPortStateLocked(port, slot);
++            if (!portState || !portState->open || !portState->connected || !data)
++            {
++                setReturnS32(ctx, 0);
++                return;
++            }
++            for (size_t i = 0; i < sizeof(portState->actAlign); ++i)
++            {
++                if (portState->actAlign[i] == 0u)
++                    smallMotor = data[i] != 0u;
++                else if (portState->actAlign[i] == 1u)
++                    largeMotor = data[i];
++            }
++        }
++        static const bool padLog = std::getenv("VENDETTA_PADLOG") != nullptr;
++        static int lastMotors[kPadPortCount][kPadSlotCount] = {{-1, -1, -1, -1}, {-1, -1, -1, -1}};
++        const int motors = (smallMotor ? 0x100 : 0) | largeMotor;
++        if (padLog && motors != lastMotors[port & 1][slot & 3])
++        {
++            std::cerr << "[padlog] scePadSetActDirect port=" << port << " slot=" << slot << " small=" << smallMotor
++                      << " large=" << static_cast<int>(largeMotor) << std::endl;
++            lastMotors[port & 1][slot & 3] = motors;
++        }
++        ps2_pad_rumble::set(port, slot, smallMotor, largeMotor);
+         setReturnS32(ctx, 1);
+     }
+ 
+@@ -818,7 +998,7 @@ namespace ps2_stubs
+             {
+                 for (size_t slot = 0; slot < kPadDebugSlotCount; ++slot)
+                 {
+-                    const PadPortState &src = g_padPorts[port];
++                    const PadPortState &src = g_padPorts[port][slot];
+                     PadDebugPortSnapshot &dst = snapshot.ports[port][slot];
+                     dst.open = src.open;
+                     dst.analogMode = src.analogMode;
+diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/Pad.h b/ps2xRuntime/src/lib/Kernel/Stubs/Pad.h
+index c4de234..df7055d 100644
+--- a/ps2xRuntime/src/lib/Kernel/Stubs/Pad.h
++++ b/ps2xRuntime/src/lib/Kernel/Stubs/Pad.h
+@@ -39,7 +39,7 @@ namespace ps2_stubs
+     void scePadStateIntToStr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime);
+ 
+     static constexpr size_t kPadDebugPortCount = 2u;
+-    static constexpr size_t kPadDebugSlotCount = 1u;
++    static constexpr size_t kPadDebugSlotCount = 4u;
+     static constexpr size_t kPadDebugDataSize = 32u;
+ 
+     struct PadDebugPortSnapshot
 diff --git a/ps2xRuntime/src/lib/Kernel/Stubs/SIF.cpp b/ps2xRuntime/src/lib/Kernel/Stubs/SIF.cpp
 index dc975ed..30a85fb 100644
 --- a/ps2xRuntime/src/lib/Kernel/Stubs/SIF.cpp
@@ -14439,10 +14720,10 @@ index c9aa2c6..25ae0ea 100644
                  ImGui::InputScalar("Address", ImGuiDataType_U32, &m_memoryAddress, nullptr, nullptr, "%08X", ImGuiInputTextFlags_CharsHexadecimal);
 diff --git a/ps2xRuntime/src/lib/ps2_host_settings.cpp b/ps2xRuntime/src/lib/ps2_host_settings.cpp
 new file mode 100644
-index 0000000..f05b1c3
+index 0000000..44e93c2
 --- /dev/null
 +++ b/ps2xRuntime/src/lib/ps2_host_settings.cpp
-@@ -0,0 +1,434 @@
+@@ -0,0 +1,454 @@
 +#include "runtime/ps2_host_settings.h"
 +
 +#include <algorithm>
@@ -14495,7 +14776,14 @@ index 0000000..f05b1c3
 +            "\n"
 +            "[sound]\n"
 +            "volume = 100             # 0-100\n"
-+            "reverb = true            # the echo the PS2's sound chip adds in matches\n";
++            "reverb = true            # the echo the PS2's sound chip adds in matches\n"
++            "\n"
++            "[controls]\n"
++            "multitap = true          # up to 4 players (a multitap in port 2, as on the PS2); false = 2 controllers\n"
++            "vibration_1 = true       # each player's controller vibrates (Xbox-style / XInput controllers)\n"
++            "vibration_2 = true\n"
++            "vibration_3 = true\n"
++            "vibration_4 = true\n";
 +
 +        std::string trim(const std::string &text)
 +        {
@@ -14719,6 +15007,11 @@ index 0000000..f05b1c3
 +            if (const int shape = reader.choice("display.shape", {"4:3", "stretch"}); shape >= 0)
 +                s.stretch = shape == 1;
 +            reader.integer("sound.volume", s.volume, 0, 100);
++            bool multitap = s.multitapPort >= 0;
++            reader.boolean("controls.multitap", multitap);
++            s.multitapPort = multitap ? 1 : -1;
++            for (int player = 0; player < 4; ++player)
++                reader.boolean("controls.vibration_" + std::to_string(player + 1), s.vibration[player]);
 +
 +            // the ones the runtime already reads as switches
 +            if (const int renderer = reader.choice("graphics.renderer", {"gpu", "cpu"}); renderer >= 0)
@@ -14792,6 +15085,12 @@ index 0000000..f05b1c3
 +                s.volume = std::clamp(std::atoi(value), 0, 100);
 +            if (const char *value = std::getenv("VENDETTA_ASPECT"); value && *value)
 +                s.stretch = std::string(value) == "fill";
++            // VENDETTA_MULTITAP=0 (none) / 1 (port 1) / 2 (port 2); VENDETTA_VIBRATION=0 / 1 (every player)
++            if (const char *value = std::getenv("VENDETTA_MULTITAP"); value && *value)
++                s.multitapPort = std::clamp(std::atoi(value), 0, 2) - 1;
++            if (const char *value = std::getenv("VENDETTA_VIBRATION"); value && *value)
++                for (bool &on : s.vibration)
++                    on = std::string(value) != "0";
 +        }
 +    }
 +
@@ -14856,7 +15155,9 @@ index 0000000..f05b1c3
 +                                                                                                    : " at the screen's rate"))
 +                          : std::string(""))
 +                  << ", vsync " << (s.vsync ? "on" : "off") << ", " << (s.stretch ? "stretched" : "4:3")
-+                  << ", volume " << s.volume << "%" << std::endl;
++                  << ", volume " << s.volume << "%"
++                  << (s.multitapPort >= 0 ? ", multitap in port " + std::to_string(s.multitapPort + 1) : std::string(", no multitap"))
++                  << ", vibration " << s.vibration[0] << s.vibration[1] << s.vibration[2] << s.vibration[3] << std::endl;
 +    }
 +
 +    const Settings &get()
@@ -16205,57 +16506,294 @@ index 37b6a4d..c80deea 100644
  {
      if (size == 0)
 diff --git a/ps2xRuntime/src/lib/ps2_pad.cpp b/ps2xRuntime/src/lib/ps2_pad.cpp
-index 8590f14..eb147f8 100644
+index 8590f14..7758c4b 100644
 --- a/ps2xRuntime/src/lib/ps2_pad.cpp
 +++ b/ps2xRuntime/src/lib/ps2_pad.cpp
-@@ -25,7 +25,7 @@ namespace
+@@ -1,5 +1,7 @@
+ #include "runtime/ps2_pad.h"
++#include "runtime/ps2_host_settings.h"
+ #include "ps2_host_backend.h"
++#include <cstdlib>
+ #include <cstring>
+ 
+ namespace
+@@ -23,9 +25,106 @@ namespace
+     constexpr uint16_t PAD_L1 = 0x0400u;
+     constexpr uint16_t PAD_R2 = 0x0200u;
      constexpr uint16_t PAD_L2 = 0x0100u;
++
++    int multitapPort()
++    {
++        const int port = ps2_host_settings::get().multitapPort;
++        return (port >= 0 && port < ps2_pad_layout::kPortCount) ? port : -1;
++    }
++
++    // VENDETTA_PADS=<n>: the first n places count as plugged in (tests drive them with VENDETTA_PADSCRIPT)
++    int testPadCount()
++    {
++        static const int count = []
++        {
++            const char *value = std::getenv("VENDETTA_PADS");
++            return (value && *value) ? std::atoi(value) : 0;
++        }();
++        return count;
++    }
++}
++
++namespace ps2_pad_layout
++{
++    int slotCount(int port)
++    {
++        return (port >= 0 && port == multitapPort()) ? kSlotCount : 1;
++    }
++
++    bool padPlace(int index, int &port, int &slot)
++    {
++        if (index < 0)
++            return false;
++        // port 1 (and its slots when the multitap is there), then port 2 (and its slots)
++        for (int p = 0; p < kPortCount; ++p)
++        {
++            const int slots = slotCount(p);
++            if (index < slots)
++            {
++                port = p;
++                slot = index;
++                return true;
++            }
++            index -= slots;
++        }
++        return false;
++    }
++
++    int padIndex(int port, int slot)
++    {
++        if (port < 0 || port >= kPortCount || slot < 0 || slot >= slotCount(port))
++            return -1;
++        int index = slot;
++        for (int p = 0; p < port; ++p)
++            index += slotCount(p);
++        return index;
++    }
++
++    int hostController(int port, int slot)
++    {
++        const int index = padIndex(port, slot);
++        if (index < 0 || !IsWindowReady())
++            return -1;
++        for (int gamepad = 0, seen = 0; gamepad < 4; ++gamepad)
++        {
++            if (IsGamepadAvailable(gamepad) && seen++ == index)
++                return gamepad;
++        }
++        return -1;
++    }
++
++    bool connected(int port, int slot)
++    {
++        const int index = padIndex(port, slot);
++        if (index < 0)
++            return false;
++        return index < testPadCount() || hostController(port, slot) >= 0;
++    }
++
++    int xinputOrder(int port, int slot, const char **name)
++    {
++        const int gamepad = hostController(port, slot);
++        if (name)
++            *name = gamepad >= 0 ? GetGamepadName(gamepad) : nullptr;
++        auto isXInput = [](int pad)
++        {
++            const char *padName = GetGamepadName(pad);
++            if (!padName)
++                return false;
++            return std::strcmp(padName, "Xbox Controller") == 0 || std::strcmp(padName, "Wireless Xbox Controller") == 0 ||
++                   std::strncmp(padName, "XInput ", 7) == 0 || std::strcmp(padName, "Unknown XInput Device") == 0;
++        };
++        if (gamepad < 0 || !isXInput(gamepad))
++            return -1;
++        int order = 0;
++        for (int pad = 0; pad < gamepad; ++pad)
++            if (IsGamepadAvailable(pad) && isXInput(pad))
++                ++order;
++        return order;
++    }
  }
  
 -bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t size)
-+bool PSPadBackend::readState(int port, int /*slot*/, uint8_t *data, size_t size)
++bool PSPadBackend::readState(int port, int slot, uint8_t *data, size_t size)
  {
      if (!data || size < 32)
          return false;
-@@ -38,8 +38,15 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+@@ -38,8 +137,11 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
      data[4] = data[5] = data[6] = data[7] = kPadStickCenter;
  
      uint16_t btns = 0xFFFFu;
 -    constexpr int kGamepad = 0;
 -    const bool useGamepad = IsGamepadAvailable(kGamepad);
-+    // Port N = the Nth connected controller; the keyboard stands in for port 0 when it has none. (One controller
-+    // used to drive every port, so player 1 and player 2 moved together.)
-+    int kGamepad = -1;
-+    for (int i = 0, seen = 0; i < 4 && kGamepad < 0; ++i)
-+    {
-+        if (IsGamepadAvailable(i) && seen++ == port)
-+            kGamepad = i;
-+    }
++    // Each pad has its own controller (ps2_pad_layout: the first in port 1, the next ones in port 2 / its multitap);
++    // the keyboard stands in for the first pad when it has none. (One controller used to drive every port, so player 1
++    // and player 2 moved together.)
++    const int kGamepad = ps2_pad_layout::hostController(port, slot);
 +    const bool useGamepad = kGamepad >= 0;
      auto clearBit = [&btns](uint16_t mask)
      { btns &= ~mask; };
  
-@@ -87,7 +94,7 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+@@ -87,7 +189,7 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
          data[4] = static_cast<uint8_t>(128 + rx * 127);
          data[5] = static_cast<uint8_t>(128 + ry * 127);
      }
 -    else
-+    else if (port == 0)
++    else if (ps2_pad_layout::padIndex(port, slot) == 0 && IsWindowReady())
      {
          if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))
              clearBit(PAD_UP);
+diff --git a/ps2xRuntime/src/lib/ps2_pad_rumble.cpp b/ps2xRuntime/src/lib/ps2_pad_rumble.cpp
+new file mode 100644
+index 0000000..c24f5c8
+--- /dev/null
++++ b/ps2xRuntime/src/lib/ps2_pad_rumble.cpp
+@@ -0,0 +1,127 @@
++#include "runtime/ps2_pad_rumble.h"
++#include "runtime/ps2_pad.h"
++#include "runtime/ps2_host_settings.h"
++
++#include <array>
++#include <chrono>
++#include <iostream>
++#include <mutex>
++
++#if defined(_WIN32)
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#include <windows.h>
++#include <Xinput.h>
++#endif
++
++namespace ps2_pad_rumble
++{
++    namespace
++    {
++        std::mutex g_mutex;
++
++#if defined(_WIN32)
++        struct Motors
++        {
++            WORD left = 0;  // low frequency: the PS2's large motor
++            WORD right = 0; // high frequency: the small motor
++            bool sent = false;
++        };
++        std::array<Motors, XUSER_MAX_COUNT> g_sent{};
++
++        // XInput's connected controllers (asking an empty slot is slow, so at most every 2 s)
++        DWORD g_connectedMask = 0;
++        std::chrono::steady_clock::time_point g_maskTime{};
++
++        DWORD connectedMask()
++        {
++            const auto now = std::chrono::steady_clock::now();
++            if (g_maskTime == std::chrono::steady_clock::time_point{} || now - g_maskTime > std::chrono::seconds(2))
++            {
++                g_connectedMask = 0;
++                for (DWORD user = 0; user < XUSER_MAX_COUNT; ++user)
++                {
++                    XINPUT_STATE state{};
++                    if (XInputGetState(user, &state) == ERROR_SUCCESS)
++                        g_connectedMask |= 1u << user;
++                }
++                g_maskTime = now;
++            }
++            return g_connectedMask;
++        }
++
++        // the XInput user for the Nth XInput controller GLFW lists (both count in XInput's order)
++        int xinputUser(int order)
++        {
++            const DWORD mask = connectedMask();
++            for (DWORD user = 0; user < XUSER_MAX_COUNT; ++user)
++                if ((mask & (1u << user)) && order-- == 0)
++                    return static_cast<int>(user);
++            return -1;
++        }
++
++        void send(int user, WORD left, WORD right)
++        {
++            Motors &motors = g_sent[static_cast<size_t>(user)];
++            if (motors.sent && motors.left == left && motors.right == right)
++                return;
++            XINPUT_VIBRATION vibration{left, right};
++            XInputSetState(static_cast<DWORD>(user), &vibration);
++            motors = Motors{left, right, true};
++        }
++#endif
++    }
++
++    void set(int port, int slot, bool smallMotor, uint8_t largeMotor)
++    {
++#if defined(_WIN32)
++        const int player = ps2_pad_layout::padIndex(port, slot);
++        const ps2_host_settings::Settings &settings = ps2_host_settings::get();
++        const bool allowed = player >= 0 && (player >= 4 || settings.vibration[player]);
++        const char *name = nullptr;
++        const int order = ps2_pad_layout::xinputOrder(port, slot, &name);
++
++        std::lock_guard<std::mutex> lock(g_mutex);
++        // once per pad: where its motors go
++        static bool s_reported[ps2_pad_layout::kPortCount][ps2_pad_layout::kSlotCount] = {};
++        const int user = order >= 0 ? xinputUser(order) : -1;
++        if (port >= 0 && port < ps2_pad_layout::kPortCount && slot >= 0 && slot < ps2_pad_layout::kSlotCount &&
++            !s_reported[port][slot] && (smallMotor || largeMotor))
++        {
++            s_reported[port][slot] = true;
++            std::cerr << "[rumble] pad " << (port + 1) << static_cast<char>('A' + slot) << " (player " << (player + 1)
++                      << "): " << (name ? name : "no controller")
++                      << (user >= 0 ? " -> XInput controller " + std::to_string(user + 1)
++                                    : std::string(name ? " (not an XInput controller: no vibration)" : ""))
++                      << (allowed ? "" : " (vibration off in the settings)") << std::endl;
++        }
++        if (user < 0)
++            return;
++        if (!allowed)
++        {
++            send(user, 0, 0);
++            return;
++        }
++        send(user, static_cast<WORD>(largeMotor * 257u), smallMotor ? 0xFFFFu : 0u);
++#else
++        (void)port;
++        (void)slot;
++        (void)smallMotor;
++        (void)largeMotor;
++#endif
++    }
++
++    void stopAll()
++    {
++#if defined(_WIN32)
++        std::lock_guard<std::mutex> lock(g_mutex);
++        for (int user = 0; user < static_cast<int>(XUSER_MAX_COUNT); ++user)
++            if (g_sent[static_cast<size_t>(user)].sent)
++                send(user, 0, 0);
++#endif
++    }
++}
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..6bde76f 100644
+index 45cb9d2..c86c0cf 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
-@@ -1,3 +1,6 @@
+@@ -1,3 +1,7 @@
 +#include "runtime/ps2_host_profile.h"
 +#include "runtime/ps2_host_settings.h"
++#include "runtime/ps2_pad_rumble.h"
 +#include "runtime/ps2_widescreen.h"
  #include "ps2_runtime.h"
  #include "ps2_log.h"
  #include "ps2_stubs.h"
-@@ -18,6 +21,7 @@
+@@ -18,6 +22,7 @@
  #include <stdexcept>
  #include <fstream>
  #include <algorithm>
@@ -16263,7 +16801,7 @@ index 45cb9d2..6bde76f 100644
  #include <array>
  #include <cstring>
  #include <limits>
-@@ -26,6 +30,10 @@
+@@ -26,6 +31,10 @@
  #include <thread>
  #include <unordered_map>
  #include <sstream>
@@ -16274,7 +16812,7 @@ index 45cb9d2..6bde76f 100644
  
  namespace ps2_stubs
  {
-@@ -85,12 +93,30 @@ struct ProgramHeader
+@@ -85,12 +94,30 @@ struct ProgramHeader
      uint32_t align;
  };
  
@@ -16305,7 +16843,7 @@ index 45cb9d2..6bde76f 100644
  
      constexpr uint32_t COP0_CAUSE_EXCCODE_MASK = 0x0000007Cu;
      constexpr uint32_t COP0_CAUSE_BD = 0x80000000u;
-@@ -373,10 +399,171 @@ namespace
+@@ -373,10 +400,171 @@ namespace
      }
  }
  
@@ -16480,7 +17018,7 @@ index 45cb9d2..6bde76f 100644
      static uint32_t s_lastDisplayFbp = std::numeric_limits<uint32_t>::max();
      static uint32_t s_lastSourceFbp = std::numeric_limits<uint32_t>::max();
      static bool s_lastPreferred = false;
-@@ -386,35 +573,29 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -386,35 +574,29 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      static std::vector<uint8_t> s_scratch;
      static std::vector<uint8_t> s_uploadBuffer(DEFAULT_FB_SIZE, 0u);
  
@@ -16515,21 +17053,21 @@ index 45cb9d2..6bde76f 100644
 -                                                   &usedPreferredDisplaySource))
 +                                                   &usedPreferredDisplaySource);
 +    if (!fresh && s_hasUploadedFrame)
-     {
--        Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, MAGENTA);
++    {
 +        outWidth = (s_lastWidth != 0u) ? s_lastWidth : FB_WIDTH;
 +        outHeight = (s_lastHeight != 0u) ? s_lastHeight : DEFAULT_DISPLAY_HEIGHT;
 +        return false;
 +    }
 +    if (!fresh || s_scratch.empty() || width == 0u || height == 0u)
-+    {
+     {
+-        Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, MAGENTA);
 +        // nothing to show (no picture yet, or both display circuits off — after a GS reset until the game sets its
 +        // display up again): black, as on the console
 +        Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLACK);
          UpdateTexture(tex, blank.data);
          UnloadImage(blank);
          outWidth = FB_WIDTH;
-@@ -422,7 +603,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -422,7 +604,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
          s_lastWidth = outWidth;
          s_lastHeight = outHeight;
          s_hasUploadedFrame = true;
@@ -16538,7 +17076,7 @@ index 45cb9d2..6bde76f 100644
      }
  
      PS2_IF_AGRESSIVE_LOGS({
-@@ -435,7 +616,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -435,7 +617,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
              height != s_lastHeight)
          {
              std::cout << "[frame:upload] idx=" << s_uploadDebugCount
@@ -16547,7 +17085,7 @@ index 45cb9d2..6bde76f 100644
                        << " displayFbp=" << displayFbp
                        << " sourceFbp=" << sourceFbp
                        << " size=" << width << "x" << height
-@@ -475,6 +656,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -475,6 +657,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      outWidth = width;
      outHeight = height;
      s_hasUploadedFrame = true;
@@ -16555,7 +17093,7 @@ index 45cb9d2..6bde76f 100644
  }
  
  PS2Runtime::PS2Runtime()
-@@ -503,8 +685,8 @@ PS2Runtime::PS2Runtime()
+@@ -503,8 +686,8 @@ PS2Runtime::PS2Runtime()
      m_guestHeapLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
      m_guestHeapSuggestedBase = kGuestHeapDefaultBase;
      m_guestHeapConfigured = false;
@@ -16566,7 +17104,7 @@ index 45cb9d2..6bde76f 100644
  }
  
  void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
-@@ -599,6 +781,12 @@ ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx,
+@@ -599,6 +782,12 @@ ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx,
      return m_iopSubsystem->handleRpc(request);
  }
  
@@ -16579,7 +17117,7 @@ index 45cb9d2..6bde76f 100644
  void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransfer &transfer)
  {
      auto scope = m_iopHost->enterCall(nullptr, rdram);
-@@ -607,6 +795,7 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
+@@ -607,6 +796,7 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
  
  void PS2Runtime::advanceIopEeCycles(uint64_t eeCycles) noexcept
  {
@@ -16587,7 +17125,7 @@ index 45cb9d2..6bde76f 100644
      m_iopSubsystem->runEeCycles(eeCycles);
  }
  
-@@ -665,45 +854,32 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -665,45 +855,32 @@ bool PS2Runtime::syncCoreSubsystems()
      }
  
      m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
@@ -16648,7 +17186,7 @@ index 45cb9d2..6bde76f 100644
      resetIop();
      m_vu0.reset();
      m_vu1.reset();
-@@ -731,12 +907,16 @@ bool PS2Runtime::initialize(const char *title)
+@@ -731,12 +908,16 @@ bool PS2Runtime::initialize(const char *title)
  #if defined(PLATFORM_VITA)
          InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
  #else
@@ -16667,7 +17205,7 @@ index 45cb9d2..6bde76f 100644
          if (m_debugUiInitCallback)
          {
              m_debugUiInitCallback(*this, m_debugUiUserData);
-@@ -971,9 +1151,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+@@ -971,9 +1152,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
      }
      {
          std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
@@ -16679,7 +17217,7 @@ index 45cb9d2..6bde76f 100644
      }
  
      LoadedModule module;
-@@ -1013,6 +1192,13 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+@@ -1013,6 +1193,13 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
      return true;
  }
  
@@ -16693,7 +17231,7 @@ index 45cb9d2..6bde76f 100644
  const PS2Runtime::IoPaths &PS2Runtime::getIoPaths()
  {
      return runtimeIoPaths();
-@@ -1316,6 +1502,16 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
+@@ -1316,6 +1503,16 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
              << " policy=" << static_cast<uint32_t>(policy)
              << " trace=" << formatDispatchHistory()
              << std::dec;
@@ -16710,7 +17248,7 @@ index 45cb9d2..6bde76f 100644
  
          static std::mutex s_missingFunctionLogMutex;
          {
-@@ -1396,14 +1592,32 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
+@@ -1396,14 +1593,32 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
  
      RecompiledFunction targetFn = lookupFunction(targetPc);
      const uint32_t entryPc = ctx->pc;
@@ -16745,7 +17283,7 @@ index 45cb9d2..6bde76f 100644
      {
          ctx->pc = fallthroughPc;
      }
-@@ -1945,12 +2159,96 @@ uint32_t PS2Runtime::guestRealloc(uint32_t guestAddr, uint32_t newSize, uint32_t
+@@ -1945,12 +2160,96 @@ uint32_t PS2Runtime::guestRealloc(uint32_t guestAddr, uint32_t newSize, uint32_t
      return newAddr;
  }
  
@@ -16842,7 +17380,7 @@ index 45cb9d2..6bde76f 100644
  
      std::lock_guard<std::mutex> lock(m_guestHeapMutex);
      ensureGuestHeapInitializedLocked();
-@@ -2039,10 +2337,36 @@ uint16_t PS2Runtime::Load16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
+@@ -2039,10 +2338,36 @@ uint16_t PS2Runtime::Load16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
      }
  }
  
@@ -16879,7 +17417,7 @@ index 45cb9d2..6bde76f 100644
          return m_memory.read32(vaddr);
      }
      catch (const std::exception &)
-@@ -2056,6 +2380,8 @@ uint64_t PS2Runtime::Load64(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
+@@ -2056,6 +2381,8 @@ uint64_t PS2Runtime::Load64(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
  {
      try
      {
@@ -16888,7 +17426,7 @@ index 45cb9d2..6bde76f 100644
          return m_memory.read64(vaddr);
      }
      catch (const std::exception &)
-@@ -2187,6 +2513,14 @@ void PS2Runtime::requestStop()
+@@ -2187,6 +2514,14 @@ void PS2Runtime::requestStop()
      {
          m_eeScheduler->requestStop();
      }
@@ -16903,7 +17441,7 @@ index 45cb9d2..6bde76f 100644
  }
  
  bool PS2Runtime::isStopRequested() const
-@@ -2339,8 +2673,12 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
+@@ -2339,8 +2674,12 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
      raiseCop0Exception(ctx, EXCEPTION_INTEGER_OVERFLOW);
  }
  
@@ -16916,7 +17454,7 @@ index 45cb9d2..6bde76f 100644
      m_stopRequested.store(false, std::memory_order_relaxed);
      ps2_stubs::resetSifState();
      resetIop();
-@@ -2361,12 +2699,27 @@ void PS2Runtime::run()
+@@ -2361,12 +2700,27 @@ void PS2Runtime::run()
      Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
      Texture2D frameTex = LoadTextureFromImage(blank);
      UnloadImage(blank);
@@ -16944,7 +17482,7 @@ index 45cb9d2..6bde76f 100644
          try
          {
              m_eeScheduler->reset(m_memory.getRDRAM(), m_cpuContext);
-@@ -2422,7 +2775,23 @@ void PS2Runtime::run()
+@@ -2422,23 +2776,71 @@ void PS2Runtime::run()
          });
          uint32_t presentWidth = FB_WIDTH;
          uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
@@ -16969,13 +17507,17 @@ index 45cb9d2..6bde76f 100644
  
          BeginDrawing();
          ClearBackground(BLACK);
-@@ -2430,13 +2799,31 @@ void PS2Runtime::run()
+         const float srcWidth = static_cast<float>(std::max<uint32_t>(1u, presentWidth));
          const float srcHeight = static_cast<float>(std::max<uint32_t>(1u, presentHeight));
-         const float screenWidth = static_cast<float>(GetScreenWidth());
-         const float screenHeight = static_cast<float>(GetScreenHeight());
+-        const float screenWidth = static_cast<float>(GetScreenWidth());
+-        const float screenHeight = static_cast<float>(GetScreenHeight());
 -        const float scale = std::min(screenWidth / srcWidth, screenHeight / srcHeight);
 -        const float dstWidth = srcWidth * scale;
 -        const float dstHeight = srcHeight * scale;
++        // the framebuffer's size: in fullscreen raylib's screen size can stay at the window's size from before (Windows
++        // clamps a framed 2560 x 1440 window to the screen minus its title bar), which left a bar under the picture
++        const float screenWidth = static_cast<float>(GetRenderWidth());
++        const float screenHeight = static_cast<float>(GetRenderHeight());
 +        // A PS2 picture fills a 4:3 TV whatever the frame buffer's width (512-wide menus and 640-wide movies alike);
 +        // scaling by pixels made 512 × 448 screens look squeezed. VENDETTA_ASPECT=16:9 stretches to widescreen; the
 +        // setting shape = "stretch" (VENDETTA_ASPECT=fill) fills the window whatever its shape.
@@ -17005,11 +17547,26 @@ index 45cb9d2..6bde76f 100644
 +            std::floor((screenHeight - dstHeight) * 0.5f),
              dstWidth,
              dstHeight};
++        {
++            // once per change of layout: where the picture goes (and what raylib says the window is)
++            static float s_loggedLayout[6] = {};
++            const float layout[6] = {screenWidth, screenHeight, dstRect.x, dstRect.y, dstWidth, dstHeight};
++            if (!std::equal(std::begin(layout), std::end(layout), std::begin(s_loggedLayout)))
++            {
++                std::copy(std::begin(layout), std::end(layout), std::begin(s_loggedLayout));
++                std::cerr << "[present] picture " << dstWidth << "x" << dstHeight << " at " << dstRect.x << "," << dstRect.y
++                          << " in " << screenWidth << "x" << screenHeight << " (raylib's screen " << GetScreenWidth() << "x"
++                          << GetScreenHeight() << "); source " << srcWidth << "x" << srcHeight << std::endl;
++            }
++        }
          DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
-@@ -2459,6 +2846,9 @@ void PS2Runtime::run()
+         if (m_debugUiInitialized && m_debugUiDrawCallback)
+         {
+@@ -2459,6 +2861,10 @@ void PS2Runtime::run()
      {
          gameThread.join();
      }
++    ps2_pad_rumble::stopAll(); // the game is done with the pads: no controller left vibrating
 +    m_chain.shutdown();          // the chain worker first (it feeds the GS)...
 +    m_gs.shutdownRasterThread(); // ... then the GS thread
 +    m_gs.shutdownGpu();          // ... then the graphics card renderer
@@ -18934,7 +19491,7 @@ index 6974254..6fe0609 100644
 +    return true;
 +}
 diff --git a/ps2xRuntime/src/main.cpp b/ps2xRuntime/src/main.cpp
-index 563bcbd..375c5cc 100644
+index 563bcbd..1ed7c9a 100644
 --- a/ps2xRuntime/src/main.cpp
 +++ b/ps2xRuntime/src/main.cpp
 @@ -1,4 +1,5 @@
@@ -18943,7 +19500,26 @@ index 563bcbd..375c5cc 100644
  #include "games_database.h"
  #if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA)
  #include "ps2_debug_panel.h"
-@@ -170,6 +171,8 @@ int main(int argc, char *argv[])
+@@ -157,7 +158,17 @@ namespace
+         {
+             return configuredPath;
+         }
+-        return (std::filesystem::current_path() / configuredPath).lexically_normal();
++        // relative: from the current folder, else from the program's own folder (started from a shortcut elsewhere)
++        const std::filesystem::path fromCurrent = (std::filesystem::current_path() / configuredPath).lexically_normal();
++        std::error_code error;
++        if (!std::filesystem::exists(fromCurrent, error) && argc > 0 && argv[0] && argv[0][0] != '\0')
++        {
++            const std::filesystem::path fromProgram =
++                (std::filesystem::absolute(argv[0], error).parent_path() / configuredPath).lexically_normal();
++            if (std::filesystem::exists(fromProgram, error))
++                return fromProgram;
++        }
++        return fromCurrent;
+ #else
+         throw std::runtime_error("Unable to determine executable path. Pass the guest ELF as argv[1] or define PS2X_DEFAULT_BOOT_ELF.");
+ #endif
+@@ -170,6 +181,8 @@ int main(int argc, char *argv[])
      redirectStdioToLogcat();
  #endif
      setupTerminateLogger();

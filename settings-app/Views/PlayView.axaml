@@ -1,0 +1,59 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:VendettaSettings.ViewModels"
+             x:Class="VendettaSettings.Views.PlayView"
+             x:DataType="vm:MainViewModel">
+    <Grid RowDefinitions="*,Auto" RowSpacing="18" Margin="32,28">
+        <Border CornerRadius="14" Background="{StaticResource VPanel}" ClipToBounds="True">
+            <Grid RowDefinitions="*,Auto">
+                <!-- the picture (2400 x 1100, with the logo on its left): always whole, as wide as the panel, at the
+                     top; its foot fades into the panel (PLAY may sit over it) -->
+                <Panel Grid.RowSpan="2" VerticalAlignment="Top">
+                    <Image Source="/Assets/background.jpg" Stretch="Uniform" />
+                    <Border VerticalAlignment="Bottom" Height="120">
+                        <Border.Background>
+                            <LinearGradientBrush StartPoint="0%,0%" EndPoint="0%,100%">
+                                <GradientStop Offset="0" Color="#001b1a1e" />
+                                <GradientStop Offset="1" Color="#1b1a1e" />
+                            </LinearGradientBrush>
+                        </Border.Background>
+                    </Border>
+                </Panel>
+                <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="20" Margin="36,18,36,28">
+                    <Button Classes="play" Command="{Binding PlayCommand}" IsEnabled="{Binding CanPlay}">
+                        <StackPanel Orientation="Horizontal" Spacing="14">
+                            <PathIcon Width="20" Height="20" Data="M6,3 L21,12 L6,21 Z" />
+                            <TextBlock Text="PLAY" VerticalAlignment="Center" />
+                        </StackPanel>
+                    </Button>
+                    <StackPanel VerticalAlignment="Center" Spacing="4">
+                        <TextBlock Classes="mono muted" Text="{Binding PlaySummary}" />
+                        <TextBlock Text="{Binding Message}" FontSize="13" Classes="good"
+                                   IsVisible="{Binding Message, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
+                        <TextBlock Text="The game is running. Close it to play again." FontSize="13" Classes="muted"
+                                   IsVisible="{Binding ShowRunning}" />
+                        <TextBlock Text="Recompiled · built from your own disc on this PC" FontSize="13" Classes="muted"
+                                   IsVisible="{Binding !ShowRunning}" />
+                    </StackPanel>
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <Grid Grid.Row="1" ColumnDefinitions="*,*" ColumnSpacing="16">
+            <Border Classes="card">
+                <StackPanel Spacing="6">
+                    <TextBlock Classes="cap" Text="YOUR DISC" />
+                    <TextBlock Text="{Binding DiscTitle}" FontSize="17" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding DiscLine}" FontSize="13.5" Classes.good="{Binding HasGame}" Classes.bad="{Binding NoGame}" />
+                </StackPanel>
+            </Border>
+            <Border Grid.Column="1" Classes="card">
+                <StackPanel Spacing="6">
+                    <TextBlock Classes="cap" Text="SAVE DATA" />
+                    <TextBlock Text="{Binding SaveTitle}" FontSize="17" FontWeight="SemiBold" />
+                    <TextBlock Text="{Binding SaveLine}" FontSize="13.5" Classes="muted" />
+                </StackPanel>
+            </Border>
+        </Grid>
+    </Grid>
+</UserControl>

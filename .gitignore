@@ -25,9 +25,14 @@ config/vendetta_functions.csv
 imgui.ini
 # the player's settings (the game writes a default one)
 settings.toml
+# the settings program's build output
+/settings-app/bin/
+/settings-app/obj/
 __pycache__/
 *.pyc
 
 # OS
 Thumbs.db
 .DS_Store
+# release zips (make-release.bat)
+/dist/

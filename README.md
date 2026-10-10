@@ -26,15 +26,26 @@ python tools\prepare_disc.py "D:\path\to\Def Jam Vendetta.chd"    :: or the .iso
 recomp.bat                                       :: the game's code → C++ (~2 min)
 build-fast.bat                                   :: build it (first time ~12 min)
 run.bat                                          :: run it
+build-settings.bat                               :: the settings program (needs the .NET 10 SDK)
+make-release.bat                                 :: a player's zip in dist\ (nothing is published)
 ```
+
+**A player's zip** (`make-release.bat`) has the settings program, a portable Python and the source (PS2Recomp with
+our patch applied, so no git). Opened the first time, Vendetta Settings asks for the disc, installs Microsoft's C++
+build tools if they're missing (one Windows prompt) and builds the game with a progress bar
+(`tools\setup_game.py`); the game program, `game\` and the saves stay in the unzipped folder.
 
 `prepare_disc.py` checks it's the right disc, then writes `disc\SLUS-20639.iso` (the game reads its disc by sector)
 and `game\` (the disc's files). Clone without `--recurse-submodules`: `setup.bat` fetches only the parts of
 paraLLEl-GS's own submodules it needs (a full recursive clone runs into Windows' path-length limit).
 
-### Picture settings
+### Settings
 
-Set these before `run.bat` (e.g. `set VENDETTA_SSAA=16`):
+The game reads `settings.toml` from its folder when it starts (written with the defaults, a comment on each line, the
+first time). **Vendetta Settings** (`build-settings.bat`, then `settings-app\bin\Release\net10.0\Vendetta Settings.exe`)
+changes it in a window — display (window / borderless / fullscreen, screen, resolution, refresh rate, VSync, picture
+shape), graphics and sound — and has a PLAY button. A switch set before `run.bat` wins over the file
+(e.g. `set VENDETTA_SSAA=16`):
 
 | | |
 |---|---|
@@ -56,6 +67,7 @@ card prepares its shaders.
 | `config\` | the recompiler's inputs: the function map (from Ghidra), Sony library routines to replace with the runtime's own, function starts Ghidra missed |
 | `overrides\` | game-specific runtime code (where the disc image is, debug dumps) |
 | `patches\` | our fixes to PS2Recomp's runtime (applied by `setup.bat`) |
+| `settings-app\` | Vendetta Settings: the game's settings in a window, and PLAY (Avalonia, .NET 10) |
 | `third_party\parallel-gs` | [paraLLEl-GS](https://github.com/Arntzen-Software/parallel-gs), the PS2's graphics chip on the graphics card (submodule) |
 | `tools\` | disc preparation, config building, the missing-function scan, the VU1 recompiler, debugging helpers |
 
@@ -64,4 +76,5 @@ card prepares its shaders.
 PS2Recomp is GPL-licensed and included as a submodule; our changes to it (`patches\`) are under the same licence.
 paraLLEl-GS (© Arntzen Software AS) is LGPL-3.0+ and uses Granite (© Hans-Kristian Arntzen, MIT); both are included as
 submodules.
-Def Jam Vendetta is © its owners. This project includes none of it.
+Def Jam Vendetta is © its owners. This project includes none of its files or code; the settings program's pictures
+(`settings-app\Assets`) are artwork based on its logo.

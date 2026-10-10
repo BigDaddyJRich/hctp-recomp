@@ -1,0 +1,321 @@
+using System.ComponentModel;
+using CommunityToolkit.Mvvm.ComponentModel;
+using CommunityToolkit.Mvvm.Input;
+using VendettaSettings.Services;
+
+namespace VendettaSettings.ViewModels;
+
+/// <summary>One entry of a drop-down list.</summary>
+public sealed record Choice(string Label, int Value, int Value2 = 0);
+
+/// <summary>The Settings page: every change is written to settings.toml at once (the game reads it when it starts).</summary>
+public partial class SettingsViewModel : ObservableObject
+{
+    private static readonly int[] Scales = { 1, 2, 4, 8, 16 };
+    private static readonly string[] Modes = { "window", "borderless", "fullscreen" };
+    private static readonly string[] Filters = { "fsr", "smooth", "blocky" };
+
+    // the properties that are settings (a change is saved); the others are worked out from them
+    private static readonly HashSet<string> Saved = new()
+    {
+        nameof(ModeIndex), nameof(Screen), nameof(Maximised), nameof(Resolution), nameof(Refresh), nameof(VsyncIndex),
+        nameof(ShapeIndex), nameof(RendererIndex), nameof(ScaleIndex), nameof(FilterIndex), nameof(Sharpening),
+        nameof(Volume), nameof(Reverb), nameof(Multitap), nameof(Vibration1), nameof(Vibration2), nameof(Vibration3),
+        nameof(Vibration4),
+    };
+
+    private readonly GameFolder _folder;
+    private readonly bool _readOnly;
+    private readonly IReadOnlyList<Displays.Screen> _screens;
+    private bool _loading;
+
+    public SettingsViewModel(GameFolder folder, bool readOnly)
+    {
+        _folder = folder;
+        _readOnly = readOnly;
+        _screens = Displays.Find();
+        Load(GameSettings.Load(folder.SettingsPath));
+    }
+
+    [ObservableProperty] private int _tabIndex;
+
+    // Display
+    [ObservableProperty] private int _modeIndex;
+    [ObservableProperty] private List<Choice> _screenChoices = new();
+    [ObservableProperty] private Choice? _screen;
+    [ObservableProperty] private bool _maximised;
+    [ObservableProperty] private List<Choice> _resolutionChoices = new();
+    [ObservableProperty] private Choice? _resolution;
+    [ObservableProperty] private List<Choice> _refreshChoices = new();
+    [ObservableProperty] private Choice? _refresh;
+    [ObservableProperty] private int _vsyncIndex;
+    [ObservableProperty] private int _shapeIndex;
+    // Graphics
+    [ObservableProperty] private int _rendererIndex;
+    [ObservableProperty] private int _scaleIndex;
+    [ObservableProperty] private int _filterIndex;
+    [ObservableProperty] private double _sharpening;
+    // Sound
+    [ObservableProperty] private double _volume;
+    [ObservableProperty] private bool _reverb;
+    // Controls
+    [ObservableProperty] private bool _multitap;
+    [ObservableProperty] private bool _vibration1;
+    [ObservableProperty] private bool _vibration2;
+    [ObservableProperty] private bool _vibration3;
+    [ObservableProperty] private bool _vibration4;
+
+    [ObservableProperty] private string _status = "";
+
+    public bool IsWindowMode => ModeIndex == 0;
+    public bool IsFullscreen => ModeIndex == 2;
+    public bool IsNotFullscreen => ModeIndex != 2;
+
+    public string ModeHint => ModeIndex switch
+    {
+        1 => "A window with no frame that covers the whole screen; switching apps is instant",
+        2 => "The game takes over the screen and can set its own resolution and refresh rate",
+        _ => "A normal window you can move and resize",
+    };
+
+    public string MaximisedHint => IsWindowMode
+        ? "Opens filling the screen, title bar kept"
+        : "Only for Window: Borderless and Fullscreen already fill the screen";
+
+    public string FullscreenHint => IsFullscreen ? "The screen switches to this while the game runs" : "Only for Fullscreen";
+
+    private Displays.Screen? CurrentScreen =>
+        Screen is { } chosen ? _screens.FirstOrDefault(s => s.Number == chosen.Value) : _screens.FirstOrDefault();
+
+    public string WindowsRate => CurrentScreen is { } s ? $"Windows' setting · {s.Current.Rate} Hz" : "Windows' setting";
+
+    /// <summary>The rate the game will ask for in fullscreen (smoothest / the screen's own worked out).</summary>
+    private int ChosenRate
+    {
+        get
+        {
+            if (CurrentScreen is not { } s)
+                return Refresh?.Value > 0 ? Refresh.Value : 60;
+            var (w, h) = FullscreenSize(s);
+            return Refresh?.Value switch
+            {
+                GameSettings.RefreshSmoothest or null => s.SmoothestAt(w, h),
+                GameSettings.RefreshScreens => s.Current.Rate,
+                var r => r.Value,
+            };
+        }
+    }
+
+    public string RefreshHint
+    {
+        get
+        {
+            if (!IsFullscreen)
+                return "In a window or borderless, the screen keeps the rate set in Windows. Pick Fullscreen to choose it here.";
+            var rate = ChosenRate;
+            return rate % 60 == 0 || (rate + 1) % 60 == 0
+                ? $"The game makes 60 frames a second: at {rate} Hz every frame stays on screen for the same time."
+                : $"The game makes 60 frames a second: at {rate} Hz some stay up longer than others, a slight judder. A multiple of 60 Hz is smoother.";
+        }
+    }
+
+    public string VsyncHint => VsyncIndex == 1
+        ? "No tearing: each frame waits for the screen. With G-Sync or FreeSync, smooth at any rate."
+        : "The lowest delay; fast moves can tear in fullscreen.";
+
+    public string ShapeHint => (ShapeIndex == 1
+            ? "Fills a wide screen, but everyone looks wider."
+            : "As on the PS2: black bars at the sides of a wide screen.")
+        + " Widescreen (planned) will show more of the arena instead.";
+
+    public string RendererHint => RendererIndex == 0 ? "Default: sharp and fast" : "The old way, for checking: 1× only";
+
+    public string ScaleHint => RendererIndex == 1 ? "The CPU draws at 1×" : ScaleIndex switch
+    {
+        0 => "As sharp as the PS2",
+        1 => "A little sharper",
+        2 => "Sharp",
+        3 => "Default: very sharp",
+        _ => "Sharpest, needs a strong graphics card",
+    };
+
+    public string FilterHint => FilterIndex switch
+    {
+        1 => "Soft, like a TV",
+        2 => "Hard pixels, like an emulator with no filter",
+        _ => "Default: smooth and crisp at any window size",
+    };
+
+    public string SharpeningText => $"{(int)Math.Round(Sharpening)}%";
+    public string VolumeText => $"{(int)Math.Round(Volume)}%";
+    public bool SharpeningEnabled => FilterIndex == 0;
+
+    /// <summary>A short line for the Play page: how the game will open.</summary>
+    public string Summary
+    {
+        get
+        {
+            var mode = ModeIndex switch
+            {
+                1 => "Borderless",
+                2 => $"Fullscreen · {ChosenRate} Hz",
+                _ => Maximised ? "Maximised" : "Window",
+            };
+            var renderer = RendererIndex == 0 ? $"graphics card · {Scales[Math.Clamp(ScaleIndex, 0, 4)]}×" : "CPU";
+            return $"{mode} · {renderer}";
+        }
+    }
+
+    protected override void OnPropertyChanged(PropertyChangedEventArgs e)
+    {
+        base.OnPropertyChanged(e);
+        if (e.PropertyName is nameof(Screen) or nameof(Resolution) && !_loading)
+            RebuildChoices();
+        if (e.PropertyName is { } name && Saved.Contains(name))
+        {
+            foreach (var derived in new[]
+                     {
+                         nameof(IsWindowMode), nameof(IsFullscreen), nameof(IsNotFullscreen), nameof(ModeHint),
+                         nameof(MaximisedHint), nameof(FullscreenHint), nameof(WindowsRate), nameof(RefreshHint),
+                         nameof(VsyncHint), nameof(ShapeHint), nameof(RendererHint), nameof(ScaleHint), nameof(FilterHint),
+                         nameof(SharpeningText), nameof(VolumeText), nameof(SharpeningEnabled), nameof(Summary),
+                     })
+                base.OnPropertyChanged(new PropertyChangedEventArgs(derived));
+            Save();
+        }
+    }
+
+    [RelayCommand]
+    private void ResetToDefaults()
+    {
+        Load(new GameSettings());
+        Save();
+        Status = "Back to the defaults.";
+    }
+
+    private void Load(GameSettings s)
+    {
+        _loading = true;
+        try
+        {
+            ModeIndex = Math.Max(0, Array.IndexOf(Modes, s.Mode));
+            ScreenChoices = _screens.Select(sc => new Choice(
+                    $"Screen {sc.Number} · {sc.Current.Width} × {sc.Current.Height} · {sc.Current.Rate} Hz{(sc.Primary ? " (main)" : "")}",
+                    sc.Number))
+                .ToList();
+            if (ScreenChoices.All(c => c.Value != s.Screen))
+                ScreenChoices = ScreenChoices.Append(new Choice($"Screen {s.Screen} · not connected (the main one is used)", s.Screen)).ToList();
+            Screen = ScreenChoices.First(c => c.Value == s.Screen);
+            Maximised = s.Maximised;
+            RebuildChoices(s.FullscreenWidth, s.FullscreenHeight, s.RefreshRate);
+            VsyncIndex = s.Vsync ? 1 : 0;
+            ShapeIndex = s.Shape == "stretch" ? 1 : 0;
+            RendererIndex = s.Renderer == "cpu" ? 1 : 0;
+            ScaleIndex = Math.Max(0, Array.IndexOf(Scales, s.Scale));
+            FilterIndex = Math.Max(0, Array.IndexOf(Filters, s.Filter));
+            Sharpening = s.Sharpening;
+            Volume = s.Volume;
+            Reverb = s.Reverb;
+            Multitap = s.Multitap;
+            Vibration1 = s.Vibration[0];
+            Vibration2 = s.Vibration[1];
+            Vibration3 = s.Vibration[2];
+            Vibration4 = s.Vibration[3];
+        }
+        finally
+        {
+            _loading = false;
+        }
+        foreach (var name in new[] { nameof(ModeHint), nameof(Summary), nameof(RefreshHint), nameof(WindowsRate) })
+            base.OnPropertyChanged(new PropertyChangedEventArgs(name));
+    }
+
+    private (int W, int H) FullscreenSize(Displays.Screen screen) =>
+        Resolution is { Value: > 0 } r ? (r.Value, r.Value2) : (screen.Current.Width, screen.Current.Height);
+
+    /// <summary>The resolutions and refresh rates of the chosen screen (keeping what is chosen).</summary>
+    private void RebuildChoices() => RebuildChoices(Resolution?.Value ?? 0, Resolution?.Value2 ?? 0, Refresh?.Value ?? GameSettings.RefreshSmoothest);
+
+    private void RebuildChoices(int width, int height, int rate)
+    {
+        var wasLoading = _loading;
+        _loading = true;
+        try
+        {
+            var screen = CurrentScreen;
+            var sizes = new List<Choice>
+            {
+                new(screen is { } s0 ? $"Same as the screen · {s0.Current.Width} × {s0.Current.Height}" : "Same as the screen", 0),
+            };
+            if (screen != null)
+                sizes.AddRange(screen.Modes
+                    .Where(m => m.Width >= 1024 && !(m.Width == screen.Current.Width && m.Height == screen.Current.Height))
+                    .Select(m => (m.Width, m.Height)).Distinct()
+                    .OrderByDescending(m => m.Width * m.Height)
+                    .Select(m => new Choice($"{m.Width} × {m.Height}", m.Width, m.Height)));
+            if (width > 0 && sizes.All(c => c.Value != width || c.Value2 != height))
+                sizes.Add(new Choice($"{width} × {height} · not on this screen", width, height));
+            ResolutionChoices = sizes;
+            Resolution = sizes.FirstOrDefault(c => c.Value == width && c.Value2 == height) ?? sizes[0];
+
+            var rates = new List<Choice>();
+            if (screen != null)
+            {
+                var (w, h) = FullscreenSize(screen);
+                rates.Add(new Choice($"Smoothest · {screen.SmoothestAt(w, h)} Hz", GameSettings.RefreshSmoothest));
+                rates.AddRange(screen.RatesAt(w, h).Select(r => new Choice($"{r} Hz", r)));
+                rates.Add(new Choice($"The screen's own · {screen.Current.Rate} Hz", GameSettings.RefreshScreens));
+            }
+            else
+            {
+                rates.Add(new Choice("Smoothest", GameSettings.RefreshSmoothest));
+                rates.Add(new Choice("The screen's own", GameSettings.RefreshScreens));
+            }
+            if (rates.All(c => c.Value != rate))
+                rates.Add(new Choice($"{rate} Hz · not on this screen (the closest is used)", rate));
+            RefreshChoices = rates;
+            Refresh = rates.First(c => c.Value == rate);
+        }
+        finally
+        {
+            _loading = wasLoading;
+        }
+        base.OnPropertyChanged(new PropertyChangedEventArgs(nameof(RefreshHint)));
+        base.OnPropertyChanged(new PropertyChangedEventArgs(nameof(Summary)));
+    }
+
+    private GameSettings Current() => new()
+    {
+        Mode = Modes[Math.Clamp(ModeIndex, 0, 2)],
+        Screen = Screen?.Value ?? 1,
+        Maximised = Maximised,
+        FullscreenWidth = Resolution?.Value ?? 0,
+        FullscreenHeight = Resolution?.Value2 ?? 0,
+        RefreshRate = Refresh?.Value ?? GameSettings.RefreshSmoothest,
+        Vsync = VsyncIndex == 1,
+        Shape = ShapeIndex == 1 ? "stretch" : "4:3",
+        Renderer = RendererIndex == 1 ? "cpu" : "gpu",
+        Scale = Scales[Math.Clamp(ScaleIndex, 0, 4)],
+        Filter = Filters[Math.Clamp(FilterIndex, 0, 2)],
+        Sharpening = (int)Math.Round(Sharpening),
+        Volume = (int)Math.Round(Volume),
+        Reverb = Reverb,
+        Multitap = Multitap,
+        Vibration = new[] { Vibration1, Vibration2, Vibration3, Vibration4 },
+    };
+
+    private void Save()
+    {
+        if (_loading || _readOnly)
+            return;
+        try
+        {
+            Current().Save(_folder.SettingsPath);
+            Status = "Saved. Used the next time the game starts.";
+        }
+        catch (Exception ex)
+        {
+            Status = $"Couldn't save {_folder.SettingsPath}: {ex.Message}";
+        }
+    }
+}
