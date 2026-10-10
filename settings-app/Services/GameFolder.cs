@@ -2,45 +2,52 @@ using System.Diagnostics;
 
 namespace VendettaSettings.Services;
 
-/// <summary>The folder everything lives in: the game's files from the disc (<c>game\SLUS_206.39</c>), its memory card
-/// (<c>game\mc0</c>), <c>settings.toml</c> and the game program. Found by looking up from this program's folder; for a
-/// developer build (this program deep in <c>settings-app\bin\…</c>) that reaches the repository's root.
+/// <summary>Where everything is. <see cref="Root"/> = the install folder (this program and the read-me);
+/// <see cref="Data"/> = where the rest lives: the game program, the game's files from the disc (<c>game\SLUS_206.39</c>),
+/// its memory card (<c>game\mc0</c>), <c>settings.toml</c>, <c>logs\</c> and the build kit. A player's install keeps
+/// those in <c>files\</c> so the top of the folder stays simple; in the repository (a developer build, this program
+/// deep in <c>settings-app\bin\…</c>) both are its root. Found by looking up from this program's folder;
 /// VENDETTA_ROOT=&lt;folder&gt; picks it by hand.</summary>
 public sealed class GameFolder
 {
     public const string Serial = "SLUS-20639";
+    public const string DataFolder = "files";
+    public const string GameExeName = "Def Jam Vendetta Recompiled.exe";
 
     public string Root { get; }
-    public string SettingsPath => Path.Combine(Root, "settings.toml");
-    public string ElfPath => Path.Combine(Root, "game", "SLUS_206.39");
-    public string SavesPath => Path.Combine(Root, "game", "mc0");
-    public string LogsPath => Path.Combine(Root, "logs");
+    public string Data { get; }
+    public string SettingsPath => Path.Combine(Data, "settings.toml");
+    public string ElfPath => Path.Combine(Data, "game", "SLUS_206.39");
+    public string SavesPath => Path.Combine(Data, "game", "mc0");
+    public string LogsPath => Path.Combine(Data, "logs");
     public bool HasGame => File.Exists(ElfPath);
     public bool HasSave => Directory.Exists(Path.Combine(SavesPath, "BASLUS-20639GAMEDATA"));
 
-    /// <summary>The game program: the newest of the places a build puts it (a player's install has it beside this program).</summary>
+    /// <summary>The game program: the newest of the places a build puts it (a player's install: in <c>files\</c>).</summary>
     public string? GameExe =>
         new[]
         {
-            Path.Combine(Root, GameExeName),
-            Path.Combine(Root, "PS2Recomp", "out", "fast", "ps2xRuntime", "ps2EntryRunner.exe"),
-            Path.Combine(Root, "PS2Recomp", "out", "runtime", "ps2xRuntime", "ps2EntryRunner.exe"),
+            Path.Combine(Data, GameExeName),
+            Path.Combine(Data, "PS2Recomp", "out", "fast", "ps2xRuntime", "ps2EntryRunner.exe"),
+            Path.Combine(Data, "PS2Recomp", "out", "runtime", "ps2xRuntime", "ps2EntryRunner.exe"),
         }
         .Where(File.Exists)
         .OrderByDescending(File.GetLastWriteTimeUtc)
         .FirstOrDefault();
 
-    private GameFolder(string root) => Root = root;
+    private GameFolder(string root, string data)
+    {
+        Root = root;
+        Data = data;
+    }
 
-    public const string GameExeName = "Def Jam Vendetta Recompiled.exe";
-
-    /// <summary>Where the build kit is: a release's <c>source\</c> beside this program, else the folder itself (the repository).</summary>
+    /// <summary>Where the build kit is: a release's <c>files\source\</c>, else the repository itself.</summary>
     public string SourceRoot =>
-        Directory.Exists(Path.Combine(Root, "source", "tools")) ? Path.Combine(Root, "source") : Root;
+        Directory.Exists(Path.Combine(Data, "source", "tools")) ? Path.Combine(Data, "source") : Data;
 
-    /// <summary>A release's own Python (<c>python\python.exe</c>), else the one on PATH.</summary>
+    /// <summary>A release's own Python (<c>files\python\python.exe</c>), else the one on PATH.</summary>
     public string PythonExe =>
-        File.Exists(Path.Combine(Root, "python", "python.exe")) ? Path.Combine(Root, "python", "python.exe") : "python";
+        File.Exists(Path.Combine(Data, "python", "python.exe")) ? Path.Combine(Data, "python", "python.exe") : "python";
 
     public string SetupScript => Path.Combine(SourceRoot, "tools", "setup_game.py");
 
@@ -79,7 +86,7 @@ public sealed class GameFolder
 
     /// <summary>The setup (tools\setup_game.py): its output comes line by line on standard output.</summary>
     public ProcessStartInfo SetupStart(string? disc) =>
-        disc == null ? PythonStart(SetupScript, "--data", Root) : PythonStart(SetupScript, "--data", Root, "--disc", disc);
+        disc == null ? PythonStart(SetupScript, "--data", Data) : PythonStart(SetupScript, "--data", Data, "--disc", disc);
 
     private ProcessStartInfo PythonStart(string script, params string[] args)
     {
@@ -109,8 +116,8 @@ public sealed class GameFolder
             var desktop = folder ?? Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
             var settings = Environment.ProcessPath ?? Path.Combine(Root, "Vendetta Settings.exe");
             if (GameExe is { } exe)
-                Shortcut(Path.Combine(desktop, "Def Jam Vendetta Recompiled.lnk"), exe, settings);
-            Shortcut(Path.Combine(desktop, "Vendetta Settings.lnk"), settings, settings);
+                Shortcut(Path.Combine(desktop, "Def Jam Vendetta Recompiled.lnk"), exe, Data, settings);
+            Shortcut(Path.Combine(desktop, "Vendetta Settings.lnk"), settings, Root, settings);
             return null;
         }
         catch (Exception ex)
@@ -119,13 +126,13 @@ public sealed class GameFolder
         }
     }
 
-    private void Shortcut(string link, string target, string icon)
+    private static void Shortcut(string link, string target, string startIn, string icon)
     {
         var type = Type.GetTypeFromProgID("WScript.Shell") ?? throw new InvalidOperationException("no WScript.Shell");
         dynamic shell = Activator.CreateInstance(type)!;
         dynamic shortcut = shell.CreateShortcut(link);
         shortcut.TargetPath = target;
-        shortcut.WorkingDirectory = Root;
+        shortcut.WorkingDirectory = startIn;
         shortcut.IconLocation = icon + ",0";
         shortcut.Save();
     }
@@ -149,14 +156,23 @@ public sealed class GameFolder
     {
         var chosen = Environment.GetEnvironmentVariable("VENDETTA_ROOT");
         if (!string.IsNullOrEmpty(chosen) && Directory.Exists(chosen))
-            return new GameFolder(Path.GetFullPath(chosen));
+            return At(Path.GetFullPath(chosen));
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir != null; dir = dir.Parent)
         {
+            var files = Path.Combine(dir.FullName, DataFolder);
+            if (Directory.Exists(Path.Combine(files, "source", "tools")) || File.Exists(Path.Combine(files, "game", "SLUS_206.39")))
+                return new GameFolder(dir.FullName, files); // a player's install
             if (File.Exists(Path.Combine(dir.FullName, "game", "SLUS_206.39")) ||
                 File.Exists(Path.Combine(dir.FullName, "settings.toml")))
-                return new GameFolder(dir.FullName);
+                return new GameFolder(dir.FullName, dir.FullName); // the repository
         }
-        return new GameFolder(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar));
+        return At(AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar));
+    }
+
+    private static GameFolder At(string folder)
+    {
+        var files = Path.Combine(folder, DataFolder);
+        return new GameFolder(folder, Directory.Exists(files) ? files : folder);
     }
 
     /// <summary>Starts the game; what it prints goes to <c>logs\game.log</c> / <c>game.log.err</c>. Returns why it couldn't,
@@ -172,11 +188,11 @@ public sealed class GameFolder
             return AlreadyRunning;
         Directory.CreateDirectory(LogsPath);
         var log = Path.Combine(LogsPath, "game.log");
-        // through cmd, so the log keeps being written after this program closes
+        // through cmd, so the log keeps being written after this program closes; started in the game's folder
         var start = new ProcessStartInfo("cmd.exe",
             $"/c \"\"{exe}\" \"{ElfPath}\" > \"{log}\" 2> \"{log}.err\"\"")
         {
-            WorkingDirectory = Root,
+            WorkingDirectory = Data,
             UseShellExecute = false,
             CreateNoWindow = true,
         };

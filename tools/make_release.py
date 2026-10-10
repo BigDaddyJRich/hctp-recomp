@@ -2,8 +2,9 @@
 #   Def Jam Vendetta Recompiled\
 #     Vendetta Settings.exe   the settings program with its first-run setup (.NET built in)
 #     READ ME FIRST.txt
-#     python\                 a portable Python (Python's own "embeddable" package; not installed on Windows)
-#     source\                 the build kit: this repository's files (as git would commit them), PS2Recomp at its
+#     files\                  everything else, so the top stays simple (the setup puts the game, game\, disc\ … here):
+#       python\               a portable Python (Python's own "embeddable" package; not installed on Windows)
+#       source\               the build kit: this repository's files (as git would commit them), PS2Recomp at its
 #                             pinned commit WITH our patch applied (so no git is needed), paraLLEl-GS + the parts of
 #                             Granite it uses, and deps\ = the libraries PS2Recomp's CMake would clone with git
 # Nothing from the disc or made from the game's code goes in: PS2Recomp comes from git (its working copy holds the
@@ -22,7 +23,8 @@ import zipfile
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIST = os.path.join(REPO, 'dist')
 TOP = 'Def Jam Vendetta Recompiled'
-SRC = TOP + '/source/'
+FILES = TOP + '/files/'
+SRC = FILES + 'source/'
 PYTHON_VERSION = '3.14.6'
 # the libraries FetchContent would clone (folder under source\deps\ <- where a build here has them), and what of
 # them isn't needed (examples, tests: also the longest paths)
@@ -62,14 +64,15 @@ If Windows says "Windows protected your PC" when you open Vendetta Settings.exe:
 
 What's inside:
   Vendetta Settings.exe   settings, PLAY, and the first-run setup (.NET built in, nothing to install)
-  python\                 a portable Python the setup uses (not installed on Windows)
-  source\                 what the game is built from: this project's code, PS2Recomp, paraLLEl-GS and libraries
-After the setup: the game program, game\ (your disc's files and your saves in game\mc0), disc\ (your disc as an
-.iso), build\ (the build's working files: can be deleted once the game runs, to save space), logs\,
-settings.toml.
+  files\                  everything else; you never need to open it:
+    python\               a portable Python the setup uses (not installed on Windows)
+    source\               what the game is built from: this project's code, PS2Recomp, paraLLEl-GS and libraries
+  After the setup, files\ also holds the game program and its DLLs, game\ (your disc's files, and your saves in
+  game\mc0 - Settings > About > "Open save data" takes you there), disc\ (your disc as an .iso), settings.toml,
+  logs\ and build\ (the build's working files: can be deleted once the game runs, to save space).
 
-Made by @jcsix694 (https://x.com/jcsix694). PS2Recomp is GPL; paraLLEl-GS is LGPL-3.0+; the libraries in source\deps
-keep their own licences. Def Jam Vendetta is (c) its owners; this download includes none of it.
+Made by @jcsix694 (https://x.com/jcsix694). PS2Recomp is GPL; paraLLEl-GS is LGPL-3.0+; the libraries in
+files\source\deps keep their own licences. Def Jam Vendetta is (c) its owners; this download includes none of it.
 """
 
 
@@ -166,7 +169,7 @@ def main():
             z.writestr(TOP + '/READ ME FIRST.txt', README.replace('\n', '\r\n'))
             with zipfile.ZipFile(pyzip) as py:
                 for n in py.namelist():
-                    z.writestr(TOP + '/python/' + n, py.read(n))
+                    z.writestr(FILES + 'python/' + n, py.read(n))
             # this repository: what git would commit (the game's files are kept out by .gitignore)
             listed = git(['ls-files', '-co', '--exclude-standard', '-z'], REPO).decode().split('\0')
             n = 0
