@@ -315,7 +315,7 @@
                         </Grid>
                     </Border>
                     <TextBlock Classes="hint" Margin="0,10,0,0" LineHeight="18"
-                               Text="Controllers are given out in the order Windows lists them; Xbox-style (XInput) ones are shown here. Vibration works with those; PlayStation controllers through Steam or DS4Windows. The game's own VIBRATION option (pause menu) still applies." />
+                               Text="Controllers are given out in the order Windows lists them. Xbox-style (XInput) ones are shown here. Vibration works with those, and PlayStation controllers work through Steam or DS4Windows. The game's own VIBRATION option (pause menu) still applies." />
                 </StackPanel>
 
                 <StackPanel>

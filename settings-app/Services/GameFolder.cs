@@ -115,14 +115,14 @@ public sealed class GameFolder
         try
         {
             var desktop = folder ?? Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-            var settings = Environment.ProcessPath ?? Path.Combine(Root, "Vendetta Settings.exe");
+            var settings = Environment.ProcessPath ?? Path.Combine(Root, "Def Jam Vendetta Recompiled Settings.exe");
             if (GameExe is { } exe)
             {
                 Shortcut(Path.Combine(desktop, "Def Jam Vendetta Recompiled.lnk"), exe, Data, settings);
                 if (Data != Root)
                     Shortcut(Path.Combine(Root, "Def Jam Vendetta Recompiled.lnk"), exe, Data, settings);
             }
-            Shortcut(Path.Combine(desktop, "Vendetta Settings.lnk"), settings, Root, settings);
+            Shortcut(Path.Combine(desktop, "Def Jam Vendetta Recompiled Settings.lnk"), settings, Root, settings);
             return null;
         }
         catch (Exception ex)

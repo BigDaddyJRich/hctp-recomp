@@ -1,6 +1,7 @@
-# Makes the release zip a player downloads: dist\Def Jam Vendetta Recompiled.zip (nothing is published).
+# Makes the release zip a player downloads: dist\Def-Jam-Vendetta-Recompiled-Windows.zip (nothing is published). The
+# name stays the same in every release, so the README's link to releases/latest/download/<name> always works.
 #   Def Jam Vendetta Recompiled\
-#     Vendetta Settings.exe   the settings program with its first-run setup (.NET built in)
+#     Def Jam Vendetta Recompiled Settings.exe   the settings program with its first-run setup (.NET built in)
 #     READ ME FIRST.txt
 #     files\                  everything else, so the top stays simple (the setup puts the game, game\, disc\ … here):
 #       python\               a portable Python (Python's own "embeddable" package; not installed on Windows)
@@ -23,6 +24,7 @@ import zipfile
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 DIST = os.path.join(REPO, 'dist')
 TOP = 'Def Jam Vendetta Recompiled'
+ZIP_NAME = 'Def-Jam-Vendetta-Recompiled-Windows.zip'  # the same in every release: the README links to it
 FILES = TOP + '/files/'
 SRC = FILES + 'source/'
 PYTHON_VERSION = '3.14.6'
@@ -49,22 +51,22 @@ No game files come with this download: the game is built here, from your copy, a
 
 To play:
   1. Unzip this folder where you want the game to live (it needs about 8 GB once built).
-  2. Open "Vendetta Settings.exe".
+  2. Open "Def Jam Vendetta Recompiled Settings.exe".
   3. Choose your disc: an .iso or .chd of the USA disc (SLUS-20639).
   4. Press "Next: build the game". If Microsoft's free C++ build tools aren't on this PC, they are installed first:
      allow Windows' prompt once. The first build takes about 20-30 minutes (it needs the internet once).
   5. Choose your settings, then PLAY. Shortcuts to the game and to Settings go on your desktop.
 
-If Windows says "Windows protected your PC" when you open Vendetta Settings.exe:
+If Windows says "Windows protected your PC" when you open Def Jam Vendetta Recompiled Settings.exe:
   The program isn't signed with a paid certificate yet, so Windows doesn't recognise it. To open it anyway:
     1. Click "More info".
     2. Click "Run anyway".
-  Or, before unzipping: right-click the downloaded zip > Properties > tick "Unblock" > OK. Then unzip it again;
+  Or, before unzipping: right-click the downloaded zip > Properties > tick "Unblock" > OK. Then unzip it again,
   nothing inside will ask.
 
 What's inside:
-  Vendetta Settings.exe   settings, PLAY, and the first-run setup (.NET built in, nothing to install)
-  files\                  everything else; you never need to open it:
+  Def Jam Vendetta Recompiled Settings.exe   settings, PLAY, and the first-run setup (.NET built in, nothing to install)
+  files\                  everything else (you never need to open it):
     python\               a portable Python the setup uses (not installed on Windows)
     source\               what the game is built from: this project's code, PS2Recomp, paraLLEl-GS and libraries
   After the setup, files\ also holds the game program and its DLLs, game\ (your disc's files, and your saves in
@@ -74,7 +76,7 @@ What's inside:
 Made by @jcsix on X (https://x.com/jcsix) and jcsix694 on GitHub (https://github.com/jcsix694).
 Free software under the GNU GPL version 3:
 files\source\LICENSE. Every part it uses and its licence: files\source\THIRD-PARTY-NOTICES.txt (also on the
-About page of Vendetta Settings). Def Jam Vendetta is (c) its owners; this download includes none of it.
+About page of Def Jam Vendetta Recompiled Settings). Def Jam Vendetta is (c) its owners. This download includes none of it.
 """
 
 
@@ -124,7 +126,7 @@ def settings_exe(work):
     subprocess.run(['dotnet', 'publish', os.path.join(REPO, 'settings-app'), '-c', 'Release', '-r', 'win-x64',
                     '--self-contained', 'true', '-p:PublishSingleFile=true', '-p:IncludeNativeLibrariesForSelfExtract=true',
                     '-p:DebugType=none', '-o', out, '-nologo', '-v', 'q'], check=True)
-    return os.path.join(out, 'Vendetta Settings.exe')
+    return os.path.join(out, 'Def Jam Vendetta Recompiled Settings.exe')
 
 
 def python_zip():
@@ -174,7 +176,7 @@ def main():
     if dirty:
         print('note: uncommitted changes go in too (a real release should come from a commit)')
     os.makedirs(DIST, exist_ok=True)
-    out = os.path.join(DIST, TOP + '.zip')
+    out = os.path.join(DIST, ZIP_NAME)
     counts = {}
     # outside the repository: git apply run inside a repository's subfolder skips the patch's paths without a word
     with tempfile.TemporaryDirectory(prefix='vdj-release-') as work:
@@ -183,7 +185,7 @@ def main():
         ps2recomp = patched_ps2recomp(work)
         pgs_patched = patched_parallel_gs(work)
         with zipfile.ZipFile(out + '.part', 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
-            z.write(exe, TOP + '/Vendetta Settings.exe')
+            z.write(exe, TOP + '/Def Jam Vendetta Recompiled Settings.exe')
             z.writestr(TOP + '/READ ME FIRST.txt', README.replace('\n', '\r\n'))
             with zipfile.ZipFile(pyzip) as py:
                 for n in py.namelist():
@@ -193,7 +195,7 @@ def main():
             n = 0
             for rel in listed:
                 if not rel or rel in ('PS2Recomp', 'third_party/parallel-gs') or rel.startswith(
-                        ('settings-app/bin/', 'settings-app/obj/', 'dist/')):
+                        ('settings-app/bin/', 'settings-app/obj/', 'dist/', 'images/')):  # images/: the README's pictures
                     continue
                 path = os.path.join(REPO, rel)
                 if os.path.isfile(path):
@@ -221,7 +223,7 @@ def main():
         infos = z.infolist()
         for i in infos:
             check(i.filename)
-            if i.file_size > 20 * 1024 * 1024 and not i.filename.endswith('Vendetta Settings.exe'):
+            if i.file_size > 20 * 1024 * 1024 and not i.filename.endswith('Def Jam Vendetta Recompiled Settings.exe'):
                 raise SystemExit('too big: ' + i.filename)
             if i.filename.endswith('runner/register_functions.cpp'):
                 text = z.read(i).decode('utf-8', 'replace')

@@ -4,7 +4,7 @@
         xmlns:v="using:VendettaSettings.Views"
         x:Class="VendettaSettings.Views.MainWindow"
         x:DataType="vm:MainViewModel"
-        Title="Def Jam Vendetta Recompiled · Settings | @jcsix on X | jcsix694 on GitHub"
+        Title="Def Jam Vendetta Recompiled Settings | @jcsix on X | jcsix694 on GitHub"
         Width="1280" Height="800" MinWidth="1080" MinHeight="680"
         Icon="/Assets/icon.ico"
         WindowStartupLocation="CenterScreen">

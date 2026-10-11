@@ -71,7 +71,7 @@ FFmpeg (the game's movies), the LGPL build from https://github.com/System233/ffm
   OpenEXR / Imath), each under its own licence.
 
 
-Vendetta Settings (the settings program)
+Def Jam Vendetta Recompiled Settings (the settings program)
 ----------------------------------------
 
 Avalonia - Copyright (c) .NET Foundation and Contributors - MIT - https://github.com/AvaloniaUI/Avalonia

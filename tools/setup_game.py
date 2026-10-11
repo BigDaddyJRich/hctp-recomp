@@ -1,4 +1,4 @@
-# A player's first-run setup, step by step (run by Vendetta Settings; also by hand):
+# A player's first-run setup, step by step (run by Def Jam Vendetta Recompiled Settings; also by hand):
 #   python tools/setup_game.py --data <install folder> [--disc <disc.chd | disc.iso>]
 # 1. the disc -> disc/ + game/ in the install folder, 2. Microsoft's C++ build tools (installed when missing: one
 # Windows prompt), 3. PS2Recomp's recompiler, 4. the game's code -> C++, 5. the game, 6. "Def Jam Vendetta
