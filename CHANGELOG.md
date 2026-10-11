@@ -5,7 +5,7 @@ The newest version is at the top.
 
 ---
 
-## 0.1.0: the first release (DRAFT, not released yet)
+## 0.1.0: the first release
 
 Def Jam Vendetta (PlayStation 2, USA, SLUS-20639) as a native Windows program, built on your PC from your own disc.
 No game files come with this download.
@@ -20,6 +20,9 @@ No game files come with this download.
 - **A sharp picture:** drawn on your graphics card at up to 16 times the PS2's detail, with the HUD, text and menus
   as sharp as the 3D (Sharp 2D).
 - **High Poly in every match:** full-detail wrestlers and arenas in 3- and 4-fighter matches too.
+- **Camera styles:** Def Jam Vendetta's own camera, WWF No Mercy style or Wrestle Kingdom 2 style (the ring seen from a
+  corner, with the controls turned to match). Choose it under Graphics.
+- **Vulkan:** the PS2's graphics are redrawn on your graphics card with Vulkan, and the picture is shown with Vulkan too.
 - **Def Jam Vendetta Recompiled Settings:** display, graphics, sound and controls in one place, with PLAY.
 
 ### Good to know

@@ -13,7 +13,9 @@ Made by [@jcsix on X](https://x.com/jcsix) · [jcsix694 on GitHub](https://githu
 </div>
 
 The original PlayStation 2 code is translated to C++ with [PS2Recomp](https://github.com/ran-j/PS2Recomp) and compiled on your
-PC, so your CPU runs the game directly. No emulator. **No game files come with it:** you need your own copy of Def Jam
+PC, so your CPU runs the game directly. No emulator. The PS2's graphics chip is redrawn on your graphics card with
+Vulkan through [paraLLEl-GS](https://github.com/Arntzen-Software/parallel-gs), and the picture is shown with Vulkan
+too. **No game files come with it:** you need your own copy of Def Jam
 Vendetta (PlayStation 2, USA, **SLUS-20639**) as an `.iso` or `.chd`, and everything made from it stays on your PC.
 
 <img src="images/game-match.jpg" alt="Briggs against Spider in The Face Club, widescreen at 16x" width="100%">
@@ -28,6 +30,8 @@ Vendetta (PlayStation 2, USA, **SLUS-20639**) as an `.iso` or `.chd`, and everyt
 | **Models in 3- and 4-fighter matches** | Low Poly | High Poly (optional) |
 | **Players** | 4 with a multitap | 4 controllers, plus the keyboard |
 | **Vibration** | DualShock 2 | Xbox-style controllers |
+| **Camera** | Def Jam Vendetta's | Def Jam Vendetta's, WWF No Mercy style or Wrestle Kingdom 2 style |
+| **Graphics** | the PS2's graphics chip | Vulkan on your graphics card |
 | **Display** | TV | window, borderless or fullscreen |
 | **Saves** | memory card | memory card files on your PC |
 
@@ -84,8 +88,9 @@ about 8 GB of free space · the internet once · your own Def Jam Vendetta disc 
 > Windows may say *"Windows protected your PC"* because the program isn't code-signed yet. Click **More info**, then
 > **Run anyway**.
 
-**Updating:** Def Jam Vendetta Recompiled Settings checks for a new version when it opens and offers it on its Play page. An update is a
-small download, then the game is rebuilt in a few minutes. Your settings and saves are kept.
+**Updating:** Def Jam Vendetta Recompiled Settings checks for a new version when it opens and offers it on its Play page. It
+downloads the new version, swaps in only what changed and rebuilds the game in a few minutes. Your settings and saves are
+kept.
 
 ## Def Jam Vendetta Recompiled Settings
 
@@ -99,8 +104,8 @@ small download, then the game is rebuilt in a few minutes. Your settings and sav
 
 - **Display:** window, borderless or fullscreen, which screen, fullscreen resolution and refresh rate, VSync, and
   widescreen, 4:3 or stretched.
-- **Graphics:** graphics card or CPU, scale 1× to 16×, Sharp 2D, FSR, smooth or blocky scaling with sharpening, and
-  High Poly in every match.
+- **Graphics:** graphics card or CPU, scale 1× to 16×, Sharp 2D, FSR, smooth or blocky scaling with sharpening,
+  High Poly in every match, and the camera style.
 - **Sound:** volume and the arena reverb.
 - **Controls:** up to 4 players, each player's controller and vibration, which player the keyboard plays as, and what
   every button does.
@@ -130,6 +135,9 @@ Controls page.
 - **Running slowly?** 16× (the default) needs a fairly strong graphics card: try 8× on the Graphics page.
 - **The very first start** is slow for about a minute while the graphics card prepares its shaders.
 - **Vibration** can also be turned off in the game's own pause menu.
+- **Camera styles:** Def Jam Vendetta's own camera, WWF No Mercy style or Wrestle Kingdom 2 style
+  (the ring seen from a corner, like a diamond). With Wrestle Kingdom 2's view the D-pad and left stick are turned to
+  match it, so up still moves up the screen.
 - **Your settings** are in `files\settings.toml`. Def Jam Vendetta Recompiled Settings writes it, and you can edit it by hand.
 - **Mods** are not supported yet, but are currently being worked on.
 
@@ -173,6 +181,8 @@ The game reads `settings.toml` from its folder. A switch set before `run.bat` wi
 | `VENDETTA_UPSCALE_SPRITES=1/0` · `VENDETTA_HIGHPOLY=1/0` | Sharp 2D (`sharp_2d`) · High Poly in every match (`high_poly`) |
 | `VENDETTA_KEYBOARD=1..4/0` | the keyboard's player (`keyboard`, 0 = nobody) |
 | `VENDETTA_SPU_INTERP=linear` | the sound chip's voices interpolated linearly instead of the PS2's Gaussian |
+| `VENDETTA_CAMERA=vendetta/nomercy/wk2` | the camera style (`camera`) |
+| `VENDETTA_PRESENT=opengl` | the older OpenGL window instead of the Vulkan one |
 
 F1 shows the debug panel. In the repository: `config\` (the recompiler's inputs: the function map from Ghidra, Sony
 library routines bound to the runtime's own, missed function starts), `overrides\` (game-specific runtime code),
