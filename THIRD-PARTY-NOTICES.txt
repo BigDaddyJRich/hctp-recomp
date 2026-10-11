@@ -25,6 +25,8 @@ PS2Recomp (the PS2 static recompiler and its runtime)
 
 paraLLEl-GS (the PS2's graphics chip on the graphics card)
   (c) Arntzen Software AS - GNU LGPL version 3 or later - https://github.com/Arntzen-Software/parallel-gs
+  Our changes to it (patches\parallel-gs-local.diff: the 2-D super-sampled, a 4x scanout at 16x) are under the same
+  licence.
 
 Granite (used by paraLLEl-GS)
   Copyright (c) 2017-2026 Hans-Kristian Arntzen - MIT - https://github.com/Themaister/Granite

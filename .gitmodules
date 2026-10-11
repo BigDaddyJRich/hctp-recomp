@@ -5,3 +5,4 @@
 [submodule "third_party/parallel-gs"]
 	path = third_party/parallel-gs
 	url = https://github.com/Arntzen-Software/parallel-gs
+	ignore = dirty

@@ -153,6 +153,21 @@ def patched_ps2recomp(work):
     return folder
 
 
+def patched_parallel_gs(work):
+    """paraLLEl-GS at its pinned commit with our patch applied (the 2-D in full detail, a 4x scanout at 16x)."""
+    folder = os.path.join(work, 'parallel-gs')
+    os.makedirs(folder)
+    data = git(['archive', '--format=tar', 'HEAD'], os.path.join(REPO, 'third_party', 'parallel-gs'))
+    with tarfile.open(fileobj=io.BytesIO(data)) as tar:
+        tar.extractall(folder, filter='data')
+    subprocess.run(['git', 'apply', '--whitespace=nowarn', os.path.join(REPO, 'patches', 'parallel-gs-local.diff')],
+                   cwd=folder, check=True)
+    for added in ('sample_circuit_scaled.hpp', 'triangle_setup_upscale.hpp'):
+        if not os.path.isfile(os.path.join(folder, 'gs', 'shaders', added)):
+            raise SystemExit(f'our paraLLEl-GS patch did not apply: gs/shaders/{added} is missing')
+    return folder
+
+
 def main():
     dirty = git(['status', '--porcelain'], REPO).decode().strip()
     if dirty:
@@ -165,6 +180,7 @@ def main():
         exe = settings_exe(work)
         pyzip = python_zip()
         ps2recomp = patched_ps2recomp(work)
+        pgs_patched = patched_parallel_gs(work)
         with zipfile.ZipFile(out + '.part', 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
             z.write(exe, TOP + '/Vendetta Settings.exe')
             z.writestr(TOP + '/READ ME FIRST.txt', README.replace('\n', '\r\n'))
@@ -186,7 +202,7 @@ def main():
             counts['ours'] = n
             counts['PS2Recomp'] = add_tree(z, ps2recomp, SRC + 'PS2Recomp/')
             pgs = os.path.join(REPO, 'third_party', 'parallel-gs')
-            counts['parallel-gs'] = add_archive(z, pgs, SRC + 'third_party/parallel-gs/')
+            counts['parallel-gs'] = add_tree(z, pgs_patched, SRC + 'third_party/parallel-gs/')
             granite = os.path.join(pgs, 'Granite')
             counts['Granite'] = add_archive(z, granite, SRC + 'third_party/parallel-gs/Granite/')
             for sub in ('third_party/volk', 'third_party/khronos/vulkan-headers'):
