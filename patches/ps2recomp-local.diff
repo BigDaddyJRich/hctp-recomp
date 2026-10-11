@@ -14720,10 +14720,10 @@ index c9aa2c6..25ae0ea 100644
                  ImGui::InputScalar("Address", ImGuiDataType_U32, &m_memoryAddress, nullptr, nullptr, "%08X", ImGuiInputTextFlags_CharsHexadecimal);
 diff --git a/ps2xRuntime/src/lib/ps2_host_settings.cpp b/ps2xRuntime/src/lib/ps2_host_settings.cpp
 new file mode 100644
-index 0000000..5efd01d
+index 0000000..ff92bb7
 --- /dev/null
 +++ b/ps2xRuntime/src/lib/ps2_host_settings.cpp
-@@ -0,0 +1,461 @@
+@@ -0,0 +1,468 @@
 +#include "runtime/ps2_host_settings.h"
 +
 +#include <algorithm>
@@ -14774,6 +14774,8 @@ index 0000000..5efd01d
 +            "scale = 8                # how much sharper than the PS2: 1, 2, 4, 8 or 16\n"
 +            "filter = \"fsr\"           # scaling to the window: \"fsr\", \"smooth\" or \"blocky\"\n"
 +            "sharpening = 75          # 0-100, with \"fsr\"\n"
++            "high_poly = true         # every wrestler and arena at full detail in every match; false = as on the PS2\n"
++            "                         # (lower-detail wrestlers and arenas in 3- and 4-fighter matches)\n"
 +            "\n"
 +            "[sound]\n"
 +            "volume = 100             # 0-100\n"
@@ -15040,6 +15042,11 @@ index 0000000..5efd01d
 +                stops << 2.0 * (100 - sharpening) / 100.0;
 +                fillSwitch("VENDETTA_SHARPEN", stops.str());
 +            }
++            // true (the default, also when the line is missing): the game's High Poly switch, VENDETTA_HIGHPOLY. No
++            // settings file at all (test runs): off, as on the PS2.
++            bool highPoly = true;
++            reader.boolean("graphics.high_poly", highPoly);
++            fillSwitch("VENDETTA_HIGHPOLY", highPoly ? "1" : "0");
 +            std::string reverbText;
 +            if (reader.take("sound.reverb", reverbText))
 +            {

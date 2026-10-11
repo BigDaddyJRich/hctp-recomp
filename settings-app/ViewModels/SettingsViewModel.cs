@@ -21,7 +21,7 @@ public partial class SettingsViewModel : ObservableObject
         nameof(ModeIndex), nameof(Screen), nameof(Maximised), nameof(Resolution), nameof(Refresh), nameof(VsyncIndex),
         nameof(ShapeIndex), nameof(RendererIndex), nameof(ScaleIndex), nameof(FilterIndex), nameof(Sharpening),
         nameof(Volume), nameof(Reverb), nameof(Multitap), nameof(Vibration1), nameof(Vibration2), nameof(Vibration3),
-        nameof(Vibration4),
+        nameof(Vibration4), nameof(HighPoly),
     };
 
     private readonly GameFolder _folder;
@@ -116,6 +116,7 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private int _scaleIndex;
     [ObservableProperty] private int _filterIndex;
     [ObservableProperty] private double _sharpening;
+    [ObservableProperty] private bool _highPoly;
     // Sound
     [ObservableProperty] private double _volume;
     [ObservableProperty] private bool _reverb;
@@ -278,6 +279,7 @@ public partial class SettingsViewModel : ObservableObject
             ScaleIndex = Math.Max(0, Array.IndexOf(Scales, s.Scale));
             FilterIndex = Math.Max(0, Array.IndexOf(Filters, s.Filter));
             Sharpening = s.Sharpening;
+            HighPoly = s.HighPoly;
             Volume = s.Volume;
             Reverb = s.Reverb;
             Multitap = s.Multitap;
@@ -362,6 +364,7 @@ public partial class SettingsViewModel : ObservableObject
         Scale = Scales[Math.Clamp(ScaleIndex, 0, 4)],
         Filter = Filters[Math.Clamp(FilterIndex, 0, 2)],
         Sharpening = (int)Math.Round(Sharpening),
+        HighPoly = HighPoly,
         Volume = (int)Math.Round(Volume),
         Reverb = Reverb,
         Multitap = Multitap,

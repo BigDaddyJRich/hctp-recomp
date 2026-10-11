@@ -183,6 +183,21 @@
                         </Grid>
                     </Border>
                 </StackPanel>
+                <StackPanel>
+                    <TextBlock Classes="cap" Text="MODELS" />
+                    <Border Classes="capline" />
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Classes="label" Text="High Poly in every match" />
+                                <TextBlock Classes="hint" TextWrapping="Wrap"
+                                           Text="Full-detail wrestlers and arenas in 3- and 4-fighter matches too. Off = as on the PS2" />
+                            </StackPanel>
+                            <ToggleSwitch Grid.Column="1" OnContent="" OffContent="" VerticalAlignment="Center"
+                                          IsChecked="{Binding HighPoly}" />
+                        </Grid>
+                    </Border>
+                </StackPanel>
             </StackPanel>
         </ScrollViewer>
 

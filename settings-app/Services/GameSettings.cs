@@ -24,6 +24,7 @@ public sealed class GameSettings
     public int Scale = 8;                   // 1 2 4 8 16
     public string Filter = "fsr";           // fsr | smooth | blocky
     public int Sharpening = 75;             // 0-100
+    public bool HighPoly = true;            // High Poly wrestlers and arenas in every match
     // [sound]
     public int Volume = 100;                // 0-100
     public bool Reverb = true;
@@ -53,6 +54,8 @@ public sealed class GameSettings
         "scale = 8                # how much sharper than the PS2: 1, 2, 4, 8 or 16\n" +
         "filter = \"fsr\"           # scaling to the window: \"fsr\", \"smooth\" or \"blocky\"\n" +
         "sharpening = 75          # 0-100, with \"fsr\"\n" +
+        "high_poly = true         # every wrestler and arena at full detail in every match; false = as on the PS2\n" +
+        "                         # (lower-detail wrestlers and arenas in 3- and 4-fighter matches)\n" +
         "\n" +
         "[sound]\n" +
         "volume = 100             # 0-100\n" +
@@ -92,6 +95,7 @@ public sealed class GameSettings
                     break;
                 case "graphics.filter": s.Filter = OneOf(value, s.Filter, "fsr", "smooth", "blocky"); break;
                 case "graphics.sharpening": s.Sharpening = Int(value, s.Sharpening, 0, 100); break;
+                case "graphics.high_poly": s.HighPoly = Bool(value, s.HighPoly); break;
                 case "sound.volume": s.Volume = Int(value, s.Volume, 0, 100); break;
                 case "sound.reverb": s.Reverb = Bool(value, s.Reverb); break;
                 case "controls.multitap": s.Multitap = Bool(value, s.Multitap); break;
@@ -125,6 +129,7 @@ public sealed class GameSettings
             ("graphics", "scale", Scale.ToString(CultureInfo.InvariantCulture)),
             ("graphics", "filter", Quote(Filter)),
             ("graphics", "sharpening", Sharpening.ToString(CultureInfo.InvariantCulture)),
+            ("graphics", "high_poly", HighPoly ? "true" : "false"),
             ("sound", "volume", Volume.ToString(CultureInfo.InvariantCulture)),
             ("sound", "reverb", Reverb ? "true" : "false"),
             ("controls", "multitap", Multitap ? "true" : "false"),

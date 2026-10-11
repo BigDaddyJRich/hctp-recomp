@@ -44,7 +44,7 @@ paraLLEl-GS's own submodules it needs (a full recursive clone runs into Windows'
 The game reads `settings.toml` from its folder when it starts (written with the defaults, a comment on each line, the
 first time). **Vendetta Settings** (`build-settings.bat`, then `settings-app\bin\Release\net10.0\Vendetta Settings.exe`)
 changes it in a window — display (window / borderless / fullscreen, screen, resolution, refresh rate, VSync, picture
-shape), graphics and sound — and has a PLAY button. A switch set before `run.bat` wins over the file
+shape), graphics (with High Poly in every match) and sound — and has a PLAY button. A switch set before `run.bat` wins over the file
 (e.g. `set VENDETTA_SSAA=16`):
 
 | | |
@@ -55,6 +55,7 @@ shape), graphics and sound — and has a PLAY button. A switch set before `run.b
 | `VENDETTA_SHARPEN=0..2` | FSR's sharpening (default 0.5; 0 = the most) |
 | `VENDETTA_GPU=<number or name>` | which graphics card, e.g. `nvidia` (default: the dedicated one) |
 | `VENDETTA_ASPECT=16:9` | stretch to widescreen |
+| `VENDETTA_HIGHPOLY=1/0` | High Poly wrestlers and arenas in every match (`high_poly`, on by default in `settings.toml`); 0 = as on the PS2, the lower-detail ones in 3- and 4-fighter matches |
 
 The same settings can be changed while playing in the **Graphics** tab of the debug panel (hidden at start; F1 shows /
 hides it; `VENDETTA_DEBUG_TAB=Graphics` opens it on that tab at start). The first start on a PC is slow for a minute while the graphics
