@@ -2650,10 +2650,10 @@ index 509fd07..71243e7 100644
  
      std::string CodeGenerator::translateVU_VMTIR(const Instruction &inst)
 diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
-index 589d768..55b032d 100644
+index 589d768..b0c08b9 100644
 --- a/ps2xRuntime/CMakeLists.txt
 +++ b/ps2xRuntime/CMakeLists.txt
-@@ -383,12 +383,18 @@ add_library(ps2_runtime STATIC
+@@ -383,12 +383,19 @@ add_library(ps2_runtime STATIC
      src/lib/gs/ps2_gs_memory.cpp
      src/lib/gs/gs_frontend.cpp
      src/lib/gs/gs_cpu_backend.cpp
@@ -2663,6 +2663,7 @@ index 589d768..55b032d 100644
      src/lib/ps2_iop_host.cpp
      src/lib/ps2_memory.cpp
      src/lib/ps2_pad.cpp
++    src/lib/ps2_host_input.cpp
 +    src/lib/ps2_pad_rumble.cpp
      src/lib/ps2_rom_device.cpp
      src/lib/ps2_vfs.cpp
@@ -2672,7 +2673,7 @@ index 589d768..55b032d 100644
      src/lib/ps2_vif1_interpreter.cpp
      src/lib/vu/ps2_vu1_core.cpp
      src/lib/vu/ps2_vu1_upper.cpp
-@@ -396,6 +402,27 @@ add_library(ps2_runtime STATIC
+@@ -396,6 +403,27 @@ add_library(ps2_runtime STATIC
      src/lib/games_database.cpp
  )
  
@@ -2687,8 +2688,8 @@ index 589d768..55b032d 100644
 +    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
 +    set(PARALLEL_GS_STANDALONE ON CACHE BOOL "" FORCE)
 +    add_subdirectory("${PS2X_PARALLEL_GS_DIR_CM}" "${CMAKE_BINARY_DIR}/parallel-gs" EXCLUDE_FROM_ALL)
-+    target_sources(ps2_runtime PRIVATE src/lib/gs/gs_gpu_parallel.cpp)
-+    set_source_files_properties(src/lib/gs/gs_gpu_parallel.cpp PROPERTIES
++    target_sources(ps2_runtime PRIVATE src/lib/gs/gs_gpu_parallel.cpp src/lib/gs/gs_vulkan_present.cpp)
++    set_source_files_properties(src/lib/gs/gs_gpu_parallel.cpp src/lib/gs/gs_vulkan_present.cpp PROPERTIES
 +        COMPILE_DEFINITIONS "NOMINMAX;WIN32_LEAN_AND_MEAN;_SILENCE_CXX20_IS_POD_DEPRECATION_WARNING")
 +    target_link_libraries(ps2_runtime PRIVATE parallel-gs)
 +    target_compile_definitions(ps2_runtime PRIVATE PS2X_HAS_PARALLEL_GS=1)
@@ -2700,7 +2701,7 @@ index 589d768..55b032d 100644
  if(PS2X_ENABLE_RUNTIME_LOGS)
      target_compile_definitions(ps2_runtime PUBLIC
          PS2_RUNTIME_LOGS=1
-@@ -429,6 +456,12 @@ target_compile_definitions(ps2_runtime PRIVATE
+@@ -429,6 +457,12 @@ target_compile_definitions(ps2_runtime PRIVATE
      PS2X_HAS_FFMPEG=$<BOOL:${PS2X_ENABLE_FFMPEG}>
  )
  
@@ -2713,7 +2714,7 @@ index 589d768..55b032d 100644
  file(GLOB_RECURSE KERNEL_SRC_FILES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/Kernel/*.cpp"
  )
-@@ -462,6 +495,17 @@ else()
+@@ -462,6 +496,17 @@ else()
      )
  endif()
  
@@ -2731,7 +2732,7 @@ index 589d768..55b032d 100644
  if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
      set_target_properties(ps2EntryRunner PROPERTIES
          UNITY_BUILD ON
-@@ -507,6 +551,17 @@ target_include_directories(ps2_runtime PUBLIC
+@@ -507,6 +552,17 @@ target_include_directories(ps2_runtime PUBLIC
  )
  
  target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
@@ -2742,13 +2743,32 @@ index 589d768..55b032d 100644
 +# The window's exact fullscreen mode (resolution and refresh rate) through GLFW, which raylib builds in on desktops
 +if(NOT PS2X_IS_VITA AND NOT PS2X_IS_ANDROID AND DEFINED raylib_SOURCE_DIR
 +   AND EXISTS "${raylib_SOURCE_DIR}/src/external/glfw/include/GLFW/glfw3.h")
-+    set_property(SOURCE src/lib/ps2_runtime.cpp APPEND PROPERTY
++    set_property(SOURCE src/lib/ps2_runtime.cpp src/lib/gs/gs_vulkan_present.cpp src/lib/ps2_host_input.cpp APPEND PROPERTY
 +        INCLUDE_DIRECTORIES "${raylib_SOURCE_DIR}/src/external/glfw/include")
-+    set_property(SOURCE src/lib/ps2_runtime.cpp APPEND PROPERTY COMPILE_DEFINITIONS PS2X_HAS_GLFW=1)
++    set_property(SOURCE src/lib/ps2_runtime.cpp src/lib/ps2_host_input.cpp APPEND PROPERTY COMPILE_DEFINITIONS PS2X_HAS_GLFW=1)
 +endif()
  target_link_libraries(ps2EntryRunner
      PRIVATE
      ps2_runtime
+@@ -518,6 +574,18 @@ if(PS2X_ENABLE_DEBUG_UI AND NOT PS2X_IS_VITA AND NOT PS2X_IS_ANDROID)
+     )
+     target_link_libraries(ps2EntryRunner PRIVATE rlImGui imgui)
+     target_compile_definitions(ps2EntryRunner PRIVATE PS2X_ENABLE_DEBUG_UI=1)
++    # on the Vulkan window (VENDETTA_PRESENT=vulkan): Dear ImGui's GLFW back end for the panel's input, and the
++    # presenter (in the runtime) draws its frame
++    if(DEFINED raylib_SOURCE_DIR AND EXISTS "${raylib_SOURCE_DIR}/src/external/glfw/include/GLFW/glfw3.h")
++        target_sources(ps2EntryRunner PRIVATE "${PS2X_IMGUI_SOURCE_DIR}/backends/imgui_impl_glfw.cpp")
++        set_property(SOURCE src/lib/ps2_debug_panel.cpp "${PS2X_IMGUI_SOURCE_DIR}/backends/imgui_impl_glfw.cpp" APPEND PROPERTY
++            INCLUDE_DIRECTORIES "${raylib_SOURCE_DIR}/src/external/glfw/include" "${PS2X_IMGUI_SOURCE_DIR}/backends")
++        set_property(SOURCE src/lib/ps2_debug_panel.cpp APPEND PROPERTY COMPILE_DEFINITIONS PS2X_HAS_GLFW=1)
++    endif()
++    if(TARGET parallel-gs)
++        target_link_libraries(ps2_runtime PRIVATE imgui)
++        set_property(SOURCE src/lib/gs/gs_vulkan_present.cpp APPEND PROPERTY COMPILE_DEFINITIONS PS2X_PRESENT_UI=1)
++    endif()
+ endif()
+ 
+ ps2x_stage_ffmpeg_runtime_dlls(ps2EntryRunner)
 diff --git a/ps2xRuntime/cmake/ReleaseMode.cmake b/ps2xRuntime/cmake/ReleaseMode.cmake
 index 92ef0d5..163ceb0 100644
 --- a/ps2xRuntime/cmake/ReleaseMode.cmake
@@ -3447,10 +3467,10 @@ index 4c3f641..fac06ff 100644
  #endif
 diff --git a/ps2xRuntime/include/runtime/gs/gs_gpu.h b/ps2xRuntime/include/runtime/gs/gs_gpu.h
 new file mode 100644
-index 0000000..c812ebf
+index 0000000..e9f8308
 --- /dev/null
 +++ b/ps2xRuntime/include/runtime/gs/gs_gpu.h
-@@ -0,0 +1,166 @@
+@@ -0,0 +1,182 @@
 +#pragma once
 +
 +// The GS drawn on the graphics card (paraLLEl-GS, Vulkan compute), next to the CPU renderer.
@@ -3529,6 +3549,16 @@ index 0000000..c812ebf
 +    uint32_t modeHeight = 0;
 +    bool highResolution = false;
 +    std::vector<uint8_t> rgba;
++    // Shown straight from the graphics card (VENDETTA_PRESENT=vulkan): the picture is in shared image sharedImage
++    // (R8G8B8A8, width x height) of the current set (Windows handles sharedHandles, made again when sharedGeneration
++    // changes), finished once the shared timeline semaphore (sharedTimeline) reaches seq; rgba stays empty. The
++    // device's UUID (sharedDeviceUuid): the window's device must be on the same graphics card.
++    bool shared = false;
++    int sharedImage = -1;
++    uint64_t sharedGeneration = 0;
++    void *sharedHandles[4] = {};
++    void *sharedTimeline = nullptr;
++    uint8_t sharedDeviceUuid[16] = {};
 +};
 +
 +// What the graphics card renderer is doing (the debug panel's Graphics tab).
@@ -3567,6 +3597,10 @@ index 0000000..c812ebf
 +        return &frame;
 +    }
 +
++    // The shared image the reader is drawing from (-1: none): the writer never draws into it. Set by the reader
++    // before it uses a taken frame's image, cleared once its graphics card work on it is done.
++    std::atomic<int> sharedReading{-1};
++
 +private:
 +    static constexpr uint32_t kFresh = 4u;
 +    static constexpr uint32_t kIndexMask = 3u;
@@ -3603,6 +3637,8 @@ index 0000000..c812ebf
 +    virtual const GSGpuFrame *takeFrame(uint64_t &lastSeq) = 0;
 +    // The main thread: the size the picture is shown at (FSR draws at exactly that size).
 +    virtual void setOutputSize(uint32_t width, uint32_t height) = 0;
++    // The main thread, with shared pictures: the shared image it is drawing from (-1 when done with it).
++    virtual void setSharedReading(int image) { (void)image; }
 +
 +    // Any thread: live settings, taken at the next presentation.
 +    virtual void setSuperSampling(uint32_t rate) = 0; // 1, 2, 4, 8 or 16
@@ -10549,7 +10585,7 @@ index f0ad507..8fa3249 100644
      result.displayFbp = displayFrame.fbp;
      result.sourceFbp = selected.fbp;
 diff --git a/ps2xRuntime/src/lib/gs/gs_frontend.cpp b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
-index 5658928..78cfcf4 100644
+index 5658928..79b729d 100644
 --- a/ps2xRuntime/src/lib/gs/gs_frontend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
 @@ -1,8 +1,17 @@
@@ -10938,10 +10974,10 @@ index 5658928..78cfcf4 100644
 +            return;
 +        }
 +        if (s_hudLog.phase != HudLog::Capturing)
-             return;
++            return;
 +        const GSContext &ctx = batch.state.context;
 +        if (!s_hudLog.all && (ctx.test & 0x10000u) != 0u && batch.state.prim.type != GS_PRIM_SPRITE)
-+            return;
+             return;
 +        const float ox = static_cast<float>(ctx.xyoffset.ofx) / 16.0f, oy = static_cast<float>(ctx.xyoffset.ofy) / 16.0f;
 +        float minX = 1e9f, minY = 1e9f, maxX = -1e9f, maxY = -1e9f;
 +        for (uint32_t i = 0; i < batch.vertexCount; ++i)
@@ -11311,7 +11347,12 @@ index 5658928..78cfcf4 100644
 +    while (tag.loopsLeft != 0u)
 +    {
 +        if (tag.flg == GIF_FMT_PACKED)
-+        {
+         {
+-            uint32_t imageBytes = nloop * 16;
+-            if (offset + imageBytes > sizeBytes)
+-                imageBytes = sizeBytes - offset;
+-            processImageData(data + offset, imageBytes);
+-            offset += imageBytes;
 +            if (offset + 16u > sizeBytes)
 +                return offset;
 +            const uint64_t lo = loadLE64(data + offset);
@@ -11320,14 +11361,9 @@ index 5658928..78cfcf4 100644
 +            offset += 16u;
 +            writeRegisterPacked(tag.regs[tag.regIndex], lo, hi);
 +            m_regSource = nullptr;
-+        }
+         }
 +        else // REGLIST
-         {
--            uint32_t imageBytes = nloop * 16;
--            if (offset + imageBytes > sizeBytes)
--                imageBytes = sizeBytes - offset;
--            processImageData(data + offset, imageBytes);
--            offset += imageBytes;
++        {
 +            if (offset + 8u > sizeBytes)
 +                return offset;
 +            m_regSource = data + offset;
@@ -11340,8 +11376,8 @@ index 5658928..78cfcf4 100644
 +        {
 +            tag.regIndex = 0;
 +            --tag.loopsLeft;
-         }
-     }
++        }
++    }
 +    if (tag.flg == GIF_FMT_REGLIST && (tag.regListWords & 1u))
 +    {
 +        if (offset + 8u > sizeBytes)
@@ -11352,7 +11388,7 @@ index 5658928..78cfcf4 100644
 +            return offset;
 +        }
 +        offset += 8u;
-+    }
+     }
 +    tag.active = false;
 +    return offset;
  }
@@ -11565,7 +11601,7 @@ index 5658928..78cfcf4 100644
          m_vtxCount = 2;
          break;
      default:
-@@ -1607,28 +2206,277 @@ void GS::vertexKick(bool drawing)
+@@ -1607,28 +2206,306 @@ void GS::vertexKick(bool drawing)
      }
  }
  
@@ -11654,6 +11690,24 @@ index 5658928..78cfcf4 100644
 +    };
 +    std::vector<Element> elements;
 +    constexpr float kGapX = 8.0f, kGapY = 4.0f, kInside = 2.0f;
++    // which third of the screen a box's middle is in (its anchor below)
++    const auto third = [](float minX, float maxX, float width)
++    {
++        const float centre = (minX + maxX) * 0.5f;
++        return centre < width / 3.0f ? 0 : centre > width * 2.0f / 3.0f ? 2 : 1;
++    };
++    // a box at the screen's left or right edge (the bars and portraits): it keeps its corner - it never joins a group
++    // of another third, even one drawn over it (a pop-up growing from the middle across the bars, like ROPE BREAK or
++    // the match's opening graphic); -1 = not at an edge
++    const auto edgeSide = [&](float minX, float maxX, float width)
++    {
++        const int t = third(minX, maxX, width);
++        if (t == 0 && minX <= width * 0.055f)
++            return 0;
++        if (t == 2 && maxX >= width * 0.945f)
++            return 2;
++        return -1;
++    };
 +    for (size_t i = 0; i < m_overlay.size(); ++i)
 +    {
 +        const OverlayPrimitive &p = m_overlay[i];
@@ -11665,7 +11719,9 @@ index 5658928..78cfcf4 100644
 +            const bool touches =
 +                p.minX <= e.maxX + kGapX && p.maxX >= e.minX - kGapX && p.minY <= e.maxY + kGapY && p.maxY >= e.minY - kGapY;
 +            const bool notMuchWider = (p.maxX - p.minX) <= 2.0f * (e.maxX - e.minX) + 16.0f;
-+            if (touches && notMuchWider)
++            const int edge = edgeSide(p.minX, p.maxX, p.width);
++            const bool keepsCorner = edge >= 0 && third(e.minX, e.maxX, e.width) != edge;
++            if (touches && notMuchWider && !keepsCorner)
 +            {
 +                e.minX = std::min(e.minX, p.minX);
 +                e.maxX = std::max(e.maxX, p.maxX);
@@ -11684,11 +11740,14 @@ index 5658928..78cfcf4 100644
 +        { return y.minX >= x.minX - kInside && y.maxX <= x.maxX + kInside && y.minY >= x.minY - kInside && y.maxY <= x.maxY + kInside; };
 +        const auto touches = [&](const Element &x)
 +        { return y.minX <= x.maxX + kGapX && y.maxX >= x.minX - kGapX && y.minY <= x.maxY + kGapY && y.maxY >= x.minY - kGapY; };
++        const auto thirdOf = [&](const Element &x) { return third(x.minX, x.maxX, x.width); };
++        const int edge = edgeSide(y.minX, y.maxX, y.width);
 +        size_t into = b;
-+        // first a neighbour it touches without lying inside it (a score next to its player's bar, under a menu panel),
-+        // else the nearest earlier element it lies inside (a menu's text on its panel)
++        // first a neighbour it touches without lying inside it, in the same third (a score next to its player's bar,
++        // under a menu panel - but not the corner bars with a pop-up that grows from the middle up to them, like
++        // ROPE BREAK), else the nearest earlier element it lies inside (a menu's text on its panel)
 +        for (size_t a = b; a-- > 0;)
-+            if (touches(elements[a]) && !inside(elements[a]) &&
++            if (touches(elements[a]) && !inside(elements[a]) && thirdOf(elements[a]) == thirdOf(y) &&
 +                y.maxX - y.minX <= 2.0f * (elements[a].maxX - elements[a].minX) + 16.0f)
 +            {
 +                into = a;
@@ -11696,7 +11755,7 @@ index 5658928..78cfcf4 100644
 +            }
 +        if (into == b)
 +            for (size_t a = b; a-- > 0;)
-+                if (inside(elements[a]))
++                if (inside(elements[a]) && (edge < 0 || thirdOf(elements[a]) == edge))
 +                {
 +                    into = a;
 +                    break;
@@ -11725,7 +11784,10 @@ index 5658928..78cfcf4 100644
 +    std::unordered_set<uint64_t> patched;
 +    uint32_t anchors[3] = {};
 +    uint32_t unplaced = 0;
-+    static const bool log = std::getenv("VENDETTA_WIDEHUDLOG") != nullptr;
++    // VENDETTA_WIDEHUDLOG=1: once a second; =2: every frame whose elements differ from the frame before
++    static const char *logSwitch = std::getenv("VENDETTA_WIDEHUDLOG");
++    static const bool log = logSwitch != nullptr;
++    static const bool logChanges = logSwitch && std::string(logSwitch) == "2";
 +    std::string logText;
 +    for (const Element &e : elements)
 +    {
@@ -11775,8 +11837,11 @@ index 5658928..78cfcf4 100644
 +    if (log)
 +    {
 +        static auto lastLog = std::chrono::steady_clock::time_point{};
++        static std::string lastText;
 +        const auto now = std::chrono::steady_clock::now();
-+        if (now - lastLog > std::chrono::seconds(1))
++        const bool changed = logChanges && logText != lastText;
++        lastText = logText;
++        if (changed || now - lastLog > std::chrono::seconds(1))
 +        {
 +            lastLog = now;
 +            std::fprintf(stderr,
@@ -11845,7 +11910,7 @@ index 5658928..78cfcf4 100644
      return m_backend ? m_backend->ConsumeLocalToHostBytes(dst, maxBytes) : 0u;
  }
  
-@@ -1637,7 +2485,9 @@ void GS::setRasterBackend(std::unique_ptr<GSRasterBackend> backend)
+@@ -1637,7 +2514,9 @@ void GS::setRasterBackend(std::unique_ptr<GSRasterBackend> backend)
      if (!backend)
          backend = std::make_unique<GSCpuBackend>();
  
@@ -11855,7 +11920,7 @@ index 5658928..78cfcf4 100644
      std::lock_guard<std::mutex> backendLock(m_backendLifetimeMutex);
      if (m_backend)
      {
-@@ -1657,21 +2507,30 @@ void GS::setRasterBackend(std::unique_ptr<GSRasterBackend> backend)
+@@ -1657,21 +2536,30 @@ void GS::setRasterBackend(std::unique_ptr<GSRasterBackend> backend)
          }
      }
  
@@ -12023,10 +12088,10 @@ index 0000000..6085f2a
 +}
 diff --git a/ps2xRuntime/src/lib/gs/gs_gpu_parallel.cpp b/ps2xRuntime/src/lib/gs/gs_gpu_parallel.cpp
 new file mode 100644
-index 0000000..0568f8f
+index 0000000..7bb06d3
 --- /dev/null
 +++ b/ps2xRuntime/src/lib/gs/gs_gpu_parallel.cpp
-@@ -0,0 +1,1140 @@
+@@ -0,0 +1,1310 @@
 +// The GS on the graphics card: paraLLEl-GS (Arntzen Software AS, LGPL-3.0+) on Granite's Vulkan backend.
 +//
 +// The GS front end hands over the raw GS input in its own order (GIF data per path, register writes, presentations);
@@ -12044,6 +12109,8 @@ index 0000000..0568f8f
 +#include "logging.hpp"
 +#include "muglm/muglm_impl.hpp"
 +#include "shaders/slangmosh.hpp"
++#include "gs_vulkan_shared.h"
++#include "gs_vulkan_present.h"
 +
 +#include <windows.h>
 +
@@ -12063,6 +12130,29 @@ index 0000000..0568f8f
 +#include <mutex>
 +#include <thread>
 +#include <vector>
++
++namespace
++{
++    std::atomic<bool> g_sharedStopped{false};
++}
++
++void stopSharedPictures() { g_sharedStopped.store(true, std::memory_order_release); }
++
++bool vulkanPresentWanted()
++{
++    static const bool wanted = []
++    {
++        const char *present = std::getenv("VENDETTA_PRESENT");
++        const char *renderer = std::getenv("VENDETTA_GS");
++        const std::string mode = renderer ? renderer : "";
++        if (mode == "cpu")
++            return false;
++        if (present && *present)
++            return std::string(present) == "vulkan";
++        return mode.empty() || mode == "gpu";
++    }();
++    return wanted;
++}
 +
 +namespace
 +{
@@ -12314,6 +12404,8 @@ index 0000000..0568f8f
 +        {
 +            m_outputSize.store((uint64_t{width} << 32u) | height, std::memory_order_relaxed);
 +        }
++
++        void setSharedReading(int image) override { m_frames.sharedReading.store(image, std::memory_order_release); }
 +
 +        void setSuperSampling(uint32_t rate) override
 +        {
@@ -12590,6 +12682,21 @@ index 0000000..0568f8f
 +                reported = true;
 +                m_ready.set_value(std::string());
 +
++                {
++                    // shown through Vulkan (vulkanPresentWanted): pictures shared with the window's own Vulkan
++                    // device (no read back)
++                    m_sharedPresent = vulkanPresentWanted() && context.get_enabled_device_features().supports_external;
++                    if (m_sharedPresent)
++                    {
++                        VkPhysicalDeviceIDProperties ids{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
++                        VkPhysicalDeviceProperties2 props2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
++                        props2.pNext = &ids;
++                        vkGetPhysicalDeviceProperties2(context.get_gpu(), &props2);
++                        std::memcpy(m_deviceUuid, ids.deviceUUID, sizeof(m_deviceUuid));
++                        std::cerr << "[gpu-gs] pictures shared with the window's device" << std::endl;
++                    }
++                }
++
 +                m_device = &device;
 +                m_gs = &gs;
 +                consume();
@@ -12602,6 +12709,14 @@ index 0000000..0568f8f
 +                m_readback.reset();
 +                m_fsrUpscaled.reset();
 +                m_fsrSharpened.reset();
++                for (auto &image : m_sharedImages)
++                    image.reset();
++                m_sharedTimeline.reset();
++                closeSharedHandles(m_sharedHandles);
++                closeSharedHandles(m_sharedOldHandles);
++                if (m_sharedTimelineHandle)
++                    CloseHandle(m_sharedTimelineHandle);
++                m_sharedTimelineHandle = nullptr;
 +                // The GS interface first: it submits the command buffers it holds (waiting for the device while it
 +                // holds one never ends), then the device.
 +                gsHolder.reset();
@@ -12962,6 +13077,19 @@ index 0000000..0568f8f
 +            }
 +            m_lastFrameWidth = width;
 +            m_lastFrameHeight = height;
++            if (m_sharedPresent && g_sharedStopped.load(std::memory_order_acquire))
++                m_sharedPresent = false; // the window fell back to raylib's: read back as before
++            if (m_sharedPresent && shareFrame(frame, cmd, *source, width, height))
++            {
++                frame.internalWidth = scanout.internal_width;
++                frame.internalHeight = scanout.internal_height;
++                frame.modeWidth = scanout.mode_width;
++                frame.modeHeight = scanout.mode_height;
++                frame.highResolution = scanout.high_resolution_scanout;
++                m_frames.publish();
++                return;
++            }
++            frame.shared = false;
 +            const VkDeviceSize bytes = VkDeviceSize{width} * height * 4u;
 +            if (!m_readback || m_readback->get_create_info().size < bytes)
 +            {
@@ -12996,6 +13124,103 @@ index 0000000..0568f8f
 +                dst[i] = src[i] | 0xFF000000u;
 +            m_device->unmap_host_buffer(*m_readback, Vulkan::MEMORY_ACCESS_READ_BIT, 0, bytes);
 +            m_frames.publish();
++        }
++
++        // shown through Vulkan: the picture copied into one of four images shared with the window's own Vulkan device
++        // (no read back): one the window isn't drawing from and that isn't one of the two newest pictures. It is handed
++        // over in the sampling layout, released to the "external" queue family; the shared timeline semaphore reaches the
++        // frame's number once it is there. The images are made again at a new size (a new generation of handles).
++        bool shareFrame(GSGpuFrame &frame, Vulkan::CommandBufferHandle &cmd, const Vulkan::Image &source,
++                        uint32_t width, uint32_t height)
++        {
++            if (!m_sharedTimeline)
++            {
++                m_sharedTimeline = m_device->request_semaphore_external(VK_SEMAPHORE_TYPE_TIMELINE,
++                                                                        VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT);
++                if (m_sharedTimeline)
++                    m_sharedTimelineHandle = m_sharedTimeline->export_to_handle().handle;
++                if (!m_sharedTimeline || !m_sharedTimelineHandle)
++                {
++                    std::cerr << "[gpu-gs] no shareable timeline semaphore: pictures read back as before" << std::endl;
++                    m_sharedPresent = false;
++                    return false;
++                }
++            }
++            if (!m_sharedImages[0] || m_sharedImages[0]->get_width() != width || m_sharedImages[0]->get_height() != height)
++            {
++                // the old handles stay open one generation more: the window may still be importing them
++                closeSharedHandles(m_sharedOldHandles);
++                std::copy(std::begin(m_sharedHandles), std::end(m_sharedHandles), std::begin(m_sharedOldHandles));
++                std::fill(std::begin(m_sharedHandles), std::end(m_sharedHandles), nullptr);
++                for (int i = 0; i < 4; ++i)
++                {
++                    Vulkan::ImageCreateInfo info = sharedImageInfo(width, height);
++                    m_sharedImages[i] = m_device->create_image(info);
++                    if (m_sharedImages[i])
++                        m_sharedHandles[i] = m_sharedImages[i]->export_handle().handle;
++                    if (!m_sharedImages[i] || !m_sharedHandles[i])
++                    {
++                        std::cerr << "[gpu-gs] no shareable " << width << "x" << height
++                                  << " image: pictures read back as before" << std::endl;
++                        m_sharedPresent = false;
++                        return false;
++                    }
++                }
++                ++m_sharedGeneration;
++                m_sharedNewest[0] = m_sharedNewest[1] = -1;
++            }
++            const int reading = m_frames.sharedReading.load(std::memory_order_acquire);
++            int target = 0;
++            for (int i = 0; i < 4; ++i)
++                if (i != reading && i != m_sharedNewest[0] && i != m_sharedNewest[1])
++                {
++                    target = i;
++                    break;
++                }
++            const Vulkan::Image &image = *m_sharedImages[target];
++            cmd->image_barrier(image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
++                               VK_PIPELINE_STAGE_2_NONE, 0, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
++            cmd->copy_image(image, source, {0, 0, 0}, {0, 0, 0}, {width, height, 1},
++                            {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1}, {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1});
++            VkImageMemoryBarrier2 release{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
++            release.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
++            release.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
++            release.oldLayout = VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL;
++            release.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
++            release.srcQueueFamilyIndex = m_device->get_queue_info().family_indices[Vulkan::QUEUE_INDEX_GRAPHICS];
++            release.dstQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
++            release.image = image.get_image();
++            release.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
++            VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
++            dep.imageMemoryBarrierCount = 1;
++            dep.pImageMemoryBarriers = &release;
++            cmd->barrier(dep);
++            m_device->submit(cmd);
++            auto signal = m_device->request_timeline_semaphore_as_binary(*m_sharedTimeline, frame.seq);
++            m_device->submit_empty(Vulkan::CommandBuffer::Type::Generic, nullptr, signal.get());
++
++            frame.shared = true;
++            frame.width = width;
++            frame.height = height;
++            frame.rgba.clear();
++            frame.sharedImage = target;
++            frame.sharedGeneration = m_sharedGeneration;
++            std::copy(std::begin(m_sharedHandles), std::end(m_sharedHandles), std::begin(frame.sharedHandles));
++            frame.sharedTimeline = m_sharedTimelineHandle;
++            std::memcpy(frame.sharedDeviceUuid, m_deviceUuid, sizeof(m_deviceUuid));
++            m_sharedNewest[1] = m_sharedNewest[0];
++            m_sharedNewest[0] = target;
++            return true;
++        }
++
++        static void closeSharedHandles(void *(&handles)[4])
++        {
++            for (void *&handle : handles)
++            {
++                if (handle)
++                    CloseHandle(handle);
++                handle = nullptr;
++            }
 +        }
 +
 +        void ensureTarget(Vulkan::ImageHandle &image, uint32_t width, uint32_t height)
@@ -13153,6 +13378,16 @@ index 0000000..0568f8f
 +        uint32_t m_lastFrameHeight = 0u;
 +        Vulkan::Program *m_upscaleProgram = nullptr;
 +        Vulkan::Program *m_sharpenProgram = nullptr;
++        // shown through Vulkan: the pictures shared with the window's device
++        bool m_sharedPresent = false; // the drawing thread's own; also off once g_sharedStopped
++        uint8_t m_deviceUuid[16] = {};
++        Vulkan::ImageHandle m_sharedImages[4];
++        void *m_sharedHandles[4] = {};
++        void *m_sharedOldHandles[4] = {};
++        uint64_t m_sharedGeneration = 0u;
++        int m_sharedNewest[2] = {-1, -1};
++        Vulkan::Semaphore m_sharedTimeline;
++        void *m_sharedTimelineHandle = nullptr;
 +        Vulkan::ImageHandle m_fsrUpscaled;
 +        Vulkan::ImageHandle m_fsrSharpened;
 +        mutable std::mutex m_statusMutex;
@@ -14055,6 +14290,518 @@ index 0000000..96eeb8a
 +    }
 +    return backend;
 +}
+diff --git a/ps2xRuntime/src/lib/gs/gs_vulkan_present.cpp b/ps2xRuntime/src/lib/gs/gs_vulkan_present.cpp
+new file mode 100644
+index 0000000..17c158c
+--- /dev/null
++++ b/ps2xRuntime/src/lib/gs/gs_vulkan_present.cpp
+@@ -0,0 +1,421 @@
++// The window's own Vulkan device: the drawing thread's shared pictures drawn into Granite's swapchain (see
++// gs_vulkan_present.h).
++
++#include "gs_vulkan_present.h"
++#include "gs_vulkan_shared.h"
++#include "runtime/gs/gs_gpu.h"
++
++#include "context.hpp"
++#include "device.hpp"
++#include "wsi.hpp"
++#include "gs_interface.hpp"
++#include "shaders/slangmosh.hpp"
++
++#define GLFW_INCLUDE_NONE
++#include <GLFW/glfw3.h>
++#define GLFW_EXPOSE_NATIVE_WIN32
++#include <GLFW/glfw3native.h>
++
++#include <windows.h>
++
++#if defined(PS2X_PRESENT_UI)
++#include "imgui.h"
++#endif
++
++#include <algorithm>
++#include <cstddef>
++#include <cstring>
++#include <iostream>
++#include <vector>
++
++namespace
++{
++    // Granite's window interface over a GLFW window: a Win32 surface, the window's size, its handle (for DXGI). The
++    // main loop polls the window's events itself.
++    class GlfwPlatform final : public Vulkan::WSIPlatform
++    {
++    public:
++        explicit GlfwPlatform(GLFWwindow *window) : m_window(window) {}
++
++        VkSurfaceKHR create_surface(VkInstance instance, VkPhysicalDevice) override
++        {
++            VkWin32SurfaceCreateInfoKHR info{VK_STRUCTURE_TYPE_WIN32_SURFACE_CREATE_INFO_KHR};
++            info.hinstance = GetModuleHandleW(nullptr);
++            info.hwnd = glfwGetWin32Window(m_window);
++            VkSurfaceKHR surface = VK_NULL_HANDLE;
++            if (vkCreateWin32SurfaceKHR(instance, &info, nullptr, &surface) != VK_SUCCESS)
++                return VK_NULL_HANDLE;
++            return surface;
++        }
++        std::vector<const char *> get_instance_extensions() override { return {"VK_KHR_surface", "VK_KHR_win32_surface"}; }
++        uint32_t get_surface_width() override { return size().first; }
++        uint32_t get_surface_height() override { return size().second; }
++        bool alive(Vulkan::WSI &) override { return true; }
++        void poll_input() override {}
++        void poll_input_async(Granite::InputTrackerHandler *) override {}
++        uintptr_t get_native_window() override { return reinterpret_cast<uintptr_t>(glfwGetWin32Window(m_window)); }
++
++        // a new size: the swapchain is made again at the next frame
++        void checkResize()
++        {
++            const auto [width, height] = size();
++            if (width != current_swapchain_width || height != current_swapchain_height)
++                resize = true;
++        }
++
++    private:
++        std::pair<uint32_t, uint32_t> size() const
++        {
++            int width = 0, height = 0;
++            glfwGetFramebufferSize(m_window, &width, &height);
++            return {static_cast<uint32_t>(std::max(width, 1)), static_cast<uint32_t>(std::max(height, 1))};
++        }
++
++        GLFWwindow *m_window;
++    };
++
++    // The graphics card with this name, and its UUID (each shared picture names its card's: they must match)
++    VkPhysicalDevice findByName(VkInstance instance, const std::string &name, uint8_t (&uuid)[16])
++    {
++        uint32_t count = 0;
++        vkEnumeratePhysicalDevices(instance, &count, nullptr);
++        std::vector<VkPhysicalDevice> gpus(count);
++        vkEnumeratePhysicalDevices(instance, &count, gpus.data());
++        for (VkPhysicalDevice gpu : gpus)
++        {
++            VkPhysicalDeviceIDProperties ids{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ID_PROPERTIES};
++            VkPhysicalDeviceProperties2 props{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
++            props.pNext = &ids;
++            vkGetPhysicalDeviceProperties2(gpu, &props);
++            if (name == props.properties.deviceName)
++            {
++                std::memcpy(uuid, ids.deviceUUID, sizeof(uuid));
++                return gpu;
++            }
++        }
++        return VK_NULL_HANDLE;
++    }
++
++    // Our own handle to import (Granite closes what it imports; the drawing thread keeps its own).
++    void *duplicate(void *handle)
++    {
++        HANDLE copy = nullptr;
++        if (!handle || !DuplicateHandle(GetCurrentProcess(), handle, GetCurrentProcess(), &copy, 0, FALSE, DUPLICATE_SAME_ACCESS))
++            return nullptr;
++        return copy;
++    }
++}
++
++namespace
++{
++    ImDrawData *g_ui = nullptr;
++}
++
++void setPresentUi(ImDrawData *data) { g_ui = data; }
++
++void paintWindowBlack(GLFWwindow *window)
++{
++    HWND hwnd = glfwGetWin32Window(window);
++    if (!hwnd)
++        return;
++    RECT rect{};
++    GetClientRect(hwnd, &rect);
++    if (HDC dc = GetDC(hwnd))
++    {
++        FillRect(dc, &rect, static_cast<HBRUSH>(GetStockObject(BLACK_BRUSH)));
++        ReleaseDC(hwnd, dc);
++    }
++    GdiFlush();
++}
++
++struct VulkanPresenter::Impl
++{
++    std::unique_ptr<GlfwPlatform> platform;
++    Vulkan::WSI wsi;
++    Vulkan::Program *program = nullptr;
++    Vulkan::ImageHandle images[4];
++    uint64_t generation = 0;
++    Vulkan::Semaphore timeline;
++    bool ready = false;
++    uint8_t uuid[16] = {};
++    bool uuidReported = false;
++    // the debug panel: paraLLEl-GS's UI shaders (textured, no sRGB conversion), Dear ImGui's textures by their id - 1
++    Vulkan::Program *uiProgram = nullptr;
++    std::vector<Vulkan::ImageHandle> uiTextures;
++
++    void updateUiTextures();
++    void drawUi(Vulkan::CommandBuffer &cmd, uint32_t width, uint32_t height);
++};
++
++VulkanPresenter::VulkanPresenter() : m_impl(std::make_unique<Impl>()) {}
++
++VulkanPresenter::~VulkanPresenter() { shutdown(); }
++
++bool VulkanPresenter::init(GLFWwindow *window, const std::string &deviceName, bool vsync, std::string &whyNot)
++{
++    Impl &m = *m_impl;
++    m.platform = std::make_unique<GlfwPlatform>(window);
++    if (!Vulkan::Context::init_loader(nullptr))
++        return whyNot = "no Vulkan loader", false;
++    auto context = Util::make_handle<Vulkan::Context>();
++    context->set_num_thread_indices(1);
++    const auto extensions = m.platform->get_instance_extensions();
++    if (!context->init_instance(extensions.data(), static_cast<uint32_t>(extensions.size()), 0))
++        return whyNot = "no Vulkan instance with a Win32 surface", false;
++    const VkPhysicalDevice gpu = findByName(context->get_instance(), deviceName, m.uuid);
++    if (gpu == VK_NULL_HANDLE)
++        return whyNot = "the drawing thread's graphics card (" + deviceName + ") isn't listed", false;
++    const char *deviceExtensions[] = {"VK_KHR_swapchain"};
++    if (!context->init_device(gpu, VK_NULL_HANDLE, deviceExtensions, 1, 0))
++        return whyNot = "no Vulkan device for the window", false;
++    if (!context->get_enabled_device_features().supports_external)
++        return whyNot = "the window's device can't import shared images", false;
++
++    m.wsi.set_platform(m.platform.get());
++    m.wsi.set_backbuffer_format(Vulkan::BackbufferFormat::UNORM);
++    m.wsi.set_present_mode(vsync ? Vulkan::PresentMode::SyncToVBlank : Vulkan::PresentMode::UnlockedMaybeTear);
++    if (!m.wsi.init_from_existing_context(context) || !m.wsi.init_device())
++        return whyNot = "Granite's WSI didn't start", false;
++    if (!m.wsi.init_surface_swapchain())
++        return whyNot = "no swapchain for the window", false;
++
++    Vulkan::Device &device = m.wsi.get_device();
++    Vulkan::ResourceLayout layout;
++    ParallelGS::Shaders<> suite(device, layout, 0);
++    m.program = device.request_program(suite.quad, suite.blit_circuit);
++    if (!m.program)
++        return whyNot = "no program for the picture", false;
++    m.uiProgram = device.request_program(suite.ui_vert, suite.ui_frag[1][0]);
++    m.ready = true;
++    std::cerr << "[present] Vulkan on \"" << context->get_gpu_props().deviceName << "\"" << std::endl;
++    return true;
++}
++
++bool VulkanPresenter::ready() const { return m_impl && m_impl->ready; }
++
++void VulkanPresenter::present(const GSGpuFrame &frame, GSGpuRenderer &renderer, int dstX, int dstY, int dstWidth,
++                              int dstHeight, bool nearest)
++{
++    Impl &m = *m_impl;
++    if (!m.ready || !frame.shared || frame.sharedImage < 0 || frame.sharedImage > 3)
++        return;
++    if (std::memcmp(frame.sharedDeviceUuid, m.uuid, sizeof(m.uuid)) != 0)
++    {
++        if (!m.uuidReported)
++            std::cerr << "[present] the pictures come from another graphics card than the window's: not shown" << std::endl;
++        m.uuidReported = true;
++        return;
++    }
++    Vulkan::Device &device = m.wsi.get_device();
++
++    // the shared images (again at a new size) and the timeline (once)
++    if (frame.sharedGeneration != m.generation)
++    {
++        for (int i = 0; i < 4; ++i)
++        {
++            Vulkan::ImageCreateInfo info = sharedImageInfo(frame.width, frame.height, duplicate(frame.sharedHandles[i]));
++            m.images[i] = info.external.handle ? device.create_image(info) : Vulkan::ImageHandle{};
++            if (!m.images[i])
++            {
++                std::cerr << "[present] couldn't import shared picture " << i << std::endl;
++                m.generation = 0;
++                return;
++            }
++        }
++        m.generation = frame.sharedGeneration;
++    }
++    if (!m.timeline)
++    {
++        m.timeline = device.request_semaphore_external(VK_SEMAPHORE_TYPE_TIMELINE,
++                                                       VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT);
++        Vulkan::ExternalHandle handle;
++        handle.handle = duplicate(frame.sharedTimeline);
++        handle.semaphore_handle_type = VK_EXTERNAL_SEMAPHORE_HANDLE_TYPE_OPAQUE_WIN32_BIT;
++        if (!m.timeline || !handle.handle || !m.timeline->import_from_handle(handle))
++        {
++            std::cerr << "[present] couldn't import the shared timeline" << std::endl;
++            m.timeline.reset();
++            return;
++        }
++    }
++
++    renderer.setSharedReading(frame.sharedImage);
++    m.platform->checkResize();
++    if (!m.wsi.begin_frame())
++    {
++        renderer.setSharedReading(-1);
++        return;
++    }
++    // drawn once the drawing thread's copy is there
++    device.add_wait_semaphore(Vulkan::CommandBuffer::Type::Generic,
++                              device.request_timeline_semaphore_as_binary(*m.timeline, frame.seq),
++                              VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, true);
++    Vulkan::CommandBufferHandle cmd = device.request_command_buffer();
++    const Vulkan::Image &image = *m.images[frame.sharedImage];
++    // taken over from the other device (it released it to the "external" queue family, in the sampling layout)
++    VkImageMemoryBarrier2 acquire{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
++    acquire.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
++    acquire.dstAccessMask = VK_ACCESS_2_SHADER_SAMPLED_READ_BIT;
++    acquire.oldLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
++    acquire.newLayout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
++    acquire.srcQueueFamilyIndex = VK_QUEUE_FAMILY_EXTERNAL;
++    acquire.dstQueueFamilyIndex = device.get_queue_info().family_indices[Vulkan::QUEUE_INDEX_GRAPHICS];
++    acquire.image = image.get_image();
++    acquire.subresourceRange = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 1, 0, 1};
++    VkDependencyInfo dep{VK_STRUCTURE_TYPE_DEPENDENCY_INFO};
++    dep.imageMemoryBarrierCount = 1;
++    dep.pImageMemoryBarriers = &acquire;
++    cmd->barrier(dep);
++
++    m.updateUiTextures();
++    Vulkan::RenderPassInfo pass = device.get_swapchain_render_pass(Vulkan::SwapchainRenderPass::ColorOnly);
++    pass.clear_attachments = 1u;
++    pass.store_attachments = 1u;
++    pass.clear_color[0] = {};
++    pass.clear_color[0].float32[3] = 1.0f;
++    cmd->begin_render_pass(pass);
++    if (dstWidth > 0 && dstHeight > 0)
++    {
++        cmd->set_program(m.program);
++        cmd->set_opaque_state();
++        cmd->set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
++        cmd->set_texture(0, 0, image.get_view(), nearest ? Vulkan::StockSampler::NearestClamp : Vulkan::StockSampler::LinearClamp);
++        cmd->set_viewport({static_cast<float>(dstX), static_cast<float>(dstY), static_cast<float>(dstWidth),
++                           static_cast<float>(dstHeight), 0.0f, 1.0f});
++        const int x0 = std::max(dstX, 0), y0 = std::max(dstY, 0);
++        cmd->set_scissor({{x0, y0}, {static_cast<uint32_t>(dstX + dstWidth - x0), static_cast<uint32_t>(dstY + dstHeight - y0)}});
++        cmd->draw(3);
++    }
++    m.drawUi(*cmd, device.get_swapchain_view().get_image().get_width(), device.get_swapchain_view().get_image().get_height());
++    cmd->end_render_pass();
++    Vulkan::Fence fence;
++    device.submit(cmd, &fence);
++    m.wsi.end_frame();
++    // the drawing thread may use the image again once this frame's drawing is done
++    fence->wait();
++    renderer.setSharedReading(-1);
++}
++
++// Dear ImGui's textures (its font atlas and any others), created, updated (made again whole) and destroyed as it asks.
++void VulkanPresenter::Impl::updateUiTextures()
++{
++#if defined(PS2X_PRESENT_UI)
++    if (!g_ui || !g_ui->Textures)
++        return;
++    Vulkan::Device &device = wsi.get_device();
++    for (ImTextureData *tex : *g_ui->Textures)
++    {
++        if (tex->Status == ImTextureStatus_OK)
++            continue;
++        if (tex->Status == ImTextureStatus_WantDestroy && tex->UnusedFrames > 0)
++        {
++            const size_t slot = static_cast<size_t>(tex->GetTexID());
++            if (slot > 0 && slot <= uiTextures.size())
++                uiTextures[slot - 1].reset();
++            tex->SetTexID(ImTextureID_Invalid);
++            tex->SetStatus(ImTextureStatus_Destroyed);
++            continue;
++        }
++        if (tex->Status != ImTextureStatus_WantCreate && tex->Status != ImTextureStatus_WantUpdates)
++            continue;
++        // RGBA, or white with the atlas's alpha
++        std::vector<uint8_t> rgba;
++        const uint8_t *pixels = static_cast<const uint8_t *>(tex->GetPixels());
++        if (tex->Format == ImTextureFormat_Alpha8)
++        {
++            rgba.resize(static_cast<size_t>(tex->Width) * tex->Height * 4u);
++            for (size_t i = 0; i < static_cast<size_t>(tex->Width) * tex->Height; ++i)
++            {
++                rgba[i * 4u + 0u] = rgba[i * 4u + 1u] = rgba[i * 4u + 2u] = 255u;
++                rgba[i * 4u + 3u] = pixels[i];
++            }
++            pixels = rgba.data();
++        }
++        Vulkan::ImageCreateInfo info = Vulkan::ImageCreateInfo::immutable_2d_image(
++            static_cast<unsigned>(tex->Width), static_cast<unsigned>(tex->Height), VK_FORMAT_R8G8B8A8_UNORM);
++        Vulkan::ImageInitialData initial{pixels, 0, 0};
++        Vulkan::ImageHandle image = device.create_image(info, &initial);
++        size_t slot = static_cast<size_t>(tex->GetTexID());
++        if (slot == 0 || slot > uiTextures.size())
++        {
++            uiTextures.push_back(image);
++            slot = uiTextures.size();
++        }
++        else
++            uiTextures[slot - 1] = image;
++        tex->SetTexID(static_cast<ImTextureID>(slot));
++        tex->SetStatus(ImTextureStatus_OK);
++    }
++#endif
++}
++
++// The panel over the picture: each list's vertices and indices, each command clipped to its rectangle (in pixels),
++// alpha blended.
++void VulkanPresenter::Impl::drawUi(Vulkan::CommandBuffer &cmd, uint32_t width, uint32_t height)
++{
++#if defined(PS2X_PRESENT_UI)
++    ImDrawData *data = g_ui;
++    g_ui = nullptr;
++    if (!data || !data->Valid || !uiProgram || data->TotalVtxCount == 0 || data->DisplaySize.x <= 0.0f || data->DisplaySize.y <= 0.0f)
++        return;
++    cmd.set_program(uiProgram);
++    cmd.set_opaque_state();
++    cmd.set_cull_mode(VK_CULL_MODE_NONE);
++    cmd.set_blend_enable(true);
++    cmd.set_blend_factors(VK_BLEND_FACTOR_SRC_ALPHA, VK_BLEND_FACTOR_ONE, VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA,
++                          VK_BLEND_FACTOR_ONE_MINUS_SRC_ALPHA);
++    cmd.set_blend_op(VK_BLEND_OP_ADD);
++    cmd.set_primitive_topology(VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST);
++    cmd.set_viewport({0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height), 0.0f, 1.0f});
++    const float invResolution[2] = {1.0f / data->DisplaySize.x, 1.0f / data->DisplaySize.y};
++    cmd.push_constants(invResolution, 0, sizeof(invResolution));
++    const ImVec2 origin = data->DisplayPos;
++    const ImVec2 scale = data->FramebufferScale;
++    for (const ImDrawList *list : data->CmdLists)
++    {
++        void *vertices = cmd.allocate_vertex_data(0, list->VtxBuffer.Size * sizeof(ImDrawVert), sizeof(ImDrawVert));
++        std::memcpy(vertices, list->VtxBuffer.Data, list->VtxBuffer.Size * sizeof(ImDrawVert));
++        void *indices = cmd.allocate_index_data(list->IdxBuffer.Size * sizeof(ImDrawIdx),
++                                                sizeof(ImDrawIdx) == 2 ? VK_INDEX_TYPE_UINT16 : VK_INDEX_TYPE_UINT32);
++        std::memcpy(indices, list->IdxBuffer.Data, list->IdxBuffer.Size * sizeof(ImDrawIdx));
++        cmd.set_vertex_attrib(0, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(ImDrawVert, pos));
++        cmd.set_vertex_attrib(1, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(ImDrawVert, uv));
++        cmd.set_vertex_attrib(2, 0, VK_FORMAT_R8G8B8A8_UNORM, offsetof(ImDrawVert, col));
++        for (const ImDrawCmd &draw : list->CmdBuffer)
++        {
++            if (draw.UserCallback)
++                continue;
++            const float x0 = std::max(0.0f, (draw.ClipRect.x - origin.x) * scale.x);
++            const float y0 = std::max(0.0f, (draw.ClipRect.y - origin.y) * scale.y);
++            const float x1 = std::min(static_cast<float>(width), (draw.ClipRect.z - origin.x) * scale.x);
++            const float y1 = std::min(static_cast<float>(height), (draw.ClipRect.w - origin.y) * scale.y);
++            if (x1 <= x0 || y1 <= y0)
++                continue;
++            const size_t slot = static_cast<size_t>(draw.GetTexID());
++            if (slot == 0 || slot > uiTextures.size() || !uiTextures[slot - 1])
++                continue;
++            cmd.set_texture(0, 0, uiTextures[slot - 1]->get_view(), Vulkan::StockSampler::LinearClamp);
++            cmd.set_scissor({{static_cast<int32_t>(x0), static_cast<int32_t>(y0)},
++                             {static_cast<uint32_t>(x1 - x0), static_cast<uint32_t>(y1 - y0)}});
++            cmd.draw_indexed(draw.ElemCount, 1, draw.IdxOffset, static_cast<int32_t>(draw.VtxOffset), 0);
++        }
++    }
++#else
++    (void)cmd;
++    (void)width;
++    (void)height;
++#endif
++}
++
++void VulkanPresenter::shutdown()
++{
++    if (!m_impl || !m_impl->ready)
++        return;
++    Impl &m = *m_impl;
++    m.wsi.get_device().wait_idle();
++    for (auto &image : m.images)
++        image.reset();
++    m.uiTextures.clear();
++    m.timeline.reset();
++    m.ready = false;
++}
+diff --git a/ps2xRuntime/src/lib/gs/gs_vulkan_present.h b/ps2xRuntime/src/lib/gs/gs_vulkan_present.h
+new file mode 100644
+index 0000000..bf5d5bb
+--- /dev/null
++++ b/ps2xRuntime/src/lib/gs/gs_vulkan_present.h
+@@ -0,0 +1,52 @@
++#pragma once
++
++// Shows the graphics card's pictures in a window through Vulkan (vulkanPresentWanted): the window's own device,
++// on the same graphics card as paraLLEl-GS's, draws the picture the drawing thread shares (gs_vulkan_shared.h) into
++// Granite's swapchain - a DXGI flip-model swapchain on Windows when the card allows it (what Xbox Game Bar, overlays
++// and G-Sync / FreeSync work with), else a Vulkan surface swapchain. The window must have no OpenGL context.
++
++#include <cstdint>
++#include <memory>
++#include <string>
++
++struct GLFWwindow;
++struct GSGpuFrame;
++struct ImDrawData;
++class GSGpuRenderer;
++
++// The game's window shown through Vulkan: the default with the graphics card renderer (VENDETTA_GS=gpu, the default);
++// VENDETTA_PRESENT=opengl = raylib's window as before, =vulkan = asked for in any mode. The CPU renderer and
++// VENDETTA_GS=both (the two compared) keep raylib's window.
++bool vulkanPresentWanted();
++
++// The window couldn't be shown through Vulkan (raylib's window instead): the drawing thread reads its pictures back
++// again rather than sharing them. Before the first picture is shown.
++void stopSharedPictures();
++
++// The debug panel's frame (Dear ImGui's draw data), drawn over the picture at the next present; null = no panel. The
++// main thread.
++void setPresentUi(ImDrawData *data);
++
++// The window's client area painted black with Windows' own drawing (a window without OpenGL shows nothing of its own
++// until its first Vulkan picture): for a black start, and the black cover before a fullscreen mode change.
++void paintWindowBlack(GLFWwindow *window);
++
++class VulkanPresenter
++{
++public:
++    VulkanPresenter();
++    ~VulkanPresenter();
++
++    // Made on the window's thread, on the graphics card with this name (the drawing thread's).
++    bool init(GLFWwindow *window, const std::string &deviceName, bool vsync, std::string &whyNot);
++    bool ready() const;
++    // The frame's shared picture drawn into dst (pixels, in the window) on black, then presented; nearest = blocky
++    // scaling (else smooth). The renderer is told which shared image is in use while it is drawn.
++    void present(const GSGpuFrame &frame, GSGpuRenderer &renderer, int dstX, int dstY, int dstWidth, int dstHeight,
++                 bool nearest);
++    void shutdown();
++
++private:
++    struct Impl;
++    std::unique_ptr<Impl> m_impl;
++};
+diff --git a/ps2xRuntime/src/lib/gs/gs_vulkan_shared.h b/ps2xRuntime/src/lib/gs/gs_vulkan_shared.h
+new file mode 100644
+index 0000000..b6e4463
+--- /dev/null
++++ b/ps2xRuntime/src/lib/gs/gs_vulkan_shared.h
+@@ -0,0 +1,21 @@
++#pragma once
++
++// The pictures the graphics card thread (paraLLEl-GS's device) shares with the window's own Vulkan device
++// (shown through Vulkan): both sides describe the images exactly alike, as importing one requires.
++
++#include "image.hpp"
++
++#include <cstdint>
++
++// An R8G8B8A8 picture, copied in (transfer) on one device and sampled on the other; with import = a Windows handle
++// from the other device, that image's memory is used.
++inline Vulkan::ImageCreateInfo sharedImageInfo(uint32_t width, uint32_t height, void *import = nullptr)
++{
++    Vulkan::ImageCreateInfo info = Vulkan::ImageCreateInfo::immutable_2d_image(width, height, VK_FORMAT_R8G8B8A8_UNORM);
++    info.usage = VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
++    info.initial_layout = VK_IMAGE_LAYOUT_UNDEFINED;
++    info.misc = Vulkan::IMAGE_MISC_EXTERNAL_MEMORY_BIT;
++    info.external.memory_handle_type = VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_WIN32_BIT;
++    info.external.handle = import;
++    return info;
++}
 diff --git a/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp b/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp
 index c289ba0..7adf0ae 100644
 --- a/ps2xRuntime/src/lib/gs/ps2_gif_arbiter.cpp
@@ -14881,10 +15628,24 @@ index 0000000..268b841
 +    }
 +}
 diff --git a/ps2xRuntime/src/lib/ps2_debug_panel.cpp b/ps2xRuntime/src/lib/ps2_debug_panel.cpp
-index c9aa2c6..95eac26 100644
+index c9aa2c6..99bbd45 100644
 --- a/ps2xRuntime/src/lib/ps2_debug_panel.cpp
 +++ b/ps2xRuntime/src/lib/ps2_debug_panel.cpp
-@@ -20,6 +20,7 @@
+@@ -14,12 +14,21 @@
+ #include "imgui.h"
+ #include "rlImGui.h"
+ #include "raylib.h"
++#include "ps2_host_input.h"
++#if defined(PS2X_HAS_GLFW)
++#define GLFW_INCLUDE_NONE
++#include <GLFW/glfw3.h>
++#include "imgui_impl_glfw.h"
++#include "gs/gs_vulkan_present.h"
++#define PS2X_PANEL_ON_VULKAN 1
++#endif
+ #endif
+ 
+ #include <algorithm>
  #include <array>
  #include <cstdint>
  #include <cstdio>
@@ -14892,7 +15653,7 @@ index c9aa2c6..95eac26 100644
  #include <cstring>
  #include <filesystem>
  #include <fstream>
-@@ -1512,6 +1513,80 @@ namespace
+@@ -1512,6 +1521,80 @@ namespace
          ImGui::TextUnformatted("bits: Select,L3,R3,Start,Up,Right,Down,Left,L2,R2,L1,R1,Triangle,Circle,Cross,Square");
      }
  
@@ -14973,10 +15734,66 @@ index c9aa2c6..95eac26 100644
      void drawGsTab(PS2Runtime &runtime)
      {
          GSRegisters &regs = runtime.memory().gs();
-@@ -2206,9 +2281,31 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
+@@ -2176,12 +2259,34 @@ namespace
+ 
+ #endif
+ }
++#if defined(PS2X_PANEL_ON_VULKAN)
++namespace
++{
++    // the game's window is the Vulkan one: the panel takes its input there and the presenter
++    // draws it
++    GLFWwindow *g_panelWindow = nullptr;
++}
++#endif
++
+ void PS2DebugPanel::initialize()
+ {
+ #if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA)
+     if (!m_initialized)
+     {
+-        rlImGuiSetup(true);
++#if defined(PS2X_PANEL_ON_VULKAN)
++        g_panelWindow = host_input::window();
++        if (g_panelWindow)
++        {
++            ImGui::CreateContext();
++            ImGui::StyleColorsDark();
++            ImGuiIO &io = ImGui::GetIO();
++            io.BackendRendererName = "vulkan_presenter";
++            io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures; // the presenter makes the textures
++            ImGui_ImplGlfw_InitForOther(g_panelWindow, true);
++        }
++        else
++#endif
++            rlImGuiSetup(true);
+         m_initialized = true;
+     }
+ #endif
+@@ -2192,7 +2297,17 @@ void PS2DebugPanel::shutdown()
+ #if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA)
+     if (m_initialized)
+     {
+-        rlImGuiShutdown();
++#if defined(PS2X_PANEL_ON_VULKAN)
++        if (g_panelWindow)
++        {
++            setPresentUi(nullptr);
++            ImGui_ImplGlfw_Shutdown();
++            ImGui::DestroyContext();
++            g_panelWindow = nullptr;
++        }
++        else
++#endif
++            rlImGuiShutdown();
+         m_initialized = false;
+     }
+ #endif
+@@ -2206,17 +2321,83 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
          return;
      }
  
+-    if (IsKeyPressed(KEY_F1))
 +    // hidden by default (F1); VENDETTA_DEBUG_TAB=<tab> opens the panel on that tab at start
 +    static bool startChecked = false;
 +    if (!startChecked)
@@ -14986,26 +15803,79 @@ index c9aa2c6..95eac26 100644
 +            m_visible = true;
 +    }
 +
-     if (IsKeyPressed(KEY_F1))
++    bool f1 = false;
++#if defined(PS2X_PANEL_ON_VULKAN)
++    if (g_panelWindow)
      {
++        static bool f1Before = false;
++        const bool f1Down = host_input::keyDown(KEY_F1);
++        f1 = f1Down && !f1Before;
++        f1Before = f1Down;
++    }
++    else
++#endif
++        f1 = IsKeyPressed(KEY_F1);
++    if (f1)
++    {
 +        // the pointer, hidden in fullscreen, while the panel is open
-+        const bool wasHidden = IsCursorHidden();
++        bool wasHidden = false;
++#if defined(PS2X_PANEL_ON_VULKAN)
++        if (g_panelWindow)
++            wasHidden = glfwGetInputMode(g_panelWindow, GLFW_CURSOR) == GLFW_CURSOR_HIDDEN;
++        else
++#endif
++            wasHidden = IsCursorHidden();
          toggleVisible();
 +        static bool hiddenBeforePanel = false;
++        auto showPointer = [](bool show)
++        {
++#if defined(PS2X_PANEL_ON_VULKAN)
++            if (g_panelWindow)
++            {
++                glfwSetInputMode(g_panelWindow, GLFW_CURSOR, show ? GLFW_CURSOR_NORMAL : GLFW_CURSOR_HIDDEN);
++                return;
++            }
++#endif
++            if (show)
++                ShowCursor();
++            else
++                HideCursor();
++        };
 +        if (m_visible && wasHidden)
 +        {
 +            hiddenBeforePanel = true;
-+            ShowCursor();
++            showPointer(true);
 +        }
 +        else if (!m_visible && hiddenBeforePanel)
 +        {
 +            hiddenBeforePanel = false;
-+            HideCursor();
++            showPointer(false);
 +        }
      }
  
      if (!m_visible)
-@@ -2229,57 +2326,72 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
+     {
++#if defined(PS2X_PANEL_ON_VULKAN)
++        if (g_panelWindow)
++            setPresentUi(nullptr);
++#endif
+         return;
+     }
+ 
+-    rlImGuiBegin();
++#if defined(PS2X_PANEL_ON_VULKAN)
++    if (g_panelWindow)
++    {
++        ImGui_ImplGlfw_NewFrame();
++        ImGui::NewFrame();
++    }
++    else
++#endif
++        rlImGuiBegin();
+ 
+     ImGui::SetNextWindowSize(ImVec2(780.0f, 620.0f), ImGuiCond_FirstUseEver);
+     if (ImGui::Begin("Runtime Debugger", &m_visible, ImGuiWindowFlags_MenuBar))
+@@ -2229,57 +2410,72 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
  
          if (ImGui::BeginTabBar("debug-tabs"))
          {
@@ -15089,6 +15959,246 @@ index c9aa2c6..95eac26 100644
              {
                  uint32_t bytes = m_memoryBytes;
                  ImGui::InputScalar("Address", ImGuiDataType_U32, &m_memoryAddress, nullptr, nullptr, "%08X", ImGuiInputTextFlags_CharsHexadecimal);
+@@ -2303,7 +2499,15 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
+     }
+     ImGui::End();
+ 
+-    rlImGuiEnd();
++#if defined(PS2X_PANEL_ON_VULKAN)
++    if (g_panelWindow)
++    {
++        ImGui::Render();
++        setPresentUi(ImGui::GetDrawData()); // drawn over the picture at the next present
++    }
++    else
++#endif
++        rlImGuiEnd();
+ #else
+     (void)runtime;
+ #endif
+diff --git a/ps2xRuntime/src/lib/ps2_host_input.cpp b/ps2xRuntime/src/lib/ps2_host_input.cpp
+new file mode 100644
+index 0000000..487e581
+--- /dev/null
++++ b/ps2xRuntime/src/lib/ps2_host_input.cpp
+@@ -0,0 +1,188 @@
++// The PC's keyboard and controllers for the pads: raylib's window, or a GLFW window read the way raylib reads it
++// (see ps2_host_input.h).
++
++#include "ps2_host_input.h"
++#include "raylib.h"
++
++#if defined(PS2X_HAS_GLFW)
++#define GLFW_INCLUDE_NONE
++#include <GLFW/glfw3.h>
++#endif
++
++#include <array>
++#include <atomic>
++#include <cmath>
++#include <mutex>
++#include <string>
++
++namespace host_input
++{
++    namespace
++    {
++        constexpr int kGamepads = 4;
++        constexpr int kButtons = 32; // raylib's GamepadButton values fit
++        constexpr int kAxes = 6;
++
++        struct Gamepad
++        {
++            bool ready = false;
++            std::string name;
++            std::array<bool, kButtons> buttons{};
++            std::array<float, kAxes> axes{};
++        };
++
++        std::atomic<GLFWwindow *> g_window{nullptr};
++        std::array<std::atomic<bool>, 512> g_keys{}; // GLFW_KEY_LAST is 348
++        std::mutex g_padMutex;
++        std::array<Gamepad, kGamepads> g_pads; // under g_padMutex
++
++#if defined(PS2X_HAS_GLFW)
++        GLFWkeyfun g_previousKeyCallback = nullptr;
++
++        void onKey(GLFWwindow *window, int key, int scancode, int action, int mods)
++        {
++            if (key >= 0 && key < static_cast<int>(g_keys.size()))
++                g_keys[static_cast<size_t>(key)].store(action != GLFW_RELEASE, std::memory_order_relaxed);
++            if (g_previousKeyCallback)
++                g_previousKeyCallback(window, key, scancode, action, mods);
++        }
++
++        // GLFW's gamepad buttons → raylib's GamepadButton (as raylib's own PollInputEvents)
++        int raylibButton(int glfwButton)
++        {
++            switch (glfwButton)
++            {
++            case GLFW_GAMEPAD_BUTTON_Y: return GAMEPAD_BUTTON_RIGHT_FACE_UP;
++            case GLFW_GAMEPAD_BUTTON_B: return GAMEPAD_BUTTON_RIGHT_FACE_RIGHT;
++            case GLFW_GAMEPAD_BUTTON_A: return GAMEPAD_BUTTON_RIGHT_FACE_DOWN;
++            case GLFW_GAMEPAD_BUTTON_X: return GAMEPAD_BUTTON_RIGHT_FACE_LEFT;
++            case GLFW_GAMEPAD_BUTTON_LEFT_BUMPER: return GAMEPAD_BUTTON_LEFT_TRIGGER_1;
++            case GLFW_GAMEPAD_BUTTON_RIGHT_BUMPER: return GAMEPAD_BUTTON_RIGHT_TRIGGER_1;
++            case GLFW_GAMEPAD_BUTTON_BACK: return GAMEPAD_BUTTON_MIDDLE_LEFT;
++            case GLFW_GAMEPAD_BUTTON_GUIDE: return GAMEPAD_BUTTON_MIDDLE;
++            case GLFW_GAMEPAD_BUTTON_START: return GAMEPAD_BUTTON_MIDDLE_RIGHT;
++            case GLFW_GAMEPAD_BUTTON_DPAD_UP: return GAMEPAD_BUTTON_LEFT_FACE_UP;
++            case GLFW_GAMEPAD_BUTTON_DPAD_RIGHT: return GAMEPAD_BUTTON_LEFT_FACE_RIGHT;
++            case GLFW_GAMEPAD_BUTTON_DPAD_DOWN: return GAMEPAD_BUTTON_LEFT_FACE_DOWN;
++            case GLFW_GAMEPAD_BUTTON_DPAD_LEFT: return GAMEPAD_BUTTON_LEFT_FACE_LEFT;
++            case GLFW_GAMEPAD_BUTTON_LEFT_THUMB: return GAMEPAD_BUTTON_LEFT_THUMB;
++            case GLFW_GAMEPAD_BUTTON_RIGHT_THUMB: return GAMEPAD_BUTTON_RIGHT_THUMB;
++            default: return -1;
++            }
++        }
++#endif
++
++        bool ours() { return g_window.load(std::memory_order_acquire) != nullptr; }
++    }
++
++    void useWindow(GLFWwindow *window)
++    {
++#if defined(PS2X_HAS_GLFW)
++        if (window)
++            g_previousKeyCallback = glfwSetKeyCallback(window, onKey);
++        g_window.store(window, std::memory_order_release);
++        poll();
++#else
++        (void)window;
++#endif
++    }
++
++    GLFWwindow *window() { return g_window.load(std::memory_order_acquire); }
++
++    void poll()
++    {
++#if defined(PS2X_HAS_GLFW)
++        if (!ours())
++            return;
++        std::array<Gamepad, kGamepads> pads;
++        for (int i = 0; i < kGamepads; ++i)
++        {
++            Gamepad &pad = pads[static_cast<size_t>(i)];
++            pad.ready = glfwJoystickPresent(i) == GLFW_TRUE;
++            if (!pad.ready)
++                continue;
++            if (const char *name = glfwGetJoystickName(i))
++                pad.name = name;
++            GLFWgamepadstate state{};
++            if (glfwGetGamepadState(i, &state) == GLFW_TRUE)
++            {
++                for (int k = 0; k <= GLFW_GAMEPAD_BUTTON_LAST; ++k)
++                {
++                    const int button = raylibButton(k);
++                    if (button >= 0 && button < kButtons)
++                        pad.buttons[static_cast<size_t>(button)] = state.buttons[k] == GLFW_PRESS;
++                }
++                for (int k = 0; k < kAxes; ++k)
++                    pad.axes[static_cast<size_t>(k)] = state.axes[k];
++                pad.buttons[GAMEPAD_BUTTON_LEFT_TRIGGER_2] = pad.axes[GAMEPAD_AXIS_LEFT_TRIGGER] > 0.1f;
++                pad.buttons[GAMEPAD_BUTTON_RIGHT_TRIGGER_2] = pad.axes[GAMEPAD_AXIS_RIGHT_TRIGGER] > 0.1f;
++            }
++        }
++        std::lock_guard<std::mutex> lock(g_padMutex);
++        g_pads = std::move(pads);
++#endif
++    }
++
++    bool windowReady() { return ours() || IsWindowReady(); }
++
++    bool keyDown(int key)
++    {
++        if (!ours())
++            return IsKeyDown(key);
++        return key >= 0 && key < static_cast<int>(g_keys.size()) && g_keys[static_cast<size_t>(key)].load(std::memory_order_relaxed);
++    }
++
++    bool gamepadAvailable(int gamepad)
++    {
++        if (!ours())
++            return IsGamepadAvailable(gamepad);
++        if (gamepad < 0 || gamepad >= kGamepads)
++            return false;
++        std::lock_guard<std::mutex> lock(g_padMutex);
++        return g_pads[static_cast<size_t>(gamepad)].ready;
++    }
++
++    const char *gamepadName(int gamepad)
++    {
++        if (!ours())
++            return GetGamepadName(gamepad);
++        if (gamepad < 0 || gamepad >= kGamepads)
++            return nullptr;
++        // a copy per controller on the asking thread: the snapshot may change under it
++        thread_local std::array<std::string, kGamepads> copies;
++        std::lock_guard<std::mutex> lock(g_padMutex);
++        const Gamepad &pad = g_pads[static_cast<size_t>(gamepad)];
++        if (!pad.ready)
++            return nullptr;
++        copies[static_cast<size_t>(gamepad)] = pad.name;
++        return copies[static_cast<size_t>(gamepad)].c_str();
++    }
++
++    bool gamepadButtonDown(int gamepad, int button)
++    {
++        if (!ours())
++            return IsGamepadButtonDown(gamepad, button);
++        if (gamepad < 0 || gamepad >= kGamepads || button < 0 || button >= kButtons)
++            return false;
++        std::lock_guard<std::mutex> lock(g_padMutex);
++        const Gamepad &pad = g_pads[static_cast<size_t>(gamepad)];
++        return pad.ready && pad.buttons[static_cast<size_t>(button)];
++    }
++
++    float gamepadAxis(int gamepad, int axis)
++    {
++        if (!ours())
++            return GetGamepadAxisMovement(gamepad, axis);
++        // as raylib: the triggers rest at -1, the sticks at 0
++        float value = (axis == GAMEPAD_AXIS_LEFT_TRIGGER || axis == GAMEPAD_AXIS_RIGHT_TRIGGER) ? -1.0f : 0.0f;
++        if (gamepad < 0 || gamepad >= kGamepads || axis < 0 || axis >= kAxes)
++            return value;
++        std::lock_guard<std::mutex> lock(g_padMutex);
++        const Gamepad &pad = g_pads[static_cast<size_t>(gamepad)];
++        if (!pad.ready)
++            return value;
++        const float state = pad.axes[static_cast<size_t>(axis)];
++        const float movement = value < 0.0f ? state : std::fabs(state);
++        return movement > value ? state : value;
++    }
++}
+diff --git a/ps2xRuntime/src/lib/ps2_host_input.h b/ps2xRuntime/src/lib/ps2_host_input.h
+new file mode 100644
+index 0000000..8bb1d56
+--- /dev/null
++++ b/ps2xRuntime/src/lib/ps2_host_input.h
+@@ -0,0 +1,23 @@
++#pragma once
++
++// The PC's keyboard and controllers for the pads (ps2_pad.cpp), with raylib's numbering (KEY_*, GAMEPAD_BUTTON_*,
++// GAMEPAD_AXIS_*: raylib.h). Read from raylib's window as before, or - once a window is given (the Vulkan window,
++// the game's window by default) - straight from GLFW the way raylib does it: keys from that window, controllers 0-3 as
++// GLFW's joysticks with its Xbox-style gamepad mapping, L2 / R2 pressed past 0.1. GLFW's controller calls belong on the
++// main thread: poll() there takes a snapshot each window frame; the pads read the snapshot from the game thread.
++
++struct GLFWwindow;
++
++namespace host_input
++{
++    void useWindow(GLFWwindow *window); // the main thread
++    GLFWwindow *window();               // the window given (null: raylib's)
++    void poll();                        // the main thread, each window frame (with a window given)
++
++    bool windowReady();
++    bool keyDown(int key);
++    bool gamepadAvailable(int gamepad);
++    const char *gamepadName(int gamepad); // valid until the next poll
++    bool gamepadButtonDown(int gamepad, int button);
++    float gamepadAxis(int gamepad, int axis);
++}
 diff --git a/ps2xRuntime/src/lib/ps2_host_settings.cpp b/ps2xRuntime/src/lib/ps2_host_settings.cpp
 new file mode 100644
 index 0000000..6ac44a6
@@ -16917,18 +18027,19 @@ index 37b6a4d..c80deea 100644
  {
      if (size == 0)
 diff --git a/ps2xRuntime/src/lib/ps2_pad.cpp b/ps2xRuntime/src/lib/ps2_pad.cpp
-index 8590f14..f6b1218 100644
+index 8590f14..961d112 100644
 --- a/ps2xRuntime/src/lib/ps2_pad.cpp
 +++ b/ps2xRuntime/src/lib/ps2_pad.cpp
-@@ -1,5 +1,7 @@
+@@ -1,5 +1,8 @@
  #include "runtime/ps2_pad.h"
 +#include "runtime/ps2_host_settings.h"
  #include "ps2_host_backend.h"
++#include "ps2_host_input.h"
 +#include <cstdlib>
  #include <cstring>
  
  namespace
-@@ -23,9 +25,122 @@ namespace
+@@ -23,9 +26,122 @@ namespace
      constexpr uint16_t PAD_L1 = 0x0400u;
      constexpr uint16_t PAD_R2 = 0x0200u;
      constexpr uint16_t PAD_L2 = 0x0100u;
@@ -17006,11 +18117,11 @@ index 8590f14..f6b1218 100644
 +    int hostController(int port, int slot)
 +    {
 +        const int index = padIndex(port, slot);
-+        if (index < 0 || !IsWindowReady())
++        if (index < 0 || !host_input::windowReady())
 +            return -1;
 +        for (int gamepad = 0, seen = 0; gamepad < 4; ++gamepad)
 +        {
-+            if (IsGamepadAvailable(gamepad) && seen++ == index)
++            if (host_input::gamepadAvailable(gamepad) && seen++ == index)
 +                return gamepad;
 +        }
 +        return -1;
@@ -17028,10 +18139,10 @@ index 8590f14..f6b1218 100644
 +    {
 +        const int gamepad = hostController(port, slot);
 +        if (name)
-+            *name = gamepad >= 0 ? GetGamepadName(gamepad) : nullptr;
++            *name = gamepad >= 0 ? host_input::gamepadName(gamepad) : nullptr;
 +        auto isXInput = [](int pad)
 +        {
-+            const char *padName = GetGamepadName(pad);
++            const char *padName = host_input::gamepadName(pad);
 +            if (!padName)
 +                return false;
 +            return std::strcmp(padName, "Xbox Controller") == 0 || std::strcmp(padName, "Wireless Xbox Controller") == 0 ||
@@ -17041,7 +18152,7 @@ index 8590f14..f6b1218 100644
 +            return -1;
 +        int order = 0;
 +        for (int pad = 0; pad < gamepad; ++pad)
-+            if (IsGamepadAvailable(pad) && isXInput(pad))
++            if (host_input::gamepadAvailable(pad) && isXInput(pad))
 +                ++order;
 +        return order;
 +    }
@@ -17052,7 +18163,7 @@ index 8590f14..f6b1218 100644
  {
      if (!data || size < 32)
          return false;
-@@ -38,8 +153,11 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+@@ -38,85 +154,96 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
      data[4] = data[5] = data[6] = data[7] = kPadStickCenter;
  
      uint16_t btns = 0xFFFFu;
@@ -17066,22 +18177,118 @@ index 8590f14..f6b1218 100644
      auto clearBit = [&btns](uint16_t mask)
      { btns &= ~mask; };
  
-@@ -87,7 +205,7 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+     if (useGamepad)
+     {
+-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_FACE_UP))
++        if (host_input::gamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_FACE_UP))
+             clearBit(PAD_UP);
+-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_FACE_DOWN))
++        if (host_input::gamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_FACE_DOWN))
+             clearBit(PAD_DOWN);
+-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_FACE_LEFT))
++        if (host_input::gamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_FACE_LEFT))
+             clearBit(PAD_LEFT);
+-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_FACE_RIGHT))
++        if (host_input::gamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_FACE_RIGHT))
+             clearBit(PAD_RIGHT);
+-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_FACE_DOWN))
++        if (host_input::gamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_FACE_DOWN))
+             clearBit(PAD_CROSS);
+-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT))
++        if (host_input::gamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_FACE_RIGHT))
+             clearBit(PAD_CIRCLE);
+-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_FACE_LEFT))
++        if (host_input::gamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_FACE_LEFT))
+             clearBit(PAD_SQUARE);
+-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_FACE_UP))
++        if (host_input::gamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_FACE_UP))
+             clearBit(PAD_TRIANGLE);
+-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_TRIGGER_1))
++        if (host_input::gamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_TRIGGER_1))
+             clearBit(PAD_L1);
+-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1))
++        if (host_input::gamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_TRIGGER_1))
+             clearBit(PAD_R1);
+-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_TRIGGER_2))
++        if (host_input::gamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_TRIGGER_2))
+             clearBit(PAD_L2);
+-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_TRIGGER_2))
++        if (host_input::gamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_TRIGGER_2))
+             clearBit(PAD_R2);
+-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_MIDDLE_RIGHT))
++        if (host_input::gamepadButtonDown(kGamepad, GAMEPAD_BUTTON_MIDDLE_RIGHT))
+             clearBit(PAD_START);
+-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_MIDDLE_LEFT))
++        if (host_input::gamepadButtonDown(kGamepad, GAMEPAD_BUTTON_MIDDLE_LEFT))
+             clearBit(PAD_SELECT);
+-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_THUMB))
++        if (host_input::gamepadButtonDown(kGamepad, GAMEPAD_BUTTON_LEFT_THUMB))
+             clearBit(PAD_L3);
+-        if (IsGamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_THUMB))
++        if (host_input::gamepadButtonDown(kGamepad, GAMEPAD_BUTTON_RIGHT_THUMB))
+             clearBit(PAD_R3);
+ 
+-        float lx = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_LEFT_X);
+-        float ly = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_LEFT_Y);
+-        float rx = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_RIGHT_X);
+-        float ry = GetGamepadAxisMovement(kGamepad, GAMEPAD_AXIS_RIGHT_Y);
++        float lx = host_input::gamepadAxis(kGamepad, GAMEPAD_AXIS_LEFT_X);
++        float ly = host_input::gamepadAxis(kGamepad, GAMEPAD_AXIS_LEFT_Y);
++        float rx = host_input::gamepadAxis(kGamepad, GAMEPAD_AXIS_RIGHT_X);
++        float ry = host_input::gamepadAxis(kGamepad, GAMEPAD_AXIS_RIGHT_Y);
+         data[6] = static_cast<uint8_t>(128 + lx * 127);
+         data[7] = static_cast<uint8_t>(128 + ly * 127);
          data[4] = static_cast<uint8_t>(128 + rx * 127);
          data[5] = static_cast<uint8_t>(128 + ry * 127);
      }
 -    else
-+    if (ps2_pad_layout::padIndex(port, slot) == keyboardPadIndex() && IsWindowReady())
++    if (ps2_pad_layout::padIndex(port, slot) == keyboardPadIndex() && host_input::windowReady())
      {
-         if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))
+-        if (IsKeyDown(KEY_UP) || IsKeyDown(KEY_W))
++        if (host_input::keyDown(KEY_UP) || host_input::keyDown(KEY_W))
              clearBit(PAD_UP);
-@@ -117,6 +235,14 @@ bool PSPadBackend::readState(int /*port*/, int /*slot*/, uint8_t *data, size_t s
+-        if (IsKeyDown(KEY_DOWN) || IsKeyDown(KEY_S))
++        if (host_input::keyDown(KEY_DOWN) || host_input::keyDown(KEY_S))
+             clearBit(PAD_DOWN);
+-        if (IsKeyDown(KEY_LEFT) || IsKeyDown(KEY_A))
++        if (host_input::keyDown(KEY_LEFT) || host_input::keyDown(KEY_A))
+             clearBit(PAD_LEFT);
+-        if (IsKeyDown(KEY_RIGHT) || IsKeyDown(KEY_D))
++        if (host_input::keyDown(KEY_RIGHT) || host_input::keyDown(KEY_D))
+             clearBit(PAD_RIGHT);
+-        if (IsKeyDown(KEY_X) || IsKeyDown(KEY_SPACE))
++        if (host_input::keyDown(KEY_X) || host_input::keyDown(KEY_SPACE))
+             clearBit(PAD_CROSS);
+-        if (IsKeyDown(KEY_C) || IsKeyDown(KEY_ESCAPE))
++        if (host_input::keyDown(KEY_C) || host_input::keyDown(KEY_ESCAPE))
+             clearBit(PAD_CIRCLE);
+-        if (IsKeyDown(KEY_Z) || IsKeyDown(KEY_KP_0))
++        if (host_input::keyDown(KEY_Z) || host_input::keyDown(KEY_KP_0))
+             clearBit(PAD_SQUARE);
+-        if (IsKeyDown(KEY_V) || IsKeyDown(KEY_KP_1))
++        if (host_input::keyDown(KEY_V) || host_input::keyDown(KEY_KP_1))
+             clearBit(PAD_TRIANGLE);
+-        if (IsKeyDown(KEY_Q))
++        if (host_input::keyDown(KEY_Q))
+             clearBit(PAD_L1);
+-        if (IsKeyDown(KEY_E))
++        if (host_input::keyDown(KEY_E))
+             clearBit(PAD_R1);
+-        if (IsKeyDown(KEY_LEFT_SHIFT))
++        if (host_input::keyDown(KEY_LEFT_SHIFT))
+             clearBit(PAD_L2);
+-        if (IsKeyDown(KEY_RIGHT_SHIFT))
++        if (host_input::keyDown(KEY_RIGHT_SHIFT))
+             clearBit(PAD_R2);
+-        if (IsKeyDown(KEY_ENTER))
++        if (host_input::keyDown(KEY_ENTER))
              clearBit(PAD_START);
-         if (IsKeyDown(KEY_TAB))
+-        if (IsKeyDown(KEY_TAB))
++        if (host_input::keyDown(KEY_TAB))
              clearBit(PAD_SELECT);
 +        // the right stick (taunts, Blazin'): I J K L, all the way over while held
-+        const int rx = (IsKeyDown(KEY_L) ? 1 : 0) - (IsKeyDown(KEY_J) ? 1 : 0);
-+        const int ry = (IsKeyDown(KEY_K) ? 1 : 0) - (IsKeyDown(KEY_I) ? 1 : 0);
++        const int rx = (host_input::keyDown(KEY_L) ? 1 : 0) - (host_input::keyDown(KEY_J) ? 1 : 0);
++        const int ry = (host_input::keyDown(KEY_K) ? 1 : 0) - (host_input::keyDown(KEY_I) ? 1 : 0);
 +        if (rx != 0 || ry != 0)
 +        {
 +            data[4] = static_cast<uint8_t>(rx > 0 ? 0xFF : (rx < 0 ? 0x00 : kPadStickCenter));
@@ -17224,7 +18431,7 @@ index 0000000..c24f5c8
 +    }
 +}
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..dea5b46 100644
+index 45cb9d2..67530fd 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
 @@ -1,3 +1,7 @@
@@ -17243,7 +18450,7 @@ index 45cb9d2..dea5b46 100644
  #include <array>
  #include <cstring>
  #include <limits>
-@@ -26,6 +31,10 @@
+@@ -26,6 +31,15 @@
  #include <thread>
  #include <unordered_map>
  #include <sstream>
@@ -17251,10 +18458,15 @@ index 45cb9d2..dea5b46 100644
 +#define GLFW_INCLUDE_NONE
 +#include <GLFW/glfw3.h>
 +#endif
++#if defined(PS2X_HAS_GLFW) && defined(PS2X_HAS_PARALLEL_GS)
++#include "gs/gs_vulkan_present.h"
++#include "ps2_host_input.h"
++#define PS2X_VULKAN_PRESENT 1
++#endif
  
  namespace ps2_stubs
  {
-@@ -85,12 +94,30 @@ struct ProgramHeader
+@@ -85,12 +99,30 @@ struct ProgramHeader
      uint32_t align;
  };
  
@@ -17285,16 +18497,16 @@ index 45cb9d2..dea5b46 100644
  
      constexpr uint32_t COP0_CAUSE_EXCCODE_MASK = 0x0000007Cu;
      constexpr uint32_t COP0_CAUSE_BD = 0x80000000u;
-@@ -373,10 +400,200 @@ namespace
+@@ -373,10 +405,322 @@ namespace
      }
  }
  
 -static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint32_t &outHeight)
 +namespace
- {
--    static uint64_t s_lastPresentationTick = std::numeric_limits<uint64_t>::max();
--    static bool s_hasLatchedInitialFrame = false;
++{
 +    int s_frameTextureFilter = TEXTURE_FILTER_BILINEAR;
++    // shown through Vulkan: the newest picture shared with the window's Vulkan device (valid until the next take)
++    const GSGpuFrame *s_sharedFrame = nullptr;
 +    // The graphics card's picture: (covered share of the video mode's width) / (share of its height), for the aspect.
 +    float s_presentAspectScale = 1.0f;
 +}
@@ -17402,6 +18614,116 @@ index 45cb9d2..dea5b46 100644
 +#endif
 +}
 +
++#if defined(PS2X_VULKAN_PRESENT)
++namespace
++{
++    // The game's window shown through Vulkan (vulkanPresentWanted): a GLFW window without OpenGL (raylib's window is
++    // made too and stays hidden: raylib still plays the sound)
++    GLFWwindow *s_vulkanWindow = nullptr;
++    std::unique_ptr<VulkanPresenter> s_presenter;
++
++    // The refresh rate for a fullscreen mode: the rate asked for; "smoothest" = the highest multiple of 60 Hz the screen
++    // has at that size (else its highest); 0 = the screen's current rate.
++    int fullscreenRate(GLFWmonitor *monitor, int width, int height, const ps2_host_settings::Settings &settings,
++                       std::vector<int> &rates)
++    {
++        int modeCount = 0;
++        const GLFWvidmode *modes = glfwGetVideoModes(monitor, &modeCount);
++        for (int i = 0; i < modeCount; ++i)
++            if (modes[i].width == width && modes[i].height == height &&
++                std::find(rates.begin(), rates.end(), modes[i].refreshRate) == rates.end())
++                rates.push_back(modes[i].refreshRate);
++        std::sort(rates.begin(), rates.end());
++        const GLFWvidmode *current = glfwGetVideoMode(monitor);
++        int rate = settings.refreshRate > 0 ? settings.refreshRate : (current ? current->refreshRate : GLFW_DONT_CARE);
++        if (settings.refreshRate == ps2_host_settings::kRefreshSmoothest && !rates.empty())
++        {
++            rate = rates.back();
++            for (int r : rates)
++                if (r % 60 == 0 || (r + 1) % 60 == 0)
++                    rate = r;
++        }
++        return rate;
++    }
++
++    // Made hidden, placed as the settings ask (window / maximised / borderless / fullscreen at its resolution and
++    // rate, on its screen), painted black, then shown - for fullscreen the black window covers the screen first and
++    // the mode changes under it (no desktop between). Losing focus in fullscreen minimises it (Alt-Tab).
++    GLFWwindow *createVulkanWindow(const char *title)
++    {
++        const ps2_host_settings::Settings &settings = ps2_host_settings::get();
++        glfwDefaultWindowHints();
++        glfwWindowHint(GLFW_CLIENT_API, GLFW_NO_API);
++        glfwWindowHint(GLFW_VISIBLE, GLFW_FALSE);
++        glfwWindowHint(GLFW_RESIZABLE, GLFW_TRUE);
++        glfwWindowHint(GLFW_AUTO_ICONIFY, GLFW_TRUE);
++        int count = 0;
++        GLFWmonitor **monitors = glfwGetMonitors(&count);
++        const int index = std::clamp(settings.screen - 1, 0, std::max(0, count - 1));
++        GLFWmonitor *monitor = count > 0 ? monitors[index] : glfwGetPrimaryMonitor();
++        const GLFWvidmode *current = monitor ? glfwGetVideoMode(monitor) : nullptr;
++        int monitorX = 0, monitorY = 0, workX = 0, workY = 0, workW = 1280, workH = 720;
++        if (monitor)
++        {
++            glfwGetMonitorPos(monitor, &monitorX, &monitorY);
++            glfwGetMonitorWorkarea(monitor, &workX, &workY, &workW, &workH);
++        }
++        const int screenW = current ? current->width : 1280, screenH = current ? current->height : 720;
++        const int windowW = std::min(1280, workW), windowH = std::min(720, workH);
++        GLFWwindow *window = glfwCreateWindow(windowW, windowH, title, nullptr, nullptr);
++        if (!window)
++            return nullptr;
++
++        switch (settings.mode)
++        {
++        case ps2_host_settings::WindowMode::Window:
++            glfwSetWindowPos(window, workX + (workW - windowW) / 2, workY + (workH - windowH) / 2);
++            if (settings.maximised)
++                glfwMaximizeWindow(window);
++            glfwShowWindow(window);
++            break;
++        case ps2_host_settings::WindowMode::Borderless:
++            glfwSetWindowAttrib(window, GLFW_DECORATED, GLFW_FALSE);
++            glfwSetWindowPos(window, monitorX, monitorY);
++            glfwSetWindowSize(window, screenW, screenH);
++            glfwShowWindow(window);
++            break;
++        case ps2_host_settings::WindowMode::Fullscreen:
++        {
++            const int width = settings.fullscreenWidth > 0 ? settings.fullscreenWidth : screenW;
++            const int height = settings.fullscreenHeight > 0 ? settings.fullscreenHeight : screenH;
++            std::vector<int> rates;
++            const int rate = monitor ? fullscreenRate(monitor, width, height, settings, rates) : GLFW_DONT_CARE;
++            // the black cover first, the mode change under it
++            glfwSetWindowAttrib(window, GLFW_DECORATED, GLFW_FALSE);
++            glfwSetWindowPos(window, monitorX, monitorY);
++            glfwSetWindowSize(window, screenW, screenH);
++            glfwShowWindow(window);
++            paintWindowBlack(window);
++            glfwPollEvents();
++            std::cerr << "[window] fullscreen " << width << "x" << height << " at " << rate << " Hz"
++                      << (settings.refreshRate == ps2_host_settings::kRefreshSmoothest ? " (the smoothest)" : "")
++                      << "; the screen has";
++            for (int r : rates)
++                std::cerr << " " << r;
++            std::cerr << (rates.empty() ? " no mode of that size" : " Hz") << std::endl;
++            if (monitor)
++                glfwSetWindowMonitor(window, monitor, 0, 0, width, height, rate);
++            glfwSetInputMode(window, GLFW_CURSOR, GLFW_CURSOR_HIDDEN); // the game has no pointer
++            break;
++        }
++        }
++        paintWindowBlack(window);
++        glfwPollEvents();
++        const GLFWvidmode *now = monitor ? glfwGetVideoMode(monitor) : nullptr;
++        std::cerr << "[window] " << ps2_host_settings::windowModeName(settings.mode) << " (Vulkan) on screen " << (index + 1)
++                  << " of " << count << "; the screen now " << (now ? now->width : 0) << "x" << (now ? now->height : 0)
++                  << " at " << (now ? now->refreshRate : 0) << " Hz; vsync " << (settings.vsync ? "on" : "off") << std::endl;
++        return window;
++    }
++}
++#endif
++
 +// VENDETTA_WINDOW_PACING=timer: the window refreshes on its own 60-a-second timer, as before (else once per new picture)
 +static bool windowTimerPacing()
 +{
@@ -17423,7 +18745,17 @@ index 45cb9d2..dea5b46 100644
 +    const GSGpuFrame *frame = rt->gs().takeGpuFrame(s_lastSeq);
 +    if (frame && previousSeq != 0u && frame->seq > previousSeq + 1u)
 +        ps2_host_profile::count(ps2_host_profile::WindowSkips, frame->seq - previousSeq - 1u);
-+    if (frame)
++    if (frame && frame->shared)
++    {
++        // shown by the Vulkan presenter: nothing to upload here
++        s_sharedFrame = frame;
++        s_width = frame->width;
++        s_height = frame->height;
++        if (frame->modeWidth != 0u && frame->modeHeight != 0u && frame->internalWidth != 0u && frame->internalHeight != 0u)
++            s_presentAspectScale = (static_cast<float>(frame->internalWidth) / static_cast<float>(frame->modeWidth)) /
++                                   (static_cast<float>(frame->internalHeight) / static_cast<float>(frame->modeHeight));
++    }
++    else if (frame)
 +    {
 +        if (frame->width == 0u || frame->height == 0u)
 +        {
@@ -17461,7 +18793,9 @@ index 45cb9d2..dea5b46 100644
 +
 +// true = a new picture was uploaded
 +static bool UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint32_t &outHeight)
-+{
+ {
+-    static uint64_t s_lastPresentationTick = std::numeric_limits<uint64_t>::max();
+-    static bool s_hasLatchedInitialFrame = false;
 +    // the scaling filter can change at any time (the debug panel); FSR is done on the graphics card, the window then
 +    // only places its picture (drawn at exactly the window's size)
 +    const int wantedFilter =
@@ -17489,7 +18823,7 @@ index 45cb9d2..dea5b46 100644
      static uint32_t s_lastDisplayFbp = std::numeric_limits<uint32_t>::max();
      static uint32_t s_lastSourceFbp = std::numeric_limits<uint32_t>::max();
      static bool s_lastPreferred = false;
-@@ -386,35 +603,29 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -386,35 +730,29 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      static std::vector<uint8_t> s_scratch;
      static std::vector<uint8_t> s_uploadBuffer(DEFAULT_FB_SIZE, 0u);
  
@@ -17524,21 +18858,21 @@ index 45cb9d2..dea5b46 100644
 -                                                   &usedPreferredDisplaySource))
 +                                                   &usedPreferredDisplaySource);
 +    if (!fresh && s_hasUploadedFrame)
-+    {
+     {
+-        Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, MAGENTA);
 +        outWidth = (s_lastWidth != 0u) ? s_lastWidth : FB_WIDTH;
 +        outHeight = (s_lastHeight != 0u) ? s_lastHeight : DEFAULT_DISPLAY_HEIGHT;
 +        return false;
 +    }
 +    if (!fresh || s_scratch.empty() || width == 0u || height == 0u)
-     {
--        Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, MAGENTA);
++    {
 +        // nothing to show (no picture yet, or both display circuits off — after a GS reset until the game sets its
 +        // display up again): black, as on the console
 +        Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLACK);
          UpdateTexture(tex, blank.data);
          UnloadImage(blank);
          outWidth = FB_WIDTH;
-@@ -422,7 +633,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -422,7 +760,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
          s_lastWidth = outWidth;
          s_lastHeight = outHeight;
          s_hasUploadedFrame = true;
@@ -17547,7 +18881,7 @@ index 45cb9d2..dea5b46 100644
      }
  
      PS2_IF_AGRESSIVE_LOGS({
-@@ -435,7 +646,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -435,7 +773,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
              height != s_lastHeight)
          {
              std::cout << "[frame:upload] idx=" << s_uploadDebugCount
@@ -17556,7 +18890,7 @@ index 45cb9d2..dea5b46 100644
                        << " displayFbp=" << displayFbp
                        << " sourceFbp=" << sourceFbp
                        << " size=" << width << "x" << height
-@@ -475,6 +686,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -475,6 +813,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      outWidth = width;
      outHeight = height;
      s_hasUploadedFrame = true;
@@ -17564,7 +18898,7 @@ index 45cb9d2..dea5b46 100644
  }
  
  PS2Runtime::PS2Runtime()
-@@ -503,8 +715,8 @@ PS2Runtime::PS2Runtime()
+@@ -503,8 +842,8 @@ PS2Runtime::PS2Runtime()
      m_guestHeapLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
      m_guestHeapSuggestedBase = kGuestHeapDefaultBase;
      m_guestHeapConfigured = false;
@@ -17575,7 +18909,7 @@ index 45cb9d2..dea5b46 100644
  }
  
  void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
-@@ -599,6 +811,12 @@ ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx,
+@@ -599,6 +938,12 @@ ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx,
      return m_iopSubsystem->handleRpc(request);
  }
  
@@ -17588,7 +18922,7 @@ index 45cb9d2..dea5b46 100644
  void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransfer &transfer)
  {
      auto scope = m_iopHost->enterCall(nullptr, rdram);
-@@ -607,6 +825,7 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
+@@ -607,6 +952,7 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
  
  void PS2Runtime::advanceIopEeCycles(uint64_t eeCycles) noexcept
  {
@@ -17596,7 +18930,7 @@ index 45cb9d2..dea5b46 100644
      m_iopSubsystem->runEeCycles(eeCycles);
  }
  
-@@ -665,45 +884,32 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -665,45 +1011,32 @@ bool PS2Runtime::syncCoreSubsystems()
      }
  
      m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
@@ -17657,16 +18991,55 @@ index 45cb9d2..dea5b46 100644
      resetIop();
      m_vu0.reset();
      m_vu1.reset();
-@@ -731,12 +937,29 @@ bool PS2Runtime::initialize(const char *title)
+@@ -731,12 +1064,70 @@ bool PS2Runtime::initialize(const char *title)
  #if defined(PLATFORM_VITA)
          InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
  #else
 -        SetConfigFlags(FLAG_WINDOW_RESIZABLE);
+-        InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
 +        const ps2_host_settings::Settings &settings = ps2_host_settings::get();
 +        // Made hidden, sized / made fullscreen as the settings ask, painted black, then shown: a window shown at once
 +        // appeared as a blank 640 x 448 box in the middle of the screen before going fullscreen.
-+        SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_WINDOW_HIDDEN | (settings.vsync ? FLAG_VSYNC_HINT : 0u));
-         InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
++        bool raylibMade = false;
++#if defined(PS2X_VULKAN_PRESENT)
++        GSGpuRenderer *gpu = m_gs.gpuRendererForSettings();
++        if (vulkanPresentWanted() && gpu)
++        {
++            // raylib's window made hidden and kept so (sound); the game's window is the Vulkan one, with its presenter
++            // made now: if either can't be, raylib's window is the game's as before (and the CPU renderer always)
++            SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_WINDOW_HIDDEN);
++            InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
++            raylibMade = true;
++            glfwSwapInterval(0);
++            s_vulkanWindow = createVulkanWindow(title);
++            std::string whyNot = "no window";
++            if (s_vulkanWindow)
++            {
++                s_presenter = std::make_unique<VulkanPresenter>();
++                if (!s_presenter->init(s_vulkanWindow, gpu->deviceName(), settings.vsync, whyNot))
++                {
++                    s_presenter.reset();
++                    glfwDestroyWindow(s_vulkanWindow);
++                    s_vulkanWindow = nullptr;
++                }
++            }
++            if (s_vulkanWindow)
++                host_input::useWindow(s_vulkanWindow); // the keyboard and controllers read from it
++            else
++            {
++                std::cerr << "[present] the Vulkan window couldn't start (" << whyNot << "): raylib's window" << std::endl;
++                stopSharedPictures();
++                glfwSwapInterval(settings.vsync ? 1 : 0);
++            }
++        }
++        if (!s_vulkanWindow)
++        {
++#endif
++        if (!raylibMade)
++        {
++            SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_WINDOW_HIDDEN | (settings.vsync ? FLAG_VSYNC_HINT : 0u));
++            InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
++        }
 +        applyWindowSettings();
 +        BeginDrawing();
 +        ClearBackground(BLACK);
@@ -17679,6 +19052,9 @@ index 45cb9d2..dea5b46 100644
 +            ClearBackground(BLACK);
 +            EndDrawing();
 +        }
++#if defined(PS2X_VULKAN_PRESENT)
++        }
++#endif
          InitAudioDevice();
          m_audioBackend.setAudioReady(IsAudioDeviceReady());
 +        if (IsAudioDeviceReady())
@@ -17689,7 +19065,7 @@ index 45cb9d2..dea5b46 100644
          if (m_debugUiInitCallback)
          {
              m_debugUiInitCallback(*this, m_debugUiUserData);
-@@ -971,9 +1194,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+@@ -971,9 +1362,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
      }
      {
          std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
@@ -17701,7 +19077,7 @@ index 45cb9d2..dea5b46 100644
      }
  
      LoadedModule module;
-@@ -1013,6 +1235,13 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+@@ -1013,6 +1403,17 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
      return true;
  }
  
@@ -17710,12 +19086,16 @@ index 45cb9d2..dea5b46 100644
 +    (void)runtime;
 +    if (IsWindowReady())
 +        SetWindowTitle(std::string(title).c_str());
++#if defined(PS2X_VULKAN_PRESENT)
++    if (s_vulkanWindow)
++        glfwSetWindowTitle(s_vulkanWindow, std::string(title).c_str());
++#endif
 +}
 +
  const PS2Runtime::IoPaths &PS2Runtime::getIoPaths()
  {
      return runtimeIoPaths();
-@@ -1316,6 +1545,16 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
+@@ -1316,6 +1717,16 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
              << " policy=" << static_cast<uint32_t>(policy)
              << " trace=" << formatDispatchHistory()
              << std::dec;
@@ -17732,7 +19112,7 @@ index 45cb9d2..dea5b46 100644
  
          static std::mutex s_missingFunctionLogMutex;
          {
-@@ -1396,14 +1635,32 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
+@@ -1396,14 +1807,32 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
  
      RecompiledFunction targetFn = lookupFunction(targetPc);
      const uint32_t entryPc = ctx->pc;
@@ -17767,7 +19147,7 @@ index 45cb9d2..dea5b46 100644
      {
          ctx->pc = fallthroughPc;
      }
-@@ -1945,12 +2202,96 @@ uint32_t PS2Runtime::guestRealloc(uint32_t guestAddr, uint32_t newSize, uint32_t
+@@ -1945,12 +2374,96 @@ uint32_t PS2Runtime::guestRealloc(uint32_t guestAddr, uint32_t newSize, uint32_t
      return newAddr;
  }
  
@@ -17864,7 +19244,7 @@ index 45cb9d2..dea5b46 100644
  
      std::lock_guard<std::mutex> lock(m_guestHeapMutex);
      ensureGuestHeapInitializedLocked();
-@@ -2039,10 +2380,36 @@ uint16_t PS2Runtime::Load16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
+@@ -2039,10 +2552,36 @@ uint16_t PS2Runtime::Load16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
      }
  }
  
@@ -17901,7 +19281,7 @@ index 45cb9d2..dea5b46 100644
          return m_memory.read32(vaddr);
      }
      catch (const std::exception &)
-@@ -2056,6 +2423,8 @@ uint64_t PS2Runtime::Load64(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
+@@ -2056,6 +2595,8 @@ uint64_t PS2Runtime::Load64(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
  {
      try
      {
@@ -17910,7 +19290,7 @@ index 45cb9d2..dea5b46 100644
          return m_memory.read64(vaddr);
      }
      catch (const std::exception &)
-@@ -2187,6 +2556,14 @@ void PS2Runtime::requestStop()
+@@ -2187,6 +2728,14 @@ void PS2Runtime::requestStop()
      {
          m_eeScheduler->requestStop();
      }
@@ -17925,7 +19305,7 @@ index 45cb9d2..dea5b46 100644
  }
  
  bool PS2Runtime::isStopRequested() const
-@@ -2339,8 +2716,12 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
+@@ -2339,8 +2888,12 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
      raiseCop0Exception(ctx, EXCEPTION_INTEGER_OVERFLOW);
  }
  
@@ -17938,7 +19318,7 @@ index 45cb9d2..dea5b46 100644
      m_stopRequested.store(false, std::memory_order_relaxed);
      ps2_stubs::resetSifState();
      resetIop();
-@@ -2361,12 +2742,27 @@ void PS2Runtime::run()
+@@ -2361,12 +2914,34 @@ void PS2Runtime::run()
      Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
      Texture2D frameTex = LoadTextureFromImage(blank);
      UnloadImage(blank);
@@ -17956,6 +19336,13 @@ index 45cb9d2..dea5b46 100644
  
      std::atomic<bool> gameThreadFinished{false};
  
++#if defined(PS2X_VULKAN_PRESENT)
++    // shown through Vulkan (vulkanPresentWanted): the window and its presenter were made at start; raylib's hidden
++    // window doesn't wait for the screen, so the loop waits once
++    VulkanPresenter *presenter = s_presenter.get();
++    GLFWwindow *presenterWindow = s_vulkanWindow;
++#endif
++
 +    m_chain.start(); // the VIF1 -> VU1 -> GS chain worker (VENDETTA_CHAIN_ASYNC=1)
      std::thread gameThread([&]()
                             {
@@ -17966,7 +19353,7 @@ index 45cb9d2..dea5b46 100644
          try
          {
              m_eeScheduler->reset(m_memory.getRDRAM(), m_cpuContext);
-@@ -2422,23 +2818,71 @@ void PS2Runtime::run()
+@@ -2422,23 +2997,74 @@ void PS2Runtime::run()
          });
          uint32_t presentWidth = FB_WIDTH;
          uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
@@ -18021,6 +19408,9 @@ index 45cb9d2..dea5b46 100644
 +        // whole pixels: an FSR picture is drawn at exactly this size, one texel per pixel
 +        const float dstHeight = std::round(std::min(screenHeight, screenWidth / aspect));
 +        const float dstWidth = std::round(std::min(screenWidth, dstHeight * aspect));
++#if defined(PS2X_VULKAN_PRESENT)
++        if (!presenterWindow) // the Vulkan window sets FSR's size itself
++#endif
 +        if (GSGpuRenderer *gpu = m_gs.gpuRendererForSettings())
 +            gpu->setOutputSize(static_cast<uint32_t>(dstWidth), static_cast<uint32_t>(dstHeight));
          const Rectangle srcRect{0.0f, 0.0f, srcWidth, srcHeight};
@@ -18046,7 +19436,41 @@ index 45cb9d2..dea5b46 100644
          DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
          if (m_debugUiInitialized && m_debugUiDrawCallback)
          {
-@@ -2459,6 +2903,10 @@ void PS2Runtime::run()
+@@ -2446,6 +3072,33 @@ void PS2Runtime::run()
+         }
+         EndDrawing();
+ 
++#if defined(PS2X_VULKAN_PRESENT)
++        if (presenterWindow)
++            host_input::poll(); // the controllers' state for the pads (raylib's frame polled the events)
++        // minimised (Alt-Tab from fullscreen): nothing to show (the swapchain would wait for a size on this thread)
++        if (presenterWindow && s_sharedFrame && freshPicture && !glfwGetWindowAttrib(presenterWindow, GLFW_ICONIFIED))
++        {
++            GSGpuRenderer *gpu = m_gs.gpuRendererForSettings();
++            if (presenter && gpu)
++            {
++                int fbWidth = 0, fbHeight = 0;
++                glfwGetFramebufferSize(presenterWindow, &fbWidth, &fbHeight);
++                const float vkAspect = aspect > 0.0f ? aspect : 4.0f / 3.0f;
++                const float vkHeight = std::round(std::min(static_cast<float>(fbHeight), fbWidth / vkAspect));
++                const float vkWidth = std::round(std::min(static_cast<float>(fbWidth), vkHeight * vkAspect));
++                gpu->setOutputSize(static_cast<uint32_t>(vkWidth), static_cast<uint32_t>(vkHeight)); // FSR at that size
++                presenter->present(*s_sharedFrame, *gpu, static_cast<int>(std::floor((fbWidth - vkWidth) * 0.5f)),
++                                   static_cast<int>(std::floor((fbHeight - vkHeight) * 0.5f)), static_cast<int>(vkWidth),
++                                   static_cast<int>(vkHeight), m_gs.presentFilter() == GSPresentFilter::Nearest);
++            }
++        }
++        if (presenterWindow && glfwWindowShouldClose(presenterWindow))
++        {
++            requestStop();
++            break;
++        }
++#endif
++
+         if (WindowShouldClose())
+         {
+             RUNTIME_LOG("[run] window close requested, breaking out of loop");
+@@ -2459,12 +3112,22 @@ void PS2Runtime::run()
      {
          gameThread.join();
      }
@@ -18057,6 +19481,18 @@ index 45cb9d2..dea5b46 100644
  
      if (m_debugUiInitialized && m_debugUiShutdownCallback)
      {
+         m_debugUiShutdownCallback(*this, m_debugUiUserData);
+         m_debugUiInitialized = false;
+     }
++#if defined(PS2X_VULKAN_PRESENT)
++    s_presenter.reset();
++    if (presenterWindow)
++        glfwDestroyWindow(presenterWindow);
++    s_vulkanWindow = nullptr;
++#endif
+     UnloadTexture(frameTex);
+     CloseWindow();
+ 
 diff --git a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp b/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp
 index b02c7ca..8021142 100644
 --- a/ps2xRuntime/src/lib/ps2_vif1_interpreter.cpp

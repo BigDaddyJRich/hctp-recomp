@@ -1,14 +1,19 @@
 diff --git a/gs/gs_interface.cpp b/gs/gs_interface.cpp
-index ea00016..22bfb2d 100644
+index ea00016..0177545 100644
 --- a/gs/gs_interface.cpp
 +++ b/gs/gs_interface.cpp
-@@ -2697,8 +2697,11 @@ void GSInterface::drawing_kick_append()
+@@ -2697,8 +2697,16 @@ void GSInterface::drawing_kick_append()
  	{
  		prim_attr.state |= 1u << STATE_BIT_PARALLELOGRAM;
  		prim_attr.state |= 1u << STATE_BIT_SPRITE;
 -		prim_attr.state |= 1u << STATE_BIT_SNAP_RASTER;
 -		prim_attr.state |= 1u << STATE_BIT_SNAP_ATTRIBUTE;
-+		if (!hacks.upscale_sprites)
++		// Upscaled sprites keep the snap when they read back something the GS drew (a copy of the picture drawn over
++		// it again, a glow or blur pass): those must line up with the picture texel for texel, else their rectangle
++		// shows. Only art the game uploaded is drawn at the upscaled resolution.
++		const bool reads_drawn_texture = prim.desc.TME &&
++		                                 tracker.texture_may_super_sample(state_tracker.tex.page_rects[0]);
++		if (!hacks.upscale_sprites || reads_drawn_texture)
 +		{
 +			prim_attr.state |= 1u << STATE_BIT_SNAP_RASTER;
 +			prim_attr.state |= 1u << STATE_BIT_SNAP_ATTRIBUTE;
@@ -16,7 +21,7 @@ index ea00016..22bfb2d 100644
  		prim_attr.state &= ~(1u << STATE_BIT_MULTISAMPLE);
  	}
  	else if (is_line)
-@@ -4445,6 +4448,7 @@ void GSInterface::set_debug_mode(const DebugMode &mode)
+@@ -4445,6 +4453,7 @@ void GSInterface::set_debug_mode(const DebugMode &mode)
  void GSInterface::set_hacks(const Hacks &hacks_)
  {
  	hacks = hacks_;
