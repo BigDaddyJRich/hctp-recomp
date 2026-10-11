@@ -31,6 +31,7 @@ public sealed class GameSettings
     // [controls]
     public bool Multitap = true;            // up to 4 players (a multitap in port 2)
     public bool[] Vibration = { true, true, true, true }; // per player
+    public int Keyboard = 1;                // the player the keyboard plays as: 1-4, 0 = nobody
 
     /// <summary>The same file the game writes when there is none.</summary>
     public const string DefaultFile =
@@ -66,7 +67,8 @@ public sealed class GameSettings
         "vibration_1 = true       # each player's controller vibrates (Xbox-style / XInput controllers)\n" +
         "vibration_2 = true\n" +
         "vibration_3 = true\n" +
-        "vibration_4 = true\n";
+        "vibration_4 = true\n" +
+        "keyboard = 1             # which player the keyboard plays as (with their controller): 1-4, 0 = nobody\n";
 
     public static GameSettings Load(string path)
     {
@@ -103,6 +105,7 @@ public sealed class GameSettings
                 case "controls.vibration_2": s.Vibration[1] = Bool(value, s.Vibration[1]); break;
                 case "controls.vibration_3": s.Vibration[2] = Bool(value, s.Vibration[2]); break;
                 case "controls.vibration_4": s.Vibration[3] = Bool(value, s.Vibration[3]); break;
+                case "controls.keyboard": s.Keyboard = Int(value, s.Keyboard, 0, 4); break;
             }
         }
         return s;
@@ -137,6 +140,7 @@ public sealed class GameSettings
             ("controls", "vibration_2", Vibration[1] ? "true" : "false"),
             ("controls", "vibration_3", Vibration[2] ? "true" : "false"),
             ("controls", "vibration_4", Vibration[3] ? "true" : "false"),
+            ("controls", "keyboard", Keyboard.ToString(CultureInfo.InvariantCulture)),
         };
         foreach (var (section, key, value) in values)
             SetLine(lines, section, key, value);

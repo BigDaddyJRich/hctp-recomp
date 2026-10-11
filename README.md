@@ -55,6 +55,7 @@ shape), graphics (with High Poly in every match) and sound — and has a PLAY bu
 | `VENDETTA_SHARPEN=0..2` | FSR's sharpening (default 0.5; 0 = the most) |
 | `VENDETTA_GPU=<number or name>` | which graphics card, e.g. `nvidia` (default: the dedicated one) |
 | `VENDETTA_ASPECT=16:9` | stretch to widescreen |
+| `VENDETTA_KEYBOARD=1..4/0` | which player the keyboard plays as, with their controller (`keyboard` in `settings.toml`, default 1); 0 = nobody. Keys: arrows / W A S D move, X ✕, Z □, C ○, V △, Q L1, E R1, Shift L2 / R2, Enter START, Tab SELECT, I J K L the right stick |
 | `VENDETTA_HIGHPOLY=1/0` | High Poly wrestlers and arenas in every match (`high_poly`, on by default in `settings.toml`); 0 = as on the PS2, the lower-detail ones in 3- and 4-fighter matches |
 
 The same settings can be changed while playing in the **Graphics** tab of the debug panel (hidden at start; F1 shows /

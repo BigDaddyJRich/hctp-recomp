@@ -21,7 +21,7 @@ public partial class SettingsViewModel : ObservableObject
         nameof(ModeIndex), nameof(Screen), nameof(Maximised), nameof(Resolution), nameof(Refresh), nameof(VsyncIndex),
         nameof(ShapeIndex), nameof(RendererIndex), nameof(ScaleIndex), nameof(FilterIndex), nameof(Sharpening),
         nameof(Volume), nameof(Reverb), nameof(Multitap), nameof(Vibration1), nameof(Vibration2), nameof(Vibration3),
-        nameof(Vibration4), nameof(HighPoly),
+        nameof(Vibration4), nameof(HighPoly), nameof(KeyboardIndex),
     };
 
     private readonly GameFolder _folder;
@@ -59,21 +59,24 @@ public partial class SettingsViewModel : ObservableObject
     private void UpdatePads()
     {
         var count = Controllers.XInputCount();
+        bool Keyboard(int player) => KeyboardIndex == player;
         string Pad(int player) =>
             player >= 2 && !Multitap ? "Off (2 players)"
-            : player < count ? "Xbox-style controller"
-            : player == 0 ? "The keyboard (no controller)" : "Not plugged in";
+            : player < count ? (Keyboard(player) ? "Xbox-style controller + the keyboard" : "Xbox-style controller")
+            : Keyboard(player) ? "The keyboard" : "Not plugged in";
+        bool In(int player) => (player < 2 || Multitap) && (player < count || Keyboard(player));
         Pad1 = Pad(0);
         Pad2 = Pad(1);
         Pad3 = Pad(2);
         Pad4 = Pad(3);
-        Pad1In = count > 0;
-        Pad2In = count > 1;
-        Pad3In = count > 2 && Multitap;
-        Pad4In = count > 3 && Multitap;
+        Pad1In = In(0);
+        Pad2In = In(1);
+        Pad3In = In(2);
+        Pad4In = In(3);
     }
 
     partial void OnMultitapChanged(bool value) => UpdatePads();
+    partial void OnKeyboardIndexChanged(int value) => UpdatePads();
 
     // the Play page's "how it will open"
     public string SummaryWindow => ModeIndex switch
@@ -122,6 +125,7 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private bool _reverb;
     // Controls
     [ObservableProperty] private bool _multitap;
+    [ObservableProperty] private int _keyboardIndex;   // 0-3 = players 1-4, 4 = nobody
     [ObservableProperty] private bool _vibration1;
     [ObservableProperty] private bool _vibration2;
     [ObservableProperty] private bool _vibration3;
@@ -287,6 +291,7 @@ public partial class SettingsViewModel : ObservableObject
             Vibration2 = s.Vibration[1];
             Vibration3 = s.Vibration[2];
             Vibration4 = s.Vibration[3];
+            KeyboardIndex = s.Keyboard is >= 1 and <= 4 ? s.Keyboard - 1 : 4;
         }
         finally
         {
@@ -369,6 +374,7 @@ public partial class SettingsViewModel : ObservableObject
         Reverb = Reverb,
         Multitap = Multitap,
         Vibration = new[] { Vibration1, Vibration2, Vibration3, Vibration4 },
+        Keyboard = KeyboardIndex is >= 0 and <= 3 ? KeyboardIndex + 1 : 0,
     };
 
     private void Save()

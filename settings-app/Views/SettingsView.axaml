@@ -308,15 +308,52 @@
                 </StackPanel>
 
                 <StackPanel>
-                    <TextBlock Classes="cap" Text="CHANGING BUTTONS" />
-                    <Border Classes="capline" Margin="0,8,0,10" />
-                    <Panel>
-                        <Rectangle Stroke="{StaticResource VLine}" StrokeThickness="1" StrokeDashArray="4,3" RadiusX="8" RadiusY="8" />
-                        <StackPanel Margin="16" Spacing="4" HorizontalAlignment="Center">
-                            <TextBlock Text="Coming" FontWeight="SemiBold" HorizontalAlignment="Center" />
-                            <TextBlock Classes="hint" Text="Each player picks their own buttons here." HorizontalAlignment="Center" />
-                        </StackPanel>
-                    </Panel>
+                    <TextBlock Classes="cap" Text="KEYBOARD" />
+                    <Border Classes="capline" />
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Classes="label" Text="Keyboard plays as" />
+                                <TextBlock Classes="hint" TextWrapping="Wrap"
+                                           Text="Together with that player's controller. Players 3 and 4 need Up to 4 players." />
+                            </StackPanel>
+                            <ListBox Grid.Column="1" Classes="seg" SelectedIndex="{Binding KeyboardIndex}">
+                                <ListBoxItem Content="Player 1" />
+                                <ListBoxItem Content="Player 2" />
+                                <ListBoxItem Content="Player 3" />
+                                <ListBoxItem Content="Player 4" />
+                                <ListBoxItem Content="Nobody" />
+                            </ListBox>
+                        </Grid>
+                    </Border>
+                    <!-- the keys (ps2_pad.cpp); what each button does in a match is the game's -->
+                    <Grid ColumnDefinitions="150,*,28,150,*" Margin="0,10,0,0"
+                          RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="7">
+                        <TextBlock Classes="key" Text="Move" />
+                        <TextBlock Grid.Column="1" Classes="mono" Text="Arrow keys · W A S D" />
+                        <TextBlock Grid.Row="1" Classes="key" Text="✕ Grapple" />
+                        <TextBlock Grid.Row="1" Grid.Column="1" Classes="mono" Text="X · Space" />
+                        <TextBlock Grid.Row="2" Classes="key" Text="□ Strike" />
+                        <TextBlock Grid.Row="2" Grid.Column="1" Classes="mono" Text="Z · Num 0" />
+                        <TextBlock Grid.Row="3" Classes="key" Text="○ Run" />
+                        <TextBlock Grid.Row="3" Grid.Column="1" Classes="mono" Text="C · Esc" />
+                        <TextBlock Grid.Row="4" Classes="key" Text="△ Triangle" />
+                        <TextBlock Grid.Row="4" Grid.Column="1" Classes="mono" Text="V · Num 1" />
+                        <TextBlock Grid.Row="5" Classes="key" Text="Start" />
+                        <TextBlock Grid.Row="5" Grid.Column="1" Classes="mono" Text="Enter" />
+                        <TextBlock Grid.Row="6" Classes="key" Text="Select" />
+                        <TextBlock Grid.Row="6" Grid.Column="1" Classes="mono" Text="Tab" />
+                        <TextBlock Grid.Column="3" Classes="key" Text="L1 Dodge" />
+                        <TextBlock Grid.Column="4" Classes="mono" Text="Q" />
+                        <TextBlock Grid.Row="1" Grid.Column="3" Classes="key" Text="R1 Block" />
+                        <TextBlock Grid.Row="1" Grid.Column="4" Classes="mono" Text="E" />
+                        <TextBlock Grid.Row="2" Grid.Column="3" Classes="key" Text="L2" />
+                        <TextBlock Grid.Row="2" Grid.Column="4" Classes="mono" Text="Left Shift" />
+                        <TextBlock Grid.Row="3" Grid.Column="3" Classes="key" Text="R2" />
+                        <TextBlock Grid.Row="3" Grid.Column="4" Classes="mono" Text="Right Shift" />
+                        <TextBlock Grid.Row="4" Grid.Column="3" Classes="key" Text="Taunt · Blazin'" />
+                        <TextBlock Grid.Row="4" Grid.Column="4" Classes="mono" Text="I J K L (right stick)" />
+                    </Grid>
                 </StackPanel>
             </StackPanel>
         </ScrollViewer>
