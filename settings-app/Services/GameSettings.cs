@@ -11,7 +11,7 @@ public sealed class GameSettings
     public const int RefreshScreens = 0;    // the screen's own rate
 
     // [display]
-    public string Mode = "window";          // window | borderless | fullscreen
+    public string Mode = "fullscreen";      // fullscreen (the default) | window | borderless
     public int Screen = 1;
     public bool Maximised = true;
     public int FullscreenWidth;             // 0 = the screen's own resolution
@@ -25,13 +25,14 @@ public sealed class GameSettings
     public string Filter = "fsr";           // fsr | smooth | blocky
     public int Sharpening = 75;             // 0-100
     public bool HighPoly = true;            // High Poly wrestlers and arenas in every match
+    public bool Sharp2D = true;             // the HUD, text and menus in the 3-D's detail
     // [sound]
     public int Volume = 100;                // 0-100
     public bool Reverb = true;
     // [controls]
     public bool Multitap = true;            // up to 4 players (a multitap in port 2)
     public bool[] Vibration = { true, true, true, true }; // per player
-    public int Keyboard = 1;                // the player the keyboard plays as: 1-4, 0 = nobody
+    public int Keyboard = 0;                // the player the keyboard plays as: 1-4, 0 = nobody (the default)
 
     /// <summary>The same file the game writes when there is none.</summary>
     public const string DefaultFile =
@@ -39,7 +40,7 @@ public sealed class GameSettings
         "# A VENDETTA_* switch set in the environment wins over a line here.\n" +
         "\n" +
         "[display]\n" +
-        "mode = \"window\"          # \"window\", \"borderless\" (a frameless window the size of the screen) or \"fullscreen\"\n" +
+        "mode = \"fullscreen\"      # \"window\", \"borderless\" (a frameless window the size of the screen) or \"fullscreen\"\n" +
         "screen = 1               # which screen: 1 = the main one\n" +
         "maximised = true         # start maximised (window only)\n" +
         "fullscreen_width = 0     # fullscreen resolution; 0 = the screen's own\n" +
@@ -55,6 +56,7 @@ public sealed class GameSettings
         "scale = 8                # how much sharper than the PS2: 1, 2, 4, 8 or 16\n" +
         "filter = \"fsr\"           # scaling to the window: \"fsr\", \"smooth\" or \"blocky\"\n" +
         "sharpening = 75          # 0-100, with \"fsr\"\n" +
+        "sharp_2d = true          # the HUD, text and menus in the same detail as the 3-D (as PCSX2 upscales them); false = as on the PS2\n" +
         "high_poly = true         # every wrestler and arena at full detail in every match; false = as on the PS2\n" +
         "                         # (lower-detail wrestlers and arenas in 3- and 4-fighter matches)\n" +
         "\n" +
@@ -68,7 +70,7 @@ public sealed class GameSettings
         "vibration_2 = true\n" +
         "vibration_3 = true\n" +
         "vibration_4 = true\n" +
-        "keyboard = 1             # which player the keyboard plays as (with their controller): 1-4, 0 = nobody\n";
+        "keyboard = 0             # which player the keyboard plays as (with their controller): 1-4, 0 = nobody\n";
 
     public static GameSettings Load(string path)
     {
@@ -98,6 +100,7 @@ public sealed class GameSettings
                 case "graphics.filter": s.Filter = OneOf(value, s.Filter, "fsr", "smooth", "blocky"); break;
                 case "graphics.sharpening": s.Sharpening = Int(value, s.Sharpening, 0, 100); break;
                 case "graphics.high_poly": s.HighPoly = Bool(value, s.HighPoly); break;
+                case "graphics.sharp_2d": s.Sharp2D = Bool(value, s.Sharp2D); break;
                 case "sound.volume": s.Volume = Int(value, s.Volume, 0, 100); break;
                 case "sound.reverb": s.Reverb = Bool(value, s.Reverb); break;
                 case "controls.multitap": s.Multitap = Bool(value, s.Multitap); break;
@@ -132,6 +135,7 @@ public sealed class GameSettings
             ("graphics", "scale", Scale.ToString(CultureInfo.InvariantCulture)),
             ("graphics", "filter", Quote(Filter)),
             ("graphics", "sharpening", Sharpening.ToString(CultureInfo.InvariantCulture)),
+            ("graphics", "sharp_2d", Sharp2D ? "true" : "false"),
             ("graphics", "high_poly", HighPoly ? "true" : "false"),
             ("sound", "volume", Volume.ToString(CultureInfo.InvariantCulture)),
             ("sound", "reverb", Reverb ? "true" : "false"),

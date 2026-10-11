@@ -21,6 +21,7 @@
             <MenuItem Header="Help">
                 <MenuItem Header="About" Command="{Binding ShowAboutCommand}" IsEnabled="{Binding NotInSetup}" />
                 <MenuItem Header="@jcsix on X" Command="{Binding OpenXCommand}" />
+                <MenuItem Header="jcsix694 on GitHub" Command="{Binding OpenGitHubCommand}" />
             </MenuItem>
         </Menu>
 

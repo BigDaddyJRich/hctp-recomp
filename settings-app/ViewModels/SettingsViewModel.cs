@@ -21,7 +21,7 @@ public partial class SettingsViewModel : ObservableObject
         nameof(ModeIndex), nameof(Screen), nameof(Maximised), nameof(Resolution), nameof(Refresh), nameof(VsyncIndex),
         nameof(ShapeIndex), nameof(RendererIndex), nameof(ScaleIndex), nameof(FilterIndex), nameof(Sharpening),
         nameof(Volume), nameof(Reverb), nameof(Multitap), nameof(Vibration1), nameof(Vibration2), nameof(Vibration3),
-        nameof(Vibration4), nameof(HighPoly), nameof(KeyboardIndex),
+        nameof(Vibration4), nameof(HighPoly), nameof(Sharp2D), nameof(KeyboardIndex),
     };
 
     private readonly GameFolder _folder;
@@ -120,6 +120,7 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private int _filterIndex;
     [ObservableProperty] private double _sharpening;
     [ObservableProperty] private bool _highPoly;
+    [ObservableProperty] private bool _sharp2D;
     // Sound
     [ObservableProperty] private double _volume;
     [ObservableProperty] private bool _reverb;
@@ -204,7 +205,7 @@ public partial class SettingsViewModel : ObservableObject
         1 => "A little sharper",
         2 => "Sharp",
         3 => "Default: very sharp",
-        _ => "Sharpest, needs a strong graphics card",
+        _ => "Sharpest: four times the PS2's detail, needs a strong graphics card",
     };
 
     public string FilterHint => FilterIndex switch
@@ -284,6 +285,7 @@ public partial class SettingsViewModel : ObservableObject
             FilterIndex = Math.Max(0, Array.IndexOf(Filters, s.Filter));
             Sharpening = s.Sharpening;
             HighPoly = s.HighPoly;
+            Sharp2D = s.Sharp2D;
             Volume = s.Volume;
             Reverb = s.Reverb;
             Multitap = s.Multitap;
@@ -370,6 +372,7 @@ public partial class SettingsViewModel : ObservableObject
         Filter = Filters[Math.Clamp(FilterIndex, 0, 2)],
         Sharpening = (int)Math.Round(Sharpening),
         HighPoly = HighPoly,
+        Sharp2D = Sharp2D,
         Volume = (int)Math.Round(Volume),
         Reverb = Reverb,
         Multitap = Multitap,

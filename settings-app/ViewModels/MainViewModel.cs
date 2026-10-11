@@ -12,6 +12,7 @@ namespace VendettaSettings.ViewModels;
 public partial class MainViewModel : ObservableObject
 {
     public const string XUrl = "https://x.com/jcsix";
+    public const string GitHubUrl = "https://github.com/jcsix694";
 
     public GameFolder Folder { get; }
     public SettingsViewModel Settings { get; }
@@ -196,6 +197,7 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand] private void OpenFolder() => GameFolder.Open(Folder.Root);
     [RelayCommand] private void OpenSaves() => GameFolder.Open(Folder.SavesPath);
     [RelayCommand] private void OpenX() => GameFolder.Open(XUrl);
+    [RelayCommand] private void OpenGitHub() => GameFolder.Open(GitHubUrl);
     [RelayCommand] private void OpenLicence() => GameFolder.OpenText(Path.Combine(Folder.SourceRoot, "LICENSE"));
     [RelayCommand] private void OpenNotices() => GameFolder.OpenText(Path.Combine(Folder.SourceRoot, "THIRD-PARTY-NOTICES.txt"));
 

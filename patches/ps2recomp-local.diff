@@ -8357,7 +8357,7 @@ index 9614016..c31c24f 100644
          else if (stack != 0u)
          {
 diff --git a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
-index f0ad507..00ffcc6 100644
+index f0ad507..8fa3249 100644
 --- a/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_cpu_backend.cpp
 @@ -1,3 +1,8 @@
@@ -9149,7 +9149,7 @@ index f0ad507..00ffcc6 100644
      if (!m_vram || m_vramSize == 0u)
      {
          out.clear();
-@@ -708,10 +1208,208 @@ GSTransferSnapshot GSCpuBackend::GetTransferSnapshot() const
+@@ -708,10 +1208,209 @@ GSTransferSnapshot GSCpuBackend::GetTransferSnapshot() const
      return result;
  }
  
@@ -9252,13 +9252,14 @@ index f0ad507..00ffcc6 100644
 +                    std::fprintf(stderr, "[sprite]   texels: max alpha %u, %u of 256 non-zero\n", maxAlpha, nonZero);
 +                    const GSVertex &v0 = batch.vertices[0];
 +                    const GSVertex &v1 = batch.vertices[batch.vertexCount > 1 ? 1 : 0];
-+                    std::fprintf(stderr, "[sprite] %.3f tme=%u fst=%u abe=%u ctxt=%u fbp=0x%x fbw=%u fpsm=0x%x fbmsk=0x%x zbp=0x%x zpsm=0x%x zmsk=%u test=0x%llx alpha=0x%llx xy=(%.1f,%.1f)-(%.1f,%.1f) z=%.0f uv=(%u,%u)-(%u,%u) st=(%.3f,%.3f)-(%.3f,%.3f) rgba=%u,%u,%u,%u tex=tbp0x%x/tbw%u/psm0x%x/%ux%u/tcc%u/tfx%u/cbp0x%x sc=%u-%u,%u-%u off=%u,%u\n",
++                    std::fprintf(stderr, "[sprite] %.3f tme=%u fst=%u abe=%u ctxt=%u fbp=0x%x fbw=%u fpsm=0x%x fbmsk=0x%x zbp=0x%x zpsm=0x%x zmsk=%u test=0x%llx alpha=0x%llx xy=(%.1f,%.1f)-(%.1f,%.1f) z=%.0f uv=(%u,%u)-(%u,%u) st=(%.3f,%.3f)-(%.3f,%.3f) rgba=%u,%u,%u,%u tex=tbp0x%x/tbw%u/psm0x%x/%ux%u/tcc%u/tfx%u/cbp0x%x sc=%u-%u,%u-%u off=%u,%u tex1=0x%llx\n",
 +                                 now, state.prim.tme, state.prim.fst, state.prim.abe, state.prim.ctxt, ctx.frame.fbp, ctx.frame.fbw, ctx.frame.psm, ctx.frame.fbmsk,
 +                                 ctx.zbuf.zbp, ctx.zbuf.psm, ctx.zbuf.zmask ? 1u : 0u,
 +                                 static_cast<unsigned long long>(ctx.test), static_cast<unsigned long long>(ctx.alpha),
 +                                 v0.x, v0.y, v1.x, v1.y, v1.z, v0.u, v0.v, v1.u, v1.v, v0.s, v0.t, v1.s, v1.t, v1.r, v1.g, v1.b, v1.a,
 +                                 ctx.tex0.tbp0, ctx.tex0.tbw, ctx.tex0.psm, 1u << ctx.tex0.tw, 1u << ctx.tex0.th, ctx.tex0.tcc, ctx.tex0.tfx, ctx.tex0.cbp,
-+                                 ctx.scissor.x0, ctx.scissor.x1, ctx.scissor.y0, ctx.scissor.y1, ctx.xyoffset.ofx, ctx.xyoffset.ofy);
++                                 ctx.scissor.x0, ctx.scissor.x1, ctx.scissor.y0, ctx.scissor.y1, ctx.xyoffset.ofx, ctx.xyoffset.ofy,
++                                 static_cast<unsigned long long>(ctx.tex1));
 +                }
 +                else
 +                {
@@ -9359,7 +9360,7 @@ index f0ad507..00ffcc6 100644
      PS2_IF_AGRESSIVE_LOGS({
          const uint32_t primitiveIndex = s_debugPrimitiveCount.fetch_add(1u, std::memory_order_relaxed);
          if (primitiveIndex < 64u)
-@@ -821,16 +1519,16 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
+@@ -821,16 +1520,16 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
      switch (state.prim.type)
      {
      case GS_PRIM_SPRITE:
@@ -9379,7 +9380,7 @@ index f0ad507..00ffcc6 100644
          break;
      case GS_PRIM_POINT:
      {
-@@ -838,7 +1536,8 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
+@@ -838,7 +1537,8 @@ void GSCpuBackend::DrawPrimitive(const GSPrimitiveBatch &batch)
          const auto &ctx = state.context;
          int px = static_cast<int>(v.x) - (ctx.xyoffset.ofx >> 4);
          int py = static_cast<int>(v.y) - (ctx.xyoffset.ofy >> 4);
@@ -9389,7 +9390,7 @@ index f0ad507..00ffcc6 100644
          break;
      }
      default:
-@@ -877,7 +1576,10 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
+@@ -877,7 +1577,10 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
          return;
      }
  
@@ -9401,7 +9402,7 @@ index f0ad507..00ffcc6 100644
      const bool alphaBlendEnabled = state.prim.abe;
      const bool preserveDestinationAlpha = writeMask.writeRgb && !writeMask.writeAlpha && fpsm == GS_PSM_CT32;
      const bool destinationAlphaTestNeedsRead = ((ctx.test >> 14) & 0x1u) != 0u && (fpsm == GS_PSM_CT32 || fpsm == GS_PSM_CT16 || fpsm == GS_PSM_CT16S);
-@@ -1012,12 +1714,16 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
+@@ -1012,12 +1715,16 @@ void GSCpuBackend::WritePixel(const GSDrawState &state, int x, int y, int z, uin
      }
  }
  
@@ -9424,7 +9425,7 @@ index f0ad507..00ffcc6 100644
  {
      const bool sixteenBit = cpsm == GS_PSM_CT16 || cpsm == GS_PSM_CT16S;
      const uint32_t csaMask = sixteenBit ? 0x1Fu : 0x0Fu;
-@@ -1037,17 +1743,17 @@ uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
+@@ -1037,17 +1744,17 @@ uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
      {
      case GS_PSM_CT32:
      {
@@ -9445,7 +9446,7 @@ index f0ad507..00ffcc6 100644
      default:
          break;
      }
-@@ -1055,7 +1761,93 @@ uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
+@@ -1055,7 +1762,93 @@ uint32_t GSCpuBackend::LookupCLUT(const GSDrawState &state,
      return 0xFFFF00FFu;
  }
  
@@ -9540,7 +9541,7 @@ index f0ad507..00ffcc6 100644
  {
      const auto &ctx = state.context;
      const auto &tex = ctx.tex0;
-@@ -1083,83 +1875,82 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
+@@ -1083,83 +1876,82 @@ uint32_t GSCpuBackend::SampleTexture(const GSDrawState &state, float s, float t,
          texVf = t * invQ * static_cast<float>(texH);
      }
  
@@ -9685,7 +9686,7 @@ index f0ad507..00ffcc6 100644
  {
      const GSDrawState &state = batch.state;
      const GSVertex &v0 = batch.vertices[0];
-@@ -1196,6 +1987,11 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1196,6 +1988,11 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
      const int drawY0 = clampInt(unclippedY0, ctx.scissor.y0, ctx.scissor.y1);
      const int drawX1 = clampInt(unclippedX1, ctx.scissor.x0, ctx.scissor.x1);
      const int drawY1 = clampInt(unclippedY1, ctx.scissor.y0, ctx.scissor.y1);
@@ -9697,7 +9698,7 @@ index f0ad507..00ffcc6 100644
  
      const uint64_t alphaReg = ctx.alpha;
      const uint8_t alphaMode = static_cast<uint8_t>(alphaReg & 0xFFu);
-@@ -1227,6 +2023,12 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1227,6 +2024,12 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
              v1f = (v1.t / q1) * static_cast<float>(texH);
          }
  
@@ -9710,7 +9711,7 @@ index f0ad507..00ffcc6 100644
          float spriteW = static_cast<float>(spanX);
          float spriteH = static_cast<float>(spanY);
          if (spriteW < 1.0f)
-@@ -1236,6 +2038,8 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1236,6 +2039,8 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
  
          for (int y = drawY0; y <= drawY1; ++y)
          {
@@ -9719,7 +9720,7 @@ index f0ad507..00ffcc6 100644
              float ty = (static_cast<float>(y - unclippedY0) + 0.5f) / spriteH;
              float texVf = v0f + (v1f - v0f) * ty;
  
-@@ -1250,11 +2054,11 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1250,11 +2055,11 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
                      const int fixedV = static_cast<int>((texVf * 16.0f) + 0.5f);
                      const uint16_t sampleU = static_cast<uint16_t>(clampInt(fixedU, 0, 0xFFFF));
                      const uint16_t sampleV = static_cast<uint16_t>(clampInt(fixedV, 0, 0xFFFF));
@@ -9733,7 +9734,7 @@ index f0ad507..00ffcc6 100644
                  }
  
                  uint8_t tr = static_cast<uint8_t>(texel & 0xFF);
-@@ -1264,18 +2068,30 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
+@@ -1264,18 +2069,30 @@ void GSCpuBackend::DrawSprite(const GSPrimitiveBatch &batch)
  
                  const TextureCombineResult color = combineTexture(tex, r, g, b, a, tr, tg, tb, ta);
                  WritePixel(state, x, y, z1, color.r, color.g, color.b, color.a, v1.fog);
@@ -9765,7 +9766,7 @@ index f0ad507..00ffcc6 100644
  {
      const GSDrawState &state = batch.state;
      const GSVertex &v0 = batch.vertices[0];
-@@ -1310,11 +2126,50 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1310,11 +2127,50 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
      const float winding = (denom < 0.0f) ? -1.0f : 1.0f;
      const float invAbsDenom = 1.0f / std::fabs(denom);
      constexpr float kEdgeEpsilon = 1.0e-4f;
@@ -9817,7 +9818,7 @@ index f0ad507..00ffcc6 100644
          {
              float px = static_cast<float>(x) + 0.5f;
  
-@@ -1325,6 +2180,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1325,6 +2181,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
              if (w0 < -kEdgeEpsilon || w1 < -kEdgeEpsilon || w2 < -kEdgeEpsilon)
                  continue;
  
@@ -9825,7 +9826,7 @@ index f0ad507..00ffcc6 100644
              double z = v0.z * w0 + v1.z * w1 + v2.z * w2;
  
              uint8_t r, g, b, a;
-@@ -1367,7 +2223,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1367,7 +2224,7 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
                      iv = 0;
                  }
  
@@ -9834,7 +9835,7 @@ index f0ad507..00ffcc6 100644
  
                  uint8_t tr = static_cast<uint8_t>(texel & 0xFF);
                  uint8_t tg = static_cast<uint8_t>((texel >> 8) & 0xFF);
-@@ -1391,9 +2247,10 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
+@@ -1391,9 +2248,10 @@ void GSCpuBackend::DrawTriangle(const GSPrimitiveBatch &batch)
              WritePixel(state, x, y, static_cast<u32>(z + 0.5), r, g, b, a, fog);
          }
      }
@@ -9846,7 +9847,7 @@ index f0ad507..00ffcc6 100644
  {
      const GSDrawState &state = batch.state;
      const GSVertex &v0 = batch.vertices[0];
-@@ -1440,7 +2297,8 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
+@@ -1440,7 +2298,8 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
  
          double z = (v0.z + (v1.z - v0.z) * t);
          const uint8_t fog = clampU8(static_cast<int>(v0.fog + (v1.fog - v0.fog) * t));
@@ -9856,7 +9857,7 @@ index f0ad507..00ffcc6 100644
  
          if (x0 == x1 && y0 == y1)
              break;
-@@ -1463,6 +2321,8 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
+@@ -1463,6 +2322,8 @@ void GSCpuBackend::DrawLine(const GSPrimitiveBatch &batch)
  void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
  {
      std::lock_guard<std::mutex> lock(m_mutex);
@@ -9865,7 +9866,7 @@ index f0ad507..00ffcc6 100644
      m_transfer = command;
      m_transferState.x = command.trxpos.dsax;
      m_transferState.y = command.trxpos.dsay;
-@@ -1471,6 +2331,20 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
+@@ -1471,6 +2332,20 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
      m_transferState.direction = command.direction;
      m_transferState.localToHostPendingBytes = 0u;
  
@@ -9886,7 +9887,7 @@ index f0ad507..00ffcc6 100644
      if (command.direction == 2u)
          PerformLocalToLocalTransfer();
      else if (command.direction == 1u)
-@@ -1480,8 +2354,30 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
+@@ -1480,8 +2355,30 @@ void GSCpuBackend::BeginTransfer(const GSTransferCommand &command)
  void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
  {
      std::lock_guard<std::mutex> lock(m_mutex);
@@ -9917,7 +9918,7 @@ index f0ad507..00ffcc6 100644
      if (m_transfer.trxreg.rrw == 0u || m_transfer.trxreg.rrh == 0u || m_transferState.totalPixels == 0u)
          return;
  
-@@ -1492,6 +2388,42 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+@@ -1492,6 +2389,42 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
      const uint32_t dsax = m_transfer.trxpos.dsax;
      uint32_t offset = 0u;
  
@@ -9960,7 +9961,7 @@ index f0ad507..00ffcc6 100644
      auto advancePixel = [&](uint32_t count)
      {
          const uint32_t totalPixels = m_transferState.totalPixels;
-@@ -1509,6 +2441,9 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+@@ -1509,6 +2442,9 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
          m_transferState.y = m_transfer.trxpos.dsay + (m_transferState.copiedPixels / rrw);
      };
  
@@ -9970,7 +9971,7 @@ index f0ad507..00ffcc6 100644
      while (offset < sizeBytes && m_transferState.direction == 0u)
      {
          switch (dpsm)
-@@ -1520,7 +2455,7 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+@@ -1520,7 +2456,7 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
                  return;
              uint32_t value = 0u;
              std::memcpy(&value, data + offset, sizeof(value));
@@ -9979,7 +9980,7 @@ index f0ad507..00ffcc6 100644
              offset += 4u;
              advancePixel(1u);
              break;
-@@ -1533,7 +2468,7 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+@@ -1533,7 +2469,7 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
              const uint32_t value = static_cast<uint32_t>(data[offset]) |
                                     (static_cast<uint32_t>(data[offset + 1u]) << 8u) |
                                     (static_cast<uint32_t>(data[offset + 2u]) << 16u);
@@ -9988,7 +9989,7 @@ index f0ad507..00ffcc6 100644
              offset += 3u;
              advancePixel(1u);
              break;
-@@ -1547,14 +2482,14 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+@@ -1547,14 +2483,14 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
                  return;
              uint16_t value = 0u;
              std::memcpy(&value, data + offset, sizeof(value));
@@ -10005,7 +10006,7 @@ index f0ad507..00ffcc6 100644
              advancePixel(1u);
              break;
          case GS_PSM_T4:
-@@ -1563,14 +2498,14 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+@@ -1563,14 +2499,14 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
          {
              const uint8_t packed = data[offset++];
              const uint32_t firstPixel = m_transferState.copiedPixels;
@@ -10022,7 +10023,7 @@ index f0ad507..00ffcc6 100644
                                    dsax + (secondPixel % rrw),
                                    m_transfer.trxpos.dsay + (secondPixel / rrw),
                                    (packed >> 4u) & 0x0Fu);
-@@ -1586,6 +2521,7 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
+@@ -1586,6 +2522,7 @@ void GSCpuBackend::UploadImage(const uint8_t *data, uint32_t sizeBytes)
  
  void GSCpuBackend::PerformLocalToLocalTransfer()
  {
@@ -10030,7 +10031,7 @@ index f0ad507..00ffcc6 100644
      if (!m_vram)
          return;
  
-@@ -1697,6 +2633,7 @@ void GSCpuBackend::PerformLocalToHostTransfer()
+@@ -1697,6 +2634,7 @@ void GSCpuBackend::PerformLocalToHostTransfer()
  uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
  {
      std::lock_guard<std::mutex> lock(m_mutex);
@@ -10038,7 +10039,7 @@ index f0ad507..00ffcc6 100644
      if (!dst || maxBytes == 0u || m_localToHostReadPos >= m_localToHostBuffer.size())
          return 0u;
      const size_t count = std::min<size_t>(maxBytes, m_localToHostBuffer.size() - m_localToHostReadPos);
-@@ -1706,9 +2643,18 @@ uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
+@@ -1706,9 +2644,18 @@ uint32_t GSCpuBackend::ConsumeLocalToHostBytes(uint8_t *dst, uint32_t maxBytes)
      return static_cast<uint32_t>(count);
  }
  
@@ -10057,7 +10058,7 @@ index f0ad507..00ffcc6 100644
      if (!m_vram || context.frame.fbw == 0u)
          return false;
  
-@@ -1852,18 +2798,110 @@ PresentationFrame GSCpuBackend::Present(const GSPresentationRequest &request)
+@@ -1852,18 +2799,110 @@ PresentationFrame GSCpuBackend::Present(const GSPresentationRequest &request)
      if (snapshot.empty())
          return {};
  
@@ -10171,7 +10172,7 @@ index f0ad507..00ffcc6 100644
      const GSFrameReg displayFrame1 = decodeDisplayFrame(request.dispfb1);
      const GSFrameReg displayFrame2 = decodeDisplayFrame(request.dispfb2);
      const GSDisplayReadOrigin origin1 = decodeDisplayReadOrigin(request.dispfb1);
-@@ -1871,6 +2909,15 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1871,6 +2910,15 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
      uint32_t width1 = 0u, height1 = 0u, width2 = 0u, height2 = 0u;
      decodeDisplaySize(request.display1, width1, height1);
      decodeDisplaySize(request.display2, width2, height2);
@@ -10187,7 +10188,7 @@ index f0ad507..00ffcc6 100644
      const bool valid1 = pmode.enableCrt1 && hasDisplaySetup(request.display1, displayFrame1);
      const bool valid2 = pmode.enableCrt2 && hasDisplaySetup(request.display2, displayFrame2);
      if (!valid1 && !valid2)
-@@ -1918,13 +2965,42 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1918,13 +2966,42 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
          return true;
      };
  
@@ -10232,7 +10233,7 @@ index f0ad507..00ffcc6 100644
          {
              result.width = std::max(width1, width2);
              result.height = std::max(height1, height2);
-@@ -1956,8 +3032,6 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1956,8 +3033,6 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
                      dst[3] = pmode.amod ? dst[3] : src[3];
                  }
              normalizePresentationAlpha(result.pixels, result.width, result.height);
@@ -10241,7 +10242,7 @@ index f0ad507..00ffcc6 100644
              result.displayFbp = displayFrame1.fbp;
              result.sourceFbp = selected1.fbp;
              return result;
-@@ -1969,10 +3043,8 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
+@@ -1969,10 +3044,8 @@ PresentationFrame GSCpuBackend::PresentFromLocalMemory(const GSPresentationReque
      result.width = valid1 ? width1 : width2;
      result.height = valid1 ? height1 : height2;
      GSFrameReg selected = displayFrame;
@@ -10254,7 +10255,7 @@ index f0ad507..00ffcc6 100644
      result.displayFbp = displayFrame.fbp;
      result.sourceFbp = selected.fbp;
 diff --git a/ps2xRuntime/src/lib/gs/gs_frontend.cpp b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
-index 5658928..f61e657 100644
+index 5658928..78cfcf4 100644
 --- a/ps2xRuntime/src/lib/gs/gs_frontend.cpp
 +++ b/ps2xRuntime/src/lib/gs/gs_frontend.cpp
 @@ -1,8 +1,17 @@
@@ -10484,11 +10485,11 @@ index 5658928..f61e657 100644
 +    gateForeignCall();
      std::lock_guard<std::recursive_mutex> lock(m_stateMutex);
 +    KickGuard kick(*this);
-+    if (m_gpu)
-+        m_held.clear();
-+        m_overlay.clear();
-+        m_holding = false;
-+        m_heldBytes = 0;
++    m_held.clear();
++    m_overlay.clear();
++    m_holding = false;
++    m_heldBytes = 0;
++    if (m_gpu) // none with the CPU renderer (VENDETTA_GS=cpu)
 +        m_gpu->reset();
      std::memset(m_ctx, 0, sizeof(m_ctx));
      m_prim = {};
@@ -11728,10 +11729,10 @@ index 0000000..6085f2a
 +}
 diff --git a/ps2xRuntime/src/lib/gs/gs_gpu_parallel.cpp b/ps2xRuntime/src/lib/gs/gs_gpu_parallel.cpp
 new file mode 100644
-index 0000000..502e19c
+index 0000000..0568f8f
 --- /dev/null
 +++ b/ps2xRuntime/src/lib/gs/gs_gpu_parallel.cpp
-@@ -0,0 +1,1080 @@
+@@ -0,0 +1,1140 @@
 +// The GS on the graphics card: paraLLEl-GS (Arntzen Software AS, LGPL-3.0+) on Granite's Vulkan backend.
 +//
 +// The GS front end hands over the raw GS input in its own order (GIF data per path, register writes, presentations);
@@ -12261,6 +12262,21 @@ index 0000000..502e19c
 +                                "size control)");
 +
 +                {
++                    // 2-D detail: VENDETTA_UPSCALE_SPRITES=1 (settings.toml graphics.sharp_2d) super-samples sprites
++                    // (HUD, text, menus) like the 3-D; at 16x the picture is scanned out at 4x (each super-sample its
++                    // own pixel; VENDETTA_HIRES4=0: 2x as before). VENDETTA_PROMOTE=1 (a test): show a final blit's
++                    // source instead (paraLLEl-GS's backbuffer promotion).
++                    auto on = [](const char *name) { const char *v = std::getenv(name); return v && *v && *v != '0'; };
++                    ParallelGS::Hacks hacks{};
++                    hacks.upscale_sprites = on("VENDETTA_UPSCALE_SPRITES");
++                    hacks.backbuffer_promotion = on("VENDETTA_PROMOTE");
++                    gs.set_hacks(hacks);
++                    const char *hires4 = std::getenv("VENDETTA_HIRES4");
++                    m_quadScanout = !(hires4 && *hires4 == '0');
++                    std::cerr << "[gpu-gs] 2-D: upscale-sprites=" << hacks.upscale_sprites << " promote="
++                              << hacks.backbuffer_promotion << " hires4=" << m_quadScanout << std::endl;
++                }
++                {
 +                    Vulkan::ResourceLayout layout;
 +                    ParallelGS::Shaders<> suite(device, layout, 0);
 +                    m_upscaleProgram = device.request_program(suite.upscale_vert, suite.upscale_frag);
@@ -12513,6 +12529,22 @@ index 0000000..502e19c
 +            for (uint32_t i = 0; i < kPrivRegCount; ++i)
 +                priv.qwords_lo[2u * i] = record.regs[i];
 +
++            // A display circuit switched on with an all-zero size (DISPLAY DW = DH = 0: right after a GS reset, before
++            // the game sets its display up again) shows nothing; paraLLEl-GS would take MAGH 0 as a 2560-wide mode and
++            // scan out a huge black picture (5120 / 10240 wide at 2x / 4x). Black at the window's size instead.
++            {
++                const uint64_t pmode = record.regs[0];
++                const bool shows1 = (pmode & 1u) != 0u && (record.regs[8] >> 32u) != 0u;
++                const bool shows2 = (pmode & 2u) != 0u && (record.regs[10] >> 32u) != 0u;
++                if (!shows1 && !shows2)
++                {
++                    ++m_stats.presents;
++                    m_lastScanout = {};
++                    readBack(m_lastScanout, 0u);
++                    return;
++                }
++            }
++
 +            ParallelGS::VSyncInfo info{};
 +            info.phase = static_cast<uint32_t>(record.vsyncTick & 1u);
 +            info.force_progressive = true;
@@ -12542,6 +12574,7 @@ index 0000000..502e19c
 +            m_lastSharpness = sharpness;
 +
 +            info.high_resolution_scanout = hires;
++            info.quad_resolution_scanout = hires && m_quadScanout;
 +            // FSR samples the picture in a shader; the plain read-back copies it
 +            info.dst_layout = fsr ? VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
 +            info.dst_stage = fsr ? VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT : VK_PIPELINE_STAGE_2_COPY_BIT;
@@ -12559,6 +12592,21 @@ index 0000000..502e19c
 +
 +            const auto vsyncStart = Clock::now();
 +            m_lastScanout = gs.vsync(info);
++            if (m_lastScanout.image && m_lastScanout.mode_width > 1024u)
++            {
++                // a scanout wider than any real picture: show the display registers behind it (once per value)
++                static uint64_t s_lastDisplay = ~0ull;
++                const uint64_t display = record.regs[8] ^ (record.regs[10] << 1u) ^ record.regs[0];
++                if (display != s_lastDisplay)
++                {
++                    s_lastDisplay = display;
++                    std::fprintf(stderr, "[gpu-gs] wide scanout %ux%u: PMODE=%llx DISPFB1=%llx DISPLAY1=%llx DISPFB2=%llx DISPLAY2=%llx SMODE2=%llx\n",
++                                 m_lastScanout.mode_width, m_lastScanout.mode_height,
++                                 (unsigned long long)record.regs[0], (unsigned long long)record.regs[7],
++                                 (unsigned long long)record.regs[8], (unsigned long long)record.regs[9],
++                                 (unsigned long long)record.regs[10], (unsigned long long)record.regs[2]);
++                }
++            }
 +            const auto readStart = Clock::now();
 +            readBack(m_lastScanout, fsr ? output : 0u);
 +            m_stats.vsync += readStart - vsyncStart;
@@ -12582,6 +12630,18 @@ index 0000000..502e19c
 +            }
 +            uint32_t width = scanout.image->get_width();
 +            uint32_t height = scanout.image->get_height();
++            {
++                // the picture paraLLEl-GS scans out, once per change (its size shows the 1x / 2x / 4x scanout)
++                static uint32_t s_loggedWidth = 0u, s_loggedHeight = 0u;
++                if (width != s_loggedWidth || height != s_loggedHeight)
++                {
++                    s_loggedWidth = width;
++                    s_loggedHeight = height;
++                    std::cerr << "[gpu-gs] scanout " << width << "x" << height << " (mode " << scanout.mode_width << "x"
++                              << scanout.mode_height << (scanout.high_resolution_scanout ? ", high resolution" : "")
++                              << (scanout.interlaced ? ", interlaced" : "") << ")" << std::endl;
++                }
++            }
 +            const Vulkan::Image *source = scanout.image.get();
 +            Vulkan::CommandBufferHandle cmd = m_device->request_command_buffer();
 +            m_lastFrameFsr = false;
@@ -12753,6 +12813,7 @@ index 0000000..502e19c
 +        // the graphics card thread only
 +        alignas(64) Vulkan::Device *m_device = nullptr;
 +        ParallelGS::GSInterface *m_gs = nullptr;
++        bool m_quadScanout = false;
 +        ParallelGS::ScanoutResult m_lastScanout{};
 +        Vulkan::BufferHandle m_readback;
 +        uint64_t m_frameSeq = 0u;
@@ -14526,7 +14587,7 @@ index 0000000..268b841
 +    }
 +}
 diff --git a/ps2xRuntime/src/lib/ps2_debug_panel.cpp b/ps2xRuntime/src/lib/ps2_debug_panel.cpp
-index c9aa2c6..25ae0ea 100644
+index c9aa2c6..95eac26 100644
 --- a/ps2xRuntime/src/lib/ps2_debug_panel.cpp
 +++ b/ps2xRuntime/src/lib/ps2_debug_panel.cpp
 @@ -20,6 +20,7 @@
@@ -14618,7 +14679,7 @@ index c9aa2c6..25ae0ea 100644
      void drawGsTab(PS2Runtime &runtime)
      {
          GSRegisters &regs = runtime.memory().gs();
-@@ -2206,6 +2281,15 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
+@@ -2206,9 +2281,31 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
          return;
      }
  
@@ -14633,8 +14694,24 @@ index c9aa2c6..25ae0ea 100644
 +
      if (IsKeyPressed(KEY_F1))
      {
++        // the pointer, hidden in fullscreen, while the panel is open
++        const bool wasHidden = IsCursorHidden();
          toggleVisible();
-@@ -2229,57 +2313,72 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
++        static bool hiddenBeforePanel = false;
++        if (m_visible && wasHidden)
++        {
++            hiddenBeforePanel = true;
++            ShowCursor();
++        }
++        else if (!m_visible && hiddenBeforePanel)
++        {
++            hiddenBeforePanel = false;
++            HideCursor();
++        }
+     }
+ 
+     if (!m_visible)
+@@ -2229,57 +2326,72 @@ void PS2DebugPanel::draw(PS2Runtime &runtime)
  
          if (ImGui::BeginTabBar("debug-tabs"))
          {
@@ -14720,10 +14797,10 @@ index c9aa2c6..25ae0ea 100644
                  ImGui::InputScalar("Address", ImGuiDataType_U32, &m_memoryAddress, nullptr, nullptr, "%08X", ImGuiInputTextFlags_CharsHexadecimal);
 diff --git a/ps2xRuntime/src/lib/ps2_host_settings.cpp b/ps2xRuntime/src/lib/ps2_host_settings.cpp
 new file mode 100644
-index 0000000..7aeafe3
+index 0000000..475d89c
 --- /dev/null
 +++ b/ps2xRuntime/src/lib/ps2_host_settings.cpp
-@@ -0,0 +1,474 @@
+@@ -0,0 +1,481 @@
 +#include "runtime/ps2_host_settings.h"
 +
 +#include <algorithm>
@@ -14758,7 +14835,7 @@ index 0000000..7aeafe3
 +            "# A VENDETTA_* switch set in the environment wins over a line here.\n"
 +            "\n"
 +            "[display]\n"
-+            "mode = \"window\"          # \"window\", \"borderless\" (a frameless window the size of the screen) or \"fullscreen\"\n"
++            "mode = \"fullscreen\"      # \"window\", \"borderless\" (a frameless window the size of the screen) or \"fullscreen\"\n"
 +            "screen = 1               # which screen: 1 = the main one\n"
 +            "maximised = true         # start maximised (window only)\n"
 +            "fullscreen_width = 0     # fullscreen resolution; 0 = the screen's own\n"
@@ -14774,6 +14851,7 @@ index 0000000..7aeafe3
 +            "scale = 8                # how much sharper than the PS2: 1, 2, 4, 8 or 16\n"
 +            "filter = \"fsr\"           # scaling to the window: \"fsr\", \"smooth\" or \"blocky\"\n"
 +            "sharpening = 75          # 0-100, with \"fsr\"\n"
++            "sharp_2d = true          # the HUD, text and menus in the same detail as the 3-D (as PCSX2 upscales them); false = as on the PS2\n"
 +            "high_poly = true         # every wrestler and arena at full detail in every match; false = as on the PS2\n"
 +            "                         # (lower-detail wrestlers and arenas in 3- and 4-fighter matches)\n"
 +            "\n"
@@ -14787,7 +14865,7 @@ index 0000000..7aeafe3
 +            "vibration_2 = true\n"
 +            "vibration_3 = true\n"
 +            "vibration_4 = true\n"
-+            "keyboard = 1             # which player the keyboard plays as (with their controller): 1-4, 0 = nobody\n";
++            "keyboard = 0             # which player the keyboard plays as (with their controller): 1-4, 0 = nobody\n";
 +
 +        std::string trim(const std::string &text)
 +        {
@@ -14995,7 +15073,8 @@ index 0000000..7aeafe3
 +            case 0:
 +                s.mode = WindowMode::Window;
 +                break;
-+            default:
++            default: // no mode line: fullscreen, the default (no settings file at all, as in test runs: a window)
++                s.mode = WindowMode::Fullscreen;
 +                break;
 +            }
 +            reader.integer("display.screen", s.screen, 1, 16);
@@ -15021,11 +15100,11 @@ index 0000000..7aeafe3
 +            s.multitapPort = multitap ? 1 : -1;
 +            for (int player = 0; player < 4; ++player)
 +                reader.boolean("controls.vibration_" + std::to_string(player + 1), s.vibration[player]);
-+            // which player the keyboard plays as (ps2_pad.cpp, VENDETTA_KEYBOARD): 1-4, 0 = nobody
-+            int keyboard = -1;
++            // which player the keyboard plays as (ps2_pad.cpp, VENDETTA_KEYBOARD): 1-4, 0 = nobody (the default, also
++            // when the line is missing; with no settings file at all the keyboard is player 1)
++            int keyboard = 0;
 +            reader.integer("controls.keyboard", keyboard, 0, 4);
-+            if (keyboard >= 0)
-+                fillSwitch("VENDETTA_KEYBOARD", std::to_string(keyboard));
++            fillSwitch("VENDETTA_KEYBOARD", std::to_string(keyboard));
 +
 +            // the ones the runtime already reads as switches
 +            if (const int renderer = reader.choice("graphics.renderer", {"gpu", "cpu"}); renderer >= 0)
@@ -15053,6 +15132,11 @@ index 0000000..7aeafe3
 +            bool highPoly = true;
 +            reader.boolean("graphics.high_poly", highPoly);
 +            fillSwitch("VENDETTA_HIGHPOLY", highPoly ? "1" : "0");
++            // the 2-D (sprites: HUD, text, menus) super-sampled like the 3-D (gs_gpu_parallel.cpp, paraLLEl-GS's
++            // Hacks::upscale_sprites); true also when the line is missing; no settings file at all: off
++            bool sharp2d = true;
++            reader.boolean("graphics.sharp_2d", sharp2d);
++            fillSwitch("VENDETTA_UPSCALE_SPRITES", sharp2d ? "1" : "0");
 +            std::string reverbText;
 +            if (reader.take("sound.reverb", reverbText))
 +            {
@@ -16833,7 +16917,7 @@ index 0000000..c24f5c8
 +    }
 +}
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..c86c0cf 100644
+index 45cb9d2..7e8a7ad 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
 @@ -1,3 +1,7 @@
@@ -16894,7 +16978,7 @@ index 45cb9d2..c86c0cf 100644
  
      constexpr uint32_t COP0_CAUSE_EXCCODE_MASK = 0x0000007Cu;
      constexpr uint32_t COP0_CAUSE_BD = 0x80000000u;
-@@ -373,10 +400,171 @@ namespace
+@@ -373,10 +400,179 @@ namespace
      }
  }
  
@@ -16935,8 +17019,10 @@ index 45cb9d2..c86c0cf 100644
 +        const int width = settings.fullscreenWidth > 0 ? settings.fullscreenWidth : GetMonitorWidth(monitor);
 +        const int height = settings.fullscreenHeight > 0 ? settings.fullscreenHeight : GetMonitorHeight(monitor);
 +        SetWindowSize(width, height);
-+        ToggleFullscreen();
 +#if defined(PS2X_HAS_GLFW)
++        // One mode change, straight to the size and rate wanted: raylib's ToggleFullscreen first took the screen's
++        // highest rate, then the rate was set again — two changes, the desktop showing for a moment in between.
++        bool switched = false;
 +        int count = 0;
 +        GLFWmonitor **monitors = glfwGetMonitors(&count);
 +        GLFWwindow *window = glfwGetCurrentContext();
@@ -16969,8 +17055,14 @@ index 45cb9d2..c86c0cf 100644
 +                std::cerr << " " << r;
 +            std::cerr << (rates.empty() ? " no mode of that size" : " Hz") << std::endl;
 +            glfwSetWindowMonitor(window, monitors[monitor], 0, 0, width, height, rate);
++            switched = true;
 +        }
++        if (!switched)
++            ToggleFullscreen();
++#else
++        ToggleFullscreen();
 +#endif
++        HideCursor(); // the game has no pointer; the debug panel (F1) shows it again while open
 +        break;
 +    }
 +    }
@@ -17069,7 +17161,7 @@ index 45cb9d2..c86c0cf 100644
      static uint32_t s_lastDisplayFbp = std::numeric_limits<uint32_t>::max();
      static uint32_t s_lastSourceFbp = std::numeric_limits<uint32_t>::max();
      static bool s_lastPreferred = false;
-@@ -386,35 +574,29 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -386,35 +582,29 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      static std::vector<uint8_t> s_scratch;
      static std::vector<uint8_t> s_uploadBuffer(DEFAULT_FB_SIZE, 0u);
  
@@ -17118,7 +17210,7 @@ index 45cb9d2..c86c0cf 100644
          UpdateTexture(tex, blank.data);
          UnloadImage(blank);
          outWidth = FB_WIDTH;
-@@ -422,7 +604,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -422,7 +612,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
          s_lastWidth = outWidth;
          s_lastHeight = outHeight;
          s_hasUploadedFrame = true;
@@ -17127,7 +17219,7 @@ index 45cb9d2..c86c0cf 100644
      }
  
      PS2_IF_AGRESSIVE_LOGS({
-@@ -435,7 +617,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -435,7 +625,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
              height != s_lastHeight)
          {
              std::cout << "[frame:upload] idx=" << s_uploadDebugCount
@@ -17136,7 +17228,7 @@ index 45cb9d2..c86c0cf 100644
                        << " displayFbp=" << displayFbp
                        << " sourceFbp=" << sourceFbp
                        << " size=" << width << "x" << height
-@@ -475,6 +657,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -475,6 +665,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      outWidth = width;
      outHeight = height;
      s_hasUploadedFrame = true;
@@ -17144,7 +17236,7 @@ index 45cb9d2..c86c0cf 100644
  }
  
  PS2Runtime::PS2Runtime()
-@@ -503,8 +686,8 @@ PS2Runtime::PS2Runtime()
+@@ -503,8 +694,8 @@ PS2Runtime::PS2Runtime()
      m_guestHeapLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
      m_guestHeapSuggestedBase = kGuestHeapDefaultBase;
      m_guestHeapConfigured = false;
@@ -17155,7 +17247,7 @@ index 45cb9d2..c86c0cf 100644
  }
  
  void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
-@@ -599,6 +782,12 @@ ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx,
+@@ -599,6 +790,12 @@ ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx,
      return m_iopSubsystem->handleRpc(request);
  }
  
@@ -17168,7 +17260,7 @@ index 45cb9d2..c86c0cf 100644
  void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransfer &transfer)
  {
      auto scope = m_iopHost->enterCall(nullptr, rdram);
-@@ -607,6 +796,7 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
+@@ -607,6 +804,7 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
  
  void PS2Runtime::advanceIopEeCycles(uint64_t eeCycles) noexcept
  {
@@ -17176,7 +17268,7 @@ index 45cb9d2..c86c0cf 100644
      m_iopSubsystem->runEeCycles(eeCycles);
  }
  
-@@ -665,45 +855,32 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -665,45 +863,32 @@ bool PS2Runtime::syncCoreSubsystems()
      }
  
      m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
@@ -17237,15 +17329,28 @@ index 45cb9d2..c86c0cf 100644
      resetIop();
      m_vu0.reset();
      m_vu1.reset();
-@@ -731,12 +908,16 @@ bool PS2Runtime::initialize(const char *title)
+@@ -731,12 +916,29 @@ bool PS2Runtime::initialize(const char *title)
  #if defined(PLATFORM_VITA)
          InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
  #else
 -        SetConfigFlags(FLAG_WINDOW_RESIZABLE);
 +        const ps2_host_settings::Settings &settings = ps2_host_settings::get();
-+        SetConfigFlags(FLAG_WINDOW_RESIZABLE | (settings.vsync ? FLAG_VSYNC_HINT : 0u));
++        // Made hidden, sized / made fullscreen as the settings ask, painted black, then shown: a window shown at once
++        // appeared as a blank 640 x 448 box in the middle of the screen before going fullscreen.
++        SetConfigFlags(FLAG_WINDOW_RESIZABLE | FLAG_WINDOW_HIDDEN | (settings.vsync ? FLAG_VSYNC_HINT : 0u));
          InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title);
 +        applyWindowSettings();
++        BeginDrawing();
++        ClearBackground(BLACK);
++        EndDrawing();
++        if (IsWindowState(FLAG_WINDOW_HIDDEN))
++            ClearWindowState(FLAG_WINDOW_HIDDEN);
++        for (int i = 0; i < 2; ++i) // a shown window keeps white until it is presented to
++        {
++            BeginDrawing();
++            ClearBackground(BLACK);
++            EndDrawing();
++        }
          InitAudioDevice();
          m_audioBackend.setAudioReady(IsAudioDeviceReady());
 +        if (IsAudioDeviceReady())
@@ -17256,7 +17361,7 @@ index 45cb9d2..c86c0cf 100644
          if (m_debugUiInitCallback)
          {
              m_debugUiInitCallback(*this, m_debugUiUserData);
-@@ -971,9 +1152,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+@@ -971,9 +1173,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
      }
      {
          std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
@@ -17268,7 +17373,7 @@ index 45cb9d2..c86c0cf 100644
      }
  
      LoadedModule module;
-@@ -1013,6 +1193,13 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+@@ -1013,6 +1214,13 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
      return true;
  }
  
@@ -17282,7 +17387,7 @@ index 45cb9d2..c86c0cf 100644
  const PS2Runtime::IoPaths &PS2Runtime::getIoPaths()
  {
      return runtimeIoPaths();
-@@ -1316,6 +1503,16 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
+@@ -1316,6 +1524,16 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
              << " policy=" << static_cast<uint32_t>(policy)
              << " trace=" << formatDispatchHistory()
              << std::dec;
@@ -17299,7 +17404,7 @@ index 45cb9d2..c86c0cf 100644
  
          static std::mutex s_missingFunctionLogMutex;
          {
-@@ -1396,14 +1593,32 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
+@@ -1396,14 +1614,32 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
  
      RecompiledFunction targetFn = lookupFunction(targetPc);
      const uint32_t entryPc = ctx->pc;
@@ -17334,7 +17439,7 @@ index 45cb9d2..c86c0cf 100644
      {
          ctx->pc = fallthroughPc;
      }
-@@ -1945,12 +2160,96 @@ uint32_t PS2Runtime::guestRealloc(uint32_t guestAddr, uint32_t newSize, uint32_t
+@@ -1945,12 +2181,96 @@ uint32_t PS2Runtime::guestRealloc(uint32_t guestAddr, uint32_t newSize, uint32_t
      return newAddr;
  }
  
@@ -17431,7 +17536,7 @@ index 45cb9d2..c86c0cf 100644
  
      std::lock_guard<std::mutex> lock(m_guestHeapMutex);
      ensureGuestHeapInitializedLocked();
-@@ -2039,10 +2338,36 @@ uint16_t PS2Runtime::Load16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
+@@ -2039,10 +2359,36 @@ uint16_t PS2Runtime::Load16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
      }
  }
  
@@ -17468,7 +17573,7 @@ index 45cb9d2..c86c0cf 100644
          return m_memory.read32(vaddr);
      }
      catch (const std::exception &)
-@@ -2056,6 +2381,8 @@ uint64_t PS2Runtime::Load64(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
+@@ -2056,6 +2402,8 @@ uint64_t PS2Runtime::Load64(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
  {
      try
      {
@@ -17477,7 +17582,7 @@ index 45cb9d2..c86c0cf 100644
          return m_memory.read64(vaddr);
      }
      catch (const std::exception &)
-@@ -2187,6 +2514,14 @@ void PS2Runtime::requestStop()
+@@ -2187,6 +2535,14 @@ void PS2Runtime::requestStop()
      {
          m_eeScheduler->requestStop();
      }
@@ -17492,7 +17597,7 @@ index 45cb9d2..c86c0cf 100644
  }
  
  bool PS2Runtime::isStopRequested() const
-@@ -2339,8 +2674,12 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
+@@ -2339,8 +2695,12 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
      raiseCop0Exception(ctx, EXCEPTION_INTEGER_OVERFLOW);
  }
  
@@ -17505,7 +17610,7 @@ index 45cb9d2..c86c0cf 100644
      m_stopRequested.store(false, std::memory_order_relaxed);
      ps2_stubs::resetSifState();
      resetIop();
-@@ -2361,12 +2700,27 @@ void PS2Runtime::run()
+@@ -2361,12 +2721,27 @@ void PS2Runtime::run()
      Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
      Texture2D frameTex = LoadTextureFromImage(blank);
      UnloadImage(blank);
@@ -17533,7 +17638,7 @@ index 45cb9d2..c86c0cf 100644
          try
          {
              m_eeScheduler->reset(m_memory.getRDRAM(), m_cpuContext);
-@@ -2422,23 +2776,71 @@ void PS2Runtime::run()
+@@ -2422,23 +2797,71 @@ void PS2Runtime::run()
          });
          uint32_t presentWidth = FB_WIDTH;
          uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
@@ -17613,7 +17718,7 @@ index 45cb9d2..c86c0cf 100644
          DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
          if (m_debugUiInitialized && m_debugUiDrawCallback)
          {
-@@ -2459,6 +2861,10 @@ void PS2Runtime::run()
+@@ -2459,6 +2882,10 @@ void PS2Runtime::run()
      {
          gameThread.join();
      }
@@ -19542,7 +19647,7 @@ index 6974254..6fe0609 100644
 +    return true;
 +}
 diff --git a/ps2xRuntime/src/main.cpp b/ps2xRuntime/src/main.cpp
-index 563bcbd..1ed7c9a 100644
+index 563bcbd..2570204 100644
 --- a/ps2xRuntime/src/main.cpp
 +++ b/ps2xRuntime/src/main.cpp
 @@ -1,4 +1,5 @@
@@ -19551,7 +19656,15 @@ index 563bcbd..1ed7c9a 100644
  #include "games_database.h"
  #if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA)
  #include "ps2_debug_panel.h"
-@@ -157,7 +158,17 @@ namespace
+@@ -14,6 +15,7 @@
+ #include <exception>
+ #include <algorithm>
+ #include <cstdlib>
++#include <cstdio>
+ 
+ #if defined(__ANDROID__)
+ #include <android/log.h>
+@@ -157,19 +159,53 @@ namespace
          {
              return configuredPath;
          }
@@ -19570,8 +19683,35 @@ index 563bcbd..1ed7c9a 100644
  #else
          throw std::runtime_error("Unable to determine executable path. Pass the guest ELF as argv[1] or define PS2X_DEFAULT_BOOT_ELF.");
  #endif
-@@ -170,6 +181,8 @@ int main(int argc, char *argv[])
+     }
+ }
+ 
++#if defined(_WIN32)
++namespace
++{
++    // A windowed build (PS2X_SHOW_WINDOWS_CONSOLE=OFF) started from a shortcut has nowhere to print: then its output
++    // goes to logs\game.log and logs\game.log.err beside the program, as when a launcher redirects it there.
++    void sendUnseenOutputToLogs(const char *argv0)
++    {
++        if (_fileno(stderr) >= 0)
++            return; // a console, or a launcher's redirection
++        std::error_code error;
++        std::filesystem::path logs = std::filesystem::path(argv0 ? argv0 : "").parent_path() / "logs";
++        std::filesystem::create_directories(logs, error);
++        FILE *out = nullptr;
++        _wfreopen_s(&out, (logs / L"game.log").c_str(), L"w", stdout);
++        _wfreopen_s(&out, (logs / L"game.log.err").c_str(), L"w", stderr);
++    }
++}
++#endif
++
+ int main(int argc, char *argv[])
+ {
+ #if defined(__ANDROID__)
      redirectStdioToLogcat();
++#endif
++#if defined(_WIN32)
++    sendUnseenOutputToLogs(argc > 0 ? argv[0] : nullptr);
  #endif
      setupTerminateLogger();
 +    // before anything reads a VENDETTA_* switch: the settings fill in the ones the environment doesn't set

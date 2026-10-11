@@ -55,7 +55,9 @@ shape), graphics (with High Poly in every match) and sound — and has a PLAY bu
 | `VENDETTA_SHARPEN=0..2` | FSR's sharpening (default 0.5; 0 = the most) |
 | `VENDETTA_GPU=<number or name>` | which graphics card, e.g. `nvidia` (default: the dedicated one) |
 | `VENDETTA_ASPECT=16:9` | stretch to widescreen |
-| `VENDETTA_KEYBOARD=1..4/0` | which player the keyboard plays as, with their controller (`keyboard` in `settings.toml`, default 1); 0 = nobody. Keys: arrows / W A S D move, X ✕, Z □, C ○, V △, Q L1, E R1, Shift L2 / R2, Enter START, Tab SELECT, I J K L the right stick |
+| `VENDETTA_UPSCALE_SPRITES=1/0` | sharp 2-D: the HUD, text and menus super-sampled like the 3-D (`sharp_2d` in `settings.toml`, on by default) |
+| `VENDETTA_HIRES4=0` | at 16× the picture is scanned out at 4× the PS2's resolution (each super-sample its own pixel); 0 = 2× as at 8× |
+| `VENDETTA_KEYBOARD=1..4/0` | which player the keyboard plays as, with their controller (`keyboard` in `settings.toml`; 0 = nobody, the default). Keys: arrows / W A S D move, X ✕, Z □, C ○, V △, Q L1, E R1, Shift L2 / R2, Enter START, Tab SELECT, I J K L the right stick |
 | `VENDETTA_HIGHPOLY=1/0` | High Poly wrestlers and arenas in every match (`high_poly`, on by default in `settings.toml`); 0 = as on the PS2, the lower-detail ones in 3- and 4-fighter matches |
 
 The same settings can be changed while playing in the **Graphics** tab of the debug panel (hidden at start; F1 shows /
@@ -79,7 +81,8 @@ Copyright (C) 2026 jcsix694. Free software under the **GNU General Public Licens
 change it and share it; a changed version you share must come with its source, under the same licence.
 
 It has to be the GPL: PS2Recomp (ran-j, GPL-3.0) is built into the game program, and our changes to it (`patches\`)
-are under its licence. paraLLEl-GS (© Arntzen Software AS) is LGPL-3.0+ and uses Granite (© Hans-Kristian Arntzen,
+are under its licence; our changes to paraLLEl-GS (`patches\parallel-gs-local.diff`, applied by `setup.bat`) are
+under its LGPL-3.0+. paraLLEl-GS (© Arntzen Software AS) is LGPL-3.0+ and uses Granite (© Hans-Kristian Arntzen,
 MIT); both are included as submodules. Every other part and its licence: `THIRD-PARTY-NOTICES.txt`.
 
 Def Jam Vendetta is © its owners. This project includes none of its files or code; the settings program's pictures

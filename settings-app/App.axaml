@@ -127,6 +127,42 @@
         <Style Selector="Border.tag.good TextBlock">
             <Setter Property="Foreground" Value="{StaticResource VGood}" />
         </Style>
+        <!-- the Controls page's buttons table: a PS2 button's badge (round, or wide for START / L1 …) and a key's chip -->
+        <Style Selector="Border.glyph">
+            <Setter Property="MinWidth" Value="22" />
+            <Setter Property="Height" Value="22" />
+            <Setter Property="CornerRadius" Value="11" />
+            <Setter Property="Background" Value="{StaticResource VPanel2}" />
+            <Setter Property="BorderBrush" Value="{StaticResource VLine}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style Selector="Border.glyph.wide">
+            <Setter Property="CornerRadius" Value="5" />
+            <Setter Property="Padding" Value="6,0" />
+        </Style>
+        <Style Selector="Border.glyph TextBlock">
+            <Setter Property="FontSize" Value="11" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="Foreground" Value="#ffffff" />
+            <Setter Property="HorizontalAlignment" Value="Center" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style Selector="Border.chip">
+            <Setter Property="Height" Value="28" />
+            <Setter Property="CornerRadius" Value="5" />
+            <Setter Property="Background" Value="{StaticResource VPanel}" />
+            <Setter Property="BorderBrush" Value="{StaticResource VLine}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="9,0" />
+        </Style>
+        <Style Selector="Border.chip TextBlock">
+            <Setter Property="FontFamily" Value="{StaticResource VMono}" />
+            <Setter Property="FontSize" Value="12.5" />
+            <Setter Property="Foreground" Value="{StaticResource VText}" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="TextTrimming" Value="CharacterEllipsis" />
+        </Style>
         <!-- the status at the right of the header: a dot and a few words -->
         <Style Selector="Ellipse.dot">
             <Setter Property="Width" Value="8" />
