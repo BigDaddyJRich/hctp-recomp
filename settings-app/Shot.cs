@@ -58,7 +58,7 @@ internal static class Shot
         s.Multitap = false;
         s.Vibration3 = false;
         Console.WriteLine($"status: {s.Status}");
-        Console.WriteLine($"summary: {vm.PlaySummary}");
+        Console.WriteLine($"summary: {s.SummaryWindow} | {s.SummaryPicture} | {s.SummaryPlayers}");
         Console.WriteLine("--- settings.toml now:");
         Console.Write(File.ReadAllText(folder.SettingsPath));
     }

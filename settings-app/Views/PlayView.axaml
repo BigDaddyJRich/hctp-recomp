@@ -3,57 +3,47 @@
              xmlns:vm="using:VendettaSettings.ViewModels"
              x:Class="VendettaSettings.Views.PlayView"
              x:DataType="vm:MainViewModel">
-    <Grid RowDefinitions="*,Auto" RowSpacing="18" Margin="32,28">
-        <Border CornerRadius="14" Background="{StaticResource VPanel}" ClipToBounds="True">
-            <Grid RowDefinitions="*,Auto">
-                <!-- the picture (2400 x 1100, with the logo on its left): always whole, as wide as the panel, at the
-                     top; its foot fades into the panel (PLAY may sit over it) -->
-                <Panel Grid.RowSpan="2" VerticalAlignment="Top">
-                    <Image Source="/Assets/background.jpg" Stretch="Uniform" />
-                    <Border VerticalAlignment="Bottom" Height="120">
-                        <Border.Background>
-                            <LinearGradientBrush StartPoint="0%,0%" EndPoint="0%,100%">
-                                <GradientStop Offset="0" Color="#001b1a1e" />
-                                <GradientStop Offset="1" Color="#1b1a1e" />
-                            </LinearGradientBrush>
-                        </Border.Background>
-                    </Border>
-                </Panel>
-                <StackPanel Grid.Row="1" Orientation="Horizontal" Spacing="20" Margin="36,18,36,28">
-                    <Button Classes="play" Command="{Binding PlayCommand}" IsEnabled="{Binding CanPlay}">
-                        <StackPanel Orientation="Horizontal" Spacing="14">
-                            <PathIcon Width="20" Height="20" Data="M6,3 L21,12 L6,21 Z" />
-                            <TextBlock Text="PLAY" VerticalAlignment="Center" />
+    <ScrollViewer x:Name="Page" HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Margin="26,22" Spacing="18">
+            <TextBlock Classes="h1" Text="Play" />
+
+            <!-- the picture (2400 x 1100, the logo on its left), always whole: its box keeps the picture's shape, as wide
+                 as the page unless that would push the rows below off the window (PlayView.axaml.cs sizes it) -->
+            <Border x:Name="Banner" CornerRadius="8" ClipToBounds="True" HorizontalAlignment="Left" Height="330">
+                <Border.Background>
+                    <ImageBrush Source="/Assets/background.jpg" Stretch="UniformToFill" AlignmentX="Center" AlignmentY="Top" />
+                </Border.Background>
+            </Border>
+
+            <Grid ColumnDefinitions="*,*" ColumnSpacing="28">
+                <StackPanel>
+                    <TextBlock Classes="cap" Text="YOUR GAME" />
+                    <Border Classes="capline" Margin="0,8,0,8" />
+                    <Grid ColumnDefinitions="130,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="8">
+                        <TextBlock Classes="key" Text="Game" />
+                        <TextBlock Grid.Column="1" Classes="mono" Text="{Binding DiscTitle}" />
+                        <TextBlock Grid.Row="1" Classes="key" Text="Serial" />
+                        <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Spacing="8">
+                            <TextBlock Classes="mono" Text="SLUS-20639" VerticalAlignment="Center" />
+                            <Border Classes="tag good" IsVisible="{Binding HasGame}"><TextBlock Text="✓ checked" /></Border>
                         </StackPanel>
-                    </Button>
-                    <StackPanel VerticalAlignment="Center" Spacing="4">
-                        <TextBlock Classes="mono muted" Text="{Binding PlaySummary}" />
-                        <TextBlock Text="{Binding Message}" FontSize="13" Classes="good"
-                                   IsVisible="{Binding Message, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
-                        <TextBlock Text="The game is running. Close it to play again." FontSize="13" Classes="muted"
-                                   IsVisible="{Binding ShowRunning}" />
-                        <TextBlock Text="Recompiled · built from your own disc on this PC" FontSize="13" Classes="muted"
-                                   IsVisible="{Binding !ShowRunning}" />
-                    </StackPanel>
+                        <TextBlock Grid.Row="2" Classes="key" Text="Save data" />
+                        <TextBlock Grid.Row="2" Grid.Column="1" Classes="mono" Text="{Binding SaveLine}" />
+                    </Grid>
+                </StackPanel>
+                <StackPanel Grid.Column="1">
+                    <TextBlock Classes="cap" Text="HOW IT WILL OPEN" />
+                    <Border Classes="capline" Margin="0,8,0,8" />
+                    <Grid ColumnDefinitions="130,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="8">
+                        <TextBlock Classes="key" Text="Window" />
+                        <TextBlock Grid.Column="1" Classes="mono" Text="{Binding Settings.SummaryWindow}" />
+                        <TextBlock Grid.Row="1" Classes="key" Text="Picture" />
+                        <TextBlock Grid.Row="1" Grid.Column="1" Classes="mono" Text="{Binding Settings.SummaryPicture}" />
+                        <TextBlock Grid.Row="2" Classes="key" Text="Players" />
+                        <TextBlock Grid.Row="2" Grid.Column="1" Classes="mono" Text="{Binding Settings.SummaryPlayers}" />
+                    </Grid>
                 </StackPanel>
             </Grid>
-        </Border>
-
-        <Grid Grid.Row="1" ColumnDefinitions="*,*" ColumnSpacing="16">
-            <Border Classes="card">
-                <StackPanel Spacing="6">
-                    <TextBlock Classes="cap" Text="YOUR DISC" />
-                    <TextBlock Text="{Binding DiscTitle}" FontSize="17" FontWeight="SemiBold" />
-                    <TextBlock Text="{Binding DiscLine}" FontSize="13.5" Classes.good="{Binding HasGame}" Classes.bad="{Binding NoGame}" />
-                </StackPanel>
-            </Border>
-            <Border Grid.Column="1" Classes="card">
-                <StackPanel Spacing="6">
-                    <TextBlock Classes="cap" Text="SAVE DATA" />
-                    <TextBlock Text="{Binding SaveTitle}" FontSize="17" FontWeight="SemiBold" />
-                    <TextBlock Text="{Binding SaveLine}" FontSize="13.5" Classes="muted" />
-                </StackPanel>
-            </Border>
-        </Grid>
-    </Grid>
+        </StackPanel>
+    </ScrollViewer>
 </UserControl>

@@ -9,110 +9,123 @@
         </DataTemplate>
     </UserControl.Resources>
 
-    <DockPanel Margin="30,26">
-        <Grid DockPanel.Dock="Top" ColumnDefinitions="*,Auto" Margin="0,0,0,8">
-            <TextBlock Classes="h1" Text="SETTINGS" />
-            <Button Grid.Column="1" Classes="outline" Content="Reset to defaults" VerticalAlignment="Bottom"
-                    Command="{Binding ResetToDefaultsCommand}" />
-        </Grid>
-        <StackPanel DockPanel.Dock="Bottom" Spacing="2" Margin="0,10,0,0">
-            <TextBlock Classes="hint" Text="{Binding Status}" Foreground="{StaticResource VGood}" />
-            <TextBlock Classes="hint"
-                       Text="Saved as you change them, in settings.toml next to the game, and used the next time it starts." />
-        </StackPanel>
+    <!-- one page per part (the page list picks it: TabIndex 0 Display, 1 Graphics, 2 Sound, 3 Controls); each is
+         flat sections — a small capitals heading over a line, then rows: the label left, the control right -->
+    <Panel>
+        <!-- Display -->
+        <ScrollViewer HorizontalScrollBarVisibility="Disabled" IsVisible="{Binding IsDisplayTab}">
+            <StackPanel Margin="26,22" Spacing="20" MaxWidth="760" HorizontalAlignment="Left">
+                <TextBlock Classes="h1" Text="Display" />
+                <StackPanel>
+                    <TextBlock Classes="cap" Text="WINDOW" />
+                    <Border Classes="capline" />
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Classes="label" Text="Show the game in" />
+                                <TextBlock Classes="hint" Text="{Binding ModeHint}" />
+                            </StackPanel>
+                            <ListBox Grid.Column="1" Classes="seg" SelectedIndex="{Binding ModeIndex}">
+                                <ListBoxItem Content="Window" />
+                                <ListBoxItem Content="Borderless" />
+                                <ListBoxItem Content="Fullscreen" />
+                            </ListBox>
+                        </Grid>
+                    </Border>
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                            <TextBlock Classes="label" Text="Screen" VerticalAlignment="Center" />
+                            <ComboBox Grid.Column="1" Width="300" VerticalAlignment="Center"
+                                      ItemsSource="{Binding ScreenChoices}" SelectedItem="{Binding Screen}"
+                                      ItemTemplate="{StaticResource ChoiceItem}" />
+                        </Grid>
+                    </Border>
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Classes="label" Text="Start maximised" />
+                                <TextBlock Classes="hint" Text="{Binding MaximisedHint}" />
+                            </StackPanel>
+                            <ToggleSwitch Grid.Column="1" OnContent="" OffContent="" VerticalAlignment="Center"
+                                          IsChecked="{Binding Maximised}" IsEnabled="{Binding IsWindowMode}" />
+                        </Grid>
+                    </Border>
+                </StackPanel>
 
-        <TabControl Classes="pages" SelectedIndex="{Binding TabIndex}" Padding="0,8,0,0">
-            <!-- Display -->
-            <TabItem Header="Display">
-                <Border Classes="card" Padding="20,4">
-                    <ScrollViewer>
-                        <StackPanel>
-                            <Grid Classes="row" ColumnDefinitions="*,Auto" ColumnSpacing="16">
-                                <StackPanel VerticalAlignment="Center" Spacing="2">
-                                    <TextBlock Classes="label" Text="Window" />
-                                    <TextBlock Classes="hint" Text="{Binding ModeHint}" />
-                                </StackPanel>
-                                <ListBox Grid.Column="1" Classes="seg" SelectedIndex="{Binding ModeIndex}">
-                                    <ListBoxItem Content="Window" />
-                                    <ListBoxItem Content="Borderless" />
-                                    <ListBoxItem Content="Fullscreen" />
-                                </ListBox>
-                            </Grid>
-                            <Border Classes="sep" />
-                            <Grid Classes="row" ColumnDefinitions="*,Auto" ColumnSpacing="16">
-                                <TextBlock Classes="label" Text="Screen" VerticalAlignment="Center" />
-                                <ComboBox Grid.Column="1" Width="340" VerticalAlignment="Center"
-                                          ItemsSource="{Binding ScreenChoices}" SelectedItem="{Binding Screen}"
+                <StackPanel>
+                    <TextBlock Classes="cap" Text="FULLSCREEN" />
+                    <Border Classes="capline" />
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Classes="label" Text="Resolution" />
+                                <TextBlock Classes="hint" Text="{Binding FullscreenHint}" />
+                            </StackPanel>
+                            <ComboBox Grid.Column="1" Width="300" VerticalAlignment="Center"
+                                      ItemsSource="{Binding ResolutionChoices}" SelectedItem="{Binding Resolution}"
+                                      ItemTemplate="{StaticResource ChoiceItem}" IsEnabled="{Binding IsFullscreen}" />
+                        </Grid>
+                    </Border>
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Classes="label" Text="Refresh rate" />
+                                <TextBlock Classes="hint" Text="{Binding RefreshHint}" />
+                            </StackPanel>
+                            <Panel Grid.Column="1" Width="300" VerticalAlignment="Center">
+                                <ComboBox HorizontalAlignment="Stretch" IsVisible="{Binding IsFullscreen}"
+                                          ItemsSource="{Binding RefreshChoices}" SelectedItem="{Binding Refresh}"
                                           ItemTemplate="{StaticResource ChoiceItem}" />
-                            </Grid>
-                            <Border Classes="sep" />
-                            <Grid Classes="row" ColumnDefinitions="*,Auto" ColumnSpacing="16">
-                                <StackPanel VerticalAlignment="Center" Spacing="2">
-                                    <TextBlock Classes="label" Text="Start maximised" />
-                                    <TextBlock Classes="hint" Text="{Binding MaximisedHint}" />
-                                </StackPanel>
-                                <ToggleSwitch Grid.Column="1" OnContent="" OffContent="" VerticalAlignment="Center"
-                                              IsChecked="{Binding Maximised}" IsEnabled="{Binding IsWindowMode}" />
-                            </Grid>
-                            <Border Classes="sep" />
-                            <Grid Classes="row" ColumnDefinitions="*,Auto" ColumnSpacing="16">
-                                <StackPanel VerticalAlignment="Center" Spacing="2">
-                                    <TextBlock Classes="label" Text="Fullscreen resolution" />
-                                    <TextBlock Classes="hint" Text="{Binding FullscreenHint}" />
-                                </StackPanel>
-                                <ComboBox Grid.Column="1" Width="340" VerticalAlignment="Center"
-                                          ItemsSource="{Binding ResolutionChoices}" SelectedItem="{Binding Resolution}"
-                                          ItemTemplate="{StaticResource ChoiceItem}" IsEnabled="{Binding IsFullscreen}" />
-                            </Grid>
-                            <Border Classes="sep" />
-                            <Grid Classes="row" ColumnDefinitions="*,Auto" ColumnSpacing="16">
-                                <StackPanel VerticalAlignment="Center" Spacing="2">
-                                    <TextBlock Classes="label" Text="Refresh rate" />
-                                    <TextBlock Classes="hint" Text="{Binding RefreshHint}" />
-                                </StackPanel>
-                                <Panel Grid.Column="1" Width="340" VerticalAlignment="Center">
-                                    <ComboBox HorizontalAlignment="Stretch" IsVisible="{Binding IsFullscreen}"
-                                              ItemsSource="{Binding RefreshChoices}" SelectedItem="{Binding Refresh}"
-                                              ItemTemplate="{StaticResource ChoiceItem}" />
-                                    <Border IsVisible="{Binding IsNotFullscreen}" Height="34" CornerRadius="8"
-                                            BorderBrush="#3a363f" BorderThickness="1" Padding="12,0">
-                                        <TextBlock Text="{Binding WindowsRate}" VerticalAlignment="Center" FontSize="13" Classes="muted" />
-                                    </Border>
-                                </Panel>
-                            </Grid>
-                            <Border Classes="sep" />
-                            <Grid Classes="row" ColumnDefinitions="*,Auto" ColumnSpacing="16">
-                                <StackPanel VerticalAlignment="Center" Spacing="2">
-                                    <TextBlock Classes="label" Text="VSync" />
-                                    <TextBlock Classes="hint" Text="{Binding VsyncHint}" />
-                                </StackPanel>
-                                <ListBox Grid.Column="1" Classes="seg" SelectedIndex="{Binding VsyncIndex}">
-                                    <ListBoxItem Content="Off" />
-                                    <ListBoxItem Content="On" />
-                                </ListBox>
-                            </Grid>
-                            <Border Classes="sep" />
-                            <Grid Classes="row" ColumnDefinitions="*,Auto" ColumnSpacing="16">
-                                <StackPanel VerticalAlignment="Center" Spacing="2">
-                                    <TextBlock Classes="label" Text="Picture shape" />
-                                    <TextBlock Classes="hint" Text="{Binding ShapeHint}" />
-                                </StackPanel>
-                                <ListBox Grid.Column="1" Classes="seg" SelectedIndex="{Binding ShapeIndex}">
-                                    <ListBoxItem Content="4:3" />
-                                    <ListBoxItem Content="Stretched" />
-                                    <ListBoxItem Content="Widescreen · planned" IsEnabled="False" />
-                                </ListBox>
-                            </Grid>
-                        </StackPanel>
-                    </ScrollViewer>
-                </Border>
-            </TabItem>
+                                <Border IsVisible="{Binding IsNotFullscreen}" Height="30" CornerRadius="6"
+                                        BorderBrush="{StaticResource VLine}" BorderThickness="1" Padding="10,0">
+                                    <TextBlock Text="{Binding WindowsRate}" VerticalAlignment="Center" FontSize="13" Classes="muted" />
+                                </Border>
+                            </Panel>
+                        </Grid>
+                    </Border>
+                </StackPanel>
 
-            <!-- Graphics -->
-            <TabItem Header="Graphics">
-                <Border Classes="card" Padding="20,4" VerticalAlignment="Top">
-                    <StackPanel>
-                        <Grid Classes="row" ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                <StackPanel>
+                    <TextBlock Classes="cap" Text="PICTURE" />
+                    <Border Classes="capline" />
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Classes="label" Text="VSync" />
+                                <TextBlock Classes="hint" Text="{Binding VsyncHint}" />
+                            </StackPanel>
+                            <ListBox Grid.Column="1" Classes="seg" SelectedIndex="{Binding VsyncIndex}">
+                                <ListBoxItem Content="Off" />
+                                <ListBoxItem Content="On" />
+                            </ListBox>
+                        </Grid>
+                    </Border>
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Classes="label" Text="Picture shape" />
+                                <TextBlock Classes="hint" Text="{Binding ShapeHint}" />
+                            </StackPanel>
+                            <ListBox Grid.Column="1" Classes="seg" SelectedIndex="{Binding ShapeIndex}">
+                                <ListBoxItem Content="Widescreen" />
+                                <ListBoxItem Content="4:3" />
+                                <ListBoxItem Content="Stretched" />
+                            </ListBox>
+                        </Grid>
+                    </Border>
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+
+        <!-- Graphics -->
+        <ScrollViewer HorizontalScrollBarVisibility="Disabled" IsVisible="{Binding IsGraphicsTab}">
+            <StackPanel Margin="26,22" Spacing="20" MaxWidth="760" HorizontalAlignment="Left">
+                <TextBlock Classes="h1" Text="Graphics" />
+                <StackPanel>
+                    <TextBlock Classes="cap" Text="DRAWING" />
+                    <Border Classes="capline" />
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
                             <StackPanel VerticalAlignment="Center" Spacing="2">
                                 <TextBlock Classes="label" Text="Drawn by" />
                                 <TextBlock Classes="hint" Text="{Binding RendererHint}" />
@@ -122,8 +135,9 @@
                                 <ListBoxItem Content="CPU" />
                             </ListBox>
                         </Grid>
-                        <Border Classes="sep" />
-                        <Grid Classes="row" ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                    </Border>
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
                             <StackPanel VerticalAlignment="Center" Spacing="2">
                                 <TextBlock Classes="label" Text="Scale" />
                                 <TextBlock Classes="hint" Text="{Binding ScaleHint}" />
@@ -136,10 +150,15 @@
                                 <ListBoxItem Content="16×" />
                             </ListBox>
                         </Grid>
-                        <Border Classes="sep" />
-                        <Grid Classes="row" ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                    </Border>
+                </StackPanel>
+                <StackPanel>
+                    <TextBlock Classes="cap" Text="SCALING TO THE WINDOW" />
+                    <Border Classes="capline" />
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
                             <StackPanel VerticalAlignment="Center" Spacing="2">
-                                <TextBlock Classes="label" Text="Scaling to the window" />
+                                <TextBlock Classes="label" Text="Filter" />
                                 <TextBlock Classes="hint" Text="{Binding FilterHint}" />
                             </StackPanel>
                             <ListBox Grid.Column="1" Classes="seg" SelectedIndex="{Binding FilterIndex}">
@@ -148,8 +167,9 @@
                                 <ListBoxItem Content="Blocky" />
                             </ListBox>
                         </Grid>
-                        <Border Classes="sep" />
-                        <Grid Classes="row" ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                    </Border>
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
                             <StackPanel VerticalAlignment="Center" Spacing="2">
                                 <TextBlock Classes="label" Text="Sharpening" />
                                 <TextBlock Classes="hint" Text="How crisp edges look after scaling (with FSR)" />
@@ -161,15 +181,20 @@
                                            Text="{Binding SharpeningText}" />
                             </StackPanel>
                         </Grid>
-                    </StackPanel>
-                </Border>
-            </TabItem>
+                    </Border>
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
 
-            <!-- Sound -->
-            <TabItem Header="Sound">
-                <Border Classes="card" Padding="20,4" VerticalAlignment="Top">
-                    <StackPanel>
-                        <Grid Classes="row" ColumnDefinitions="*,Auto" ColumnSpacing="16">
+        <!-- Sound -->
+        <ScrollViewer HorizontalScrollBarVisibility="Disabled" IsVisible="{Binding IsSoundTab}">
+            <StackPanel Margin="26,22" Spacing="20" MaxWidth="760" HorizontalAlignment="Left">
+                <TextBlock Classes="h1" Text="Sound" />
+                <StackPanel>
+                    <TextBlock Classes="cap" Text="SOUND" />
+                    <Border Classes="capline" />
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
                             <TextBlock Classes="label" Text="Volume" VerticalAlignment="Center" />
                             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
                                 <Slider Width="200" Minimum="0" Maximum="100" TickFrequency="1" IsSnapToTickEnabled="True"
@@ -178,8 +203,9 @@
                                            Text="{Binding VolumeText}" />
                             </StackPanel>
                         </Grid>
-                        <Border Classes="sep" />
-                        <Grid Classes="row" ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                    </Border>
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
                             <StackPanel VerticalAlignment="Center" Spacing="2">
                                 <TextBlock Classes="label" Text="Arena reverb" />
                                 <TextBlock Classes="hint" Text="The echo the PS2's sound chip adds in matches" />
@@ -187,75 +213,97 @@
                             <ToggleSwitch Grid.Column="1" OnContent="" OffContent="" VerticalAlignment="Center"
                                           IsChecked="{Binding Reverb}" />
                         </Grid>
-                    </StackPanel>
-                </Border>
-            </TabItem>
+                    </Border>
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
 
-            <!-- Controls: players 1-4, each with their own controller and vibration -->
-            <TabItem Header="Controls">
-                <StackPanel Spacing="12">
-                    <Border Classes="card" Padding="20,4">
-                        <Grid Classes="row" ColumnDefinitions="*,Auto" ColumnSpacing="16">
+        <!-- Controls -->
+        <ScrollViewer HorizontalScrollBarVisibility="Disabled" IsVisible="{Binding IsControlsTab}">
+            <StackPanel Margin="26,22" Spacing="20" MaxWidth="760" HorizontalAlignment="Left">
+                <TextBlock Classes="h1" Text="Controls" />
+                <StackPanel>
+                    <TextBlock Classes="cap" Text="PLAYERS" />
+                    <Border Classes="capline" />
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
                             <StackPanel VerticalAlignment="Center" Spacing="2">
-                                <TextBlock Classes="label" Text="Up to 4 players" FontWeight="SemiBold" />
-                                <TextBlock Classes="hint" TextWrapping="Wrap"
+                                <TextBlock Classes="label" Text="Up to 4 players" />
+                                <TextBlock Classes="hint"
                                            Text="Each player has their own controller, as on a PS2 with a multitap in port 2. Off: 2 controllers." />
                             </StackPanel>
                             <ToggleSwitch Grid.Column="1" OnContent="" OffContent="" VerticalAlignment="Center"
                                           IsChecked="{Binding Multitap}" />
                         </Grid>
                     </Border>
-                    <Border Classes="card" Padding="20,4">
-                        <StackPanel>
-                            <Grid Classes="row" ColumnDefinitions="*,Auto" ColumnSpacing="16">
-                                <StackPanel VerticalAlignment="Center" Spacing="2">
-                                    <TextBlock Classes="label" Text="Player 1" FontWeight="SemiBold" />
-                                    <TextBlock Classes="hint" Text="The first controller, or the keyboard" />
-                                </StackPanel>
-                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                                    <TextBlock Classes="hint" Text="Vibration" VerticalAlignment="Center" />
-                                    <ToggleSwitch OnContent="" OffContent="" IsChecked="{Binding Vibration1}" />
-                                </StackPanel>
-                            </Grid>
-                            <Border Classes="sep" />
-                            <Grid Classes="row" ColumnDefinitions="*,Auto" ColumnSpacing="16">
-                                <StackPanel VerticalAlignment="Center" Spacing="2">
-                                    <TextBlock Classes="label" Text="Player 2" FontWeight="SemiBold" />
-                                    <TextBlock Classes="hint" Text="The second controller" />
-                                </StackPanel>
-                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                                    <TextBlock Classes="hint" Text="Vibration" VerticalAlignment="Center" />
-                                    <ToggleSwitch OnContent="" OffContent="" IsChecked="{Binding Vibration2}" />
-                                </StackPanel>
-                            </Grid>
-                            <Border Classes="sep" />
-                            <Grid Classes="row" ColumnDefinitions="*,Auto" ColumnSpacing="16">
-                                <StackPanel VerticalAlignment="Center" Spacing="2">
-                                    <TextBlock Classes="label" Text="Player 3" FontWeight="SemiBold" />
-                                    <TextBlock Classes="hint" Text="The third controller (with up to 4 players)" />
-                                </StackPanel>
-                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                                    <TextBlock Classes="hint" Text="Vibration" VerticalAlignment="Center" />
-                                    <ToggleSwitch OnContent="" OffContent="" IsChecked="{Binding Vibration3}" />
-                                </StackPanel>
-                            </Grid>
-                            <Border Classes="sep" />
-                            <Grid Classes="row" ColumnDefinitions="*,Auto" ColumnSpacing="16">
-                                <StackPanel VerticalAlignment="Center" Spacing="2">
-                                    <TextBlock Classes="label" Text="Player 4" FontWeight="SemiBold" />
-                                    <TextBlock Classes="hint" Text="The fourth controller (with up to 4 players)" />
-                                </StackPanel>
-                                <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
-                                    <TextBlock Classes="hint" Text="Vibration" VerticalAlignment="Center" />
-                                    <ToggleSwitch OnContent="" OffContent="" IsChecked="{Binding Vibration4}" />
-                                </StackPanel>
-                            </Grid>
-                        </StackPanel>
-                    </Border>
-                    <TextBlock Classes="hint" TextWrapping="Wrap"
-                               Text="Controllers are given out in the order Windows lists them. Vibration works with Xbox-style (XInput) controllers; PlayStation controllers through Steam or DS4Windows. The game's own VIBRATION option (pause menu) still applies. Changing buttons: coming." />
                 </StackPanel>
-            </TabItem>
-        </TabControl>
-    </DockPanel>
+
+                <StackPanel>
+                    <TextBlock Classes="cap" Text="CONTROLLERS" />
+                    <Border Classes="capline" />
+                    <Border Classes="row" Padding="0,8">
+                        <Grid ColumnDefinitions="110,*,90">
+                            <TextBlock Classes="cap" Text="PLAYER" />
+                            <TextBlock Grid.Column="1" Classes="cap" Text="CONTROLLER" />
+                            <TextBlock Grid.Column="2" Classes="cap" Text="VIBRATION" />
+                        </Grid>
+                    </Border>
+                    <Border Classes="row" Padding="0,6">
+                        <Grid ColumnDefinitions="110,*,90">
+                            <TextBlock Text="Player 1" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                <Ellipse Classes="dot" Width="7" Height="7" Classes.warn="{Binding !Pad1In}" />
+                                <TextBlock Text="{Binding Pad1}" FontSize="13" Classes.good="{Binding Pad1In}" Classes.muted="{Binding !Pad1In}" />
+                            </StackPanel>
+                            <ToggleSwitch Grid.Column="2" OnContent="" OffContent="" IsChecked="{Binding Vibration1}" />
+                        </Grid>
+                    </Border>
+                    <Border Classes="row" Padding="0,6">
+                        <Grid ColumnDefinitions="110,*,90">
+                            <TextBlock Text="Player 2" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                <Ellipse Classes="dot" Width="7" Height="7" Classes.warn="{Binding !Pad2In}" />
+                                <TextBlock Text="{Binding Pad2}" FontSize="13" Classes.good="{Binding Pad2In}" Classes.muted="{Binding !Pad2In}" />
+                            </StackPanel>
+                            <ToggleSwitch Grid.Column="2" OnContent="" OffContent="" IsChecked="{Binding Vibration2}" />
+                        </Grid>
+                    </Border>
+                    <Border Classes="row" Padding="0,6">
+                        <Grid ColumnDefinitions="110,*,90">
+                            <TextBlock Text="Player 3" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                <Ellipse Classes="dot" Width="7" Height="7" Classes.warn="{Binding !Pad3In}" />
+                                <TextBlock Text="{Binding Pad3}" FontSize="13" Classes.good="{Binding Pad3In}" Classes.muted="{Binding !Pad3In}" />
+                            </StackPanel>
+                            <ToggleSwitch Grid.Column="2" OnContent="" OffContent="" IsChecked="{Binding Vibration3}" />
+                        </Grid>
+                    </Border>
+                    <Border Classes="row" Padding="0,6">
+                        <Grid ColumnDefinitions="110,*,90">
+                            <TextBlock Text="Player 4" FontWeight="SemiBold" VerticalAlignment="Center" />
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                <Ellipse Classes="dot" Width="7" Height="7" Classes.warn="{Binding !Pad4In}" />
+                                <TextBlock Text="{Binding Pad4}" FontSize="13" Classes.good="{Binding Pad4In}" Classes.muted="{Binding !Pad4In}" />
+                            </StackPanel>
+                            <ToggleSwitch Grid.Column="2" OnContent="" OffContent="" IsChecked="{Binding Vibration4}" />
+                        </Grid>
+                    </Border>
+                    <TextBlock Classes="hint" Margin="0,10,0,0" LineHeight="18"
+                               Text="Controllers are given out in the order Windows lists them; Xbox-style (XInput) ones are shown here. Vibration works with those; PlayStation controllers through Steam or DS4Windows. The game's own VIBRATION option (pause menu) still applies." />
+                </StackPanel>
+
+                <StackPanel>
+                    <TextBlock Classes="cap" Text="CHANGING BUTTONS" />
+                    <Border Classes="capline" Margin="0,8,0,10" />
+                    <Panel>
+                        <Rectangle Stroke="{StaticResource VLine}" StrokeThickness="1" StrokeDashArray="4,3" RadiusX="8" RadiusY="8" />
+                        <StackPanel Margin="16" Spacing="4" HorizontalAlignment="Center">
+                            <TextBlock Text="Coming" FontWeight="SemiBold" HorizontalAlignment="Center" />
+                            <TextBlock Classes="hint" Text="Each player picks their own buttons here." HorizontalAlignment="Center" />
+                        </StackPanel>
+                    </Panel>
+                </StackPanel>
+            </StackPanel>
+        </ScrollViewer>
+    </Panel>
 </UserControl>

@@ -35,9 +35,70 @@ public partial class SettingsViewModel : ObservableObject
         _readOnly = readOnly;
         _screens = Displays.Find();
         Load(GameSettings.Load(folder.SettingsPath));
+        UpdatePads();
+        if (!readOnly)
+        {
+            // which controllers are plugged in, for the Controls page (asking XInput about an empty slot is slow, so
+            // every 2 s)
+            var timer = new Avalonia.Threading.DispatcherTimer { Interval = TimeSpan.FromSeconds(2) };
+            timer.Tick += (_, _) => UpdatePads();
+            timer.Start();
+        }
     }
 
-    [ObservableProperty] private int _tabIndex;
+    // the Controls page: what each player has (the game gives the Xbox-style controllers out in order)
+    [ObservableProperty] private string _pad1 = "";
+    [ObservableProperty] private string _pad2 = "";
+    [ObservableProperty] private string _pad3 = "";
+    [ObservableProperty] private string _pad4 = "";
+    [ObservableProperty] private bool _pad1In;
+    [ObservableProperty] private bool _pad2In;
+    [ObservableProperty] private bool _pad3In;
+    [ObservableProperty] private bool _pad4In;
+
+    private void UpdatePads()
+    {
+        var count = Controllers.XInputCount();
+        string Pad(int player) =>
+            player >= 2 && !Multitap ? "Off (2 players)"
+            : player < count ? "Xbox-style controller"
+            : player == 0 ? "The keyboard (no controller)" : "Not plugged in";
+        Pad1 = Pad(0);
+        Pad2 = Pad(1);
+        Pad3 = Pad(2);
+        Pad4 = Pad(3);
+        Pad1In = count > 0;
+        Pad2In = count > 1;
+        Pad3In = count > 2 && Multitap;
+        Pad4In = count > 3 && Multitap;
+    }
+
+    partial void OnMultitapChanged(bool value) => UpdatePads();
+
+    // the Play page's "how it will open"
+    public string SummaryWindow => ModeIndex switch
+    {
+        1 => "Borderless",
+        2 => $"Fullscreen · {ChosenRate} Hz",
+        _ => Maximised ? "Window · maximised" : "Window",
+    };
+
+    public string SummaryPicture =>
+        (ShapeIndex switch { 1 => "4:3", 2 => "Stretched", _ => "Widescreen" }) + " · " +
+        (RendererIndex == 0 ? $"graphics card · {Scales[Math.Clamp(ScaleIndex, 0, 4)]}×" : "CPU");
+
+    public string SummaryPlayers =>
+        (Multitap ? "Up to 4" : "2") + " · vibration " +
+        (Vibration1 || Vibration2 || Vibration3 || Vibration4 ? "on" : "off");
+
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(IsDisplayTab), nameof(IsGraphicsTab), nameof(IsSoundTab), nameof(IsControlsTab))]
+    private int _tabIndex;
+
+    public bool IsDisplayTab => TabIndex == 0;
+    public bool IsGraphicsTab => TabIndex == 1;
+    public bool IsSoundTab => TabIndex == 2;
+    public bool IsControlsTab => TabIndex == 3;
 
     // Display
     [ObservableProperty] private int _modeIndex;
@@ -123,10 +184,12 @@ public partial class SettingsViewModel : ObservableObject
         ? "No tearing: each frame waits for the screen. With G-Sync or FreeSync, smooth at any rate."
         : "The lowest delay; fast moves can tear in fullscreen.";
 
-    public string ShapeHint => (ShapeIndex == 1
-            ? "Fills a wide screen, but everyone looks wider."
-            : "As on the PS2: black bars at the sides of a wide screen.")
-        + " Widescreen (planned) will show more of the arena instead.";
+    public string ShapeHint => ShapeIndex switch
+    {
+        1 => "As on the PS2: black bars at the sides of a wide screen.",
+        2 => "Fills a wide screen, but everyone looks wider.",
+        _ => "Matches at 16:9 with more of the arena; menus and movies stay 4:3. New: tested in the warehouse arena so far.",
+    };
 
     public string RendererHint => RendererIndex == 0 ? "Default: sharp and fast" : "The old way, for checking: 1× only";
 
@@ -179,6 +242,7 @@ public partial class SettingsViewModel : ObservableObject
                          nameof(MaximisedHint), nameof(FullscreenHint), nameof(WindowsRate), nameof(RefreshHint),
                          nameof(VsyncHint), nameof(ShapeHint), nameof(RendererHint), nameof(ScaleHint), nameof(FilterHint),
                          nameof(SharpeningText), nameof(VolumeText), nameof(SharpeningEnabled), nameof(Summary),
+                         nameof(SummaryWindow), nameof(SummaryPicture), nameof(SummaryPlayers),
                      })
                 base.OnPropertyChanged(new PropertyChangedEventArgs(derived));
             Save();
@@ -209,7 +273,7 @@ public partial class SettingsViewModel : ObservableObject
             Maximised = s.Maximised;
             RebuildChoices(s.FullscreenWidth, s.FullscreenHeight, s.RefreshRate);
             VsyncIndex = s.Vsync ? 1 : 0;
-            ShapeIndex = s.Shape == "stretch" ? 1 : 0;
+            ShapeIndex = s.Shape == "4:3" ? 1 : s.Shape == "stretch" ? 2 : 0; // 0 widescreen (the default), 1 4:3, 2 stretched
             RendererIndex = s.Renderer == "cpu" ? 1 : 0;
             ScaleIndex = Math.Max(0, Array.IndexOf(Scales, s.Scale));
             FilterIndex = Math.Max(0, Array.IndexOf(Filters, s.Filter));
@@ -293,7 +357,7 @@ public partial class SettingsViewModel : ObservableObject
         FullscreenHeight = Resolution?.Value2 ?? 0,
         RefreshRate = Refresh?.Value ?? GameSettings.RefreshSmoothest,
         Vsync = VsyncIndex == 1,
-        Shape = ShapeIndex == 1 ? "stretch" : "4:3",
+        Shape = ShapeIndex switch { 1 => "4:3", 2 => "stretch", _ => "widescreen" },
         Renderer = RendererIndex == 1 ? "cpu" : "gpu",
         Scale = Scales[Math.Clamp(ScaleIndex, 0, 4)],
         Filter = Filters[Math.Clamp(FilterIndex, 0, 2)],

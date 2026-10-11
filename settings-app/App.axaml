@@ -3,32 +3,41 @@
              x:Class="VendettaSettings.App"
              RequestedThemeVariant="Dark">
 
+    <!-- adjmk's look (its palette, type sizes and flat sections), so the two programs feel like one family -->
     <Application.Resources>
-        <!-- the accent (toggles, sliders, the selected choice): the launcher's red -->
-        <Color x:Key="SystemAccentColor">#e0243c</Color>
-        <Color x:Key="SystemAccentColorDark1">#c71f35</Color>
-        <Color x:Key="SystemAccentColorDark2">#ad1b2e</Color>
-        <Color x:Key="SystemAccentColorDark3">#931727</Color>
-        <Color x:Key="SystemAccentColorLight1">#e8475b</Color>
-        <Color x:Key="SystemAccentColorLight2">#ef6b7b</Color>
-        <Color x:Key="SystemAccentColorLight3">#f5909c</Color>
+        <!-- the accent (toggles, sliders, the main buttons): adjmk's blue -->
+        <Color x:Key="SystemAccentColor">#4f9cff</Color>
+        <Color x:Key="SystemAccentColorDark1">#3f88e8</Color>
+        <Color x:Key="SystemAccentColorDark2">#3275cf</Color>
+        <Color x:Key="SystemAccentColorDark3">#2862b5</Color>
+        <Color x:Key="SystemAccentColorLight1">#6aacff</Color>
+        <Color x:Key="SystemAccentColorLight2">#86bcff</Color>
+        <Color x:Key="SystemAccentColorLight3">#a3ccff</Color>
 
-        <SolidColorBrush x:Key="VBg" Color="#121114" />
-        <SolidColorBrush x:Key="VNav" Color="#0c0b0e" />
-        <SolidColorBrush x:Key="VPanel" Color="#1b1a1e" />
-        <SolidColorBrush x:Key="VPanel2" Color="#26232a" />
-        <SolidColorBrush x:Key="VLine" Color="#2f2c33" />
-        <SolidColorBrush x:Key="VRowLine" Color="#26232a" />
-        <SolidColorBrush x:Key="VText" Color="#f1eff2" />
-        <SolidColorBrush x:Key="VMuted" Color="#a7a2ad" />
-        <SolidColorBrush x:Key="VHint" Color="#8f8a96" />
-        <SolidColorBrush x:Key="VAccent" Color="#e0243c" />
-        <SolidColorBrush x:Key="VGood" Color="#6fd39a" />
-        <SolidColorBrush x:Key="VBad" Color="#ff6b7e" />
-        <SolidColorBrush x:Key="VWarn" Color="#f2c766" />
-        <SolidColorBrush x:Key="VWarnBg" Color="#1f1b12" />
-        <SolidColorBrush x:Key="VWarnLine" Color="#4a3d1c" />
-        <FontFamily x:Key="VMono">Consolas</FontFamily>
+        <SolidColorBrush x:Key="VBg" Color="#1a1a1c" />
+        <SolidColorBrush x:Key="VChrome" Color="#161618" />
+        <SolidColorBrush x:Key="VNav" Color="#232326" />
+        <SolidColorBrush x:Key="VPanel" Color="#232326" />
+        <SolidColorBrush x:Key="VPanel2" Color="#2b2b30" />
+        <SolidColorBrush x:Key="VLine" Color="#3a3a40" />
+        <SolidColorBrush x:Key="VRowLine" Color="#2b2b30" />
+        <SolidColorBrush x:Key="VText" Color="#e4e4e7" />
+        <SolidColorBrush x:Key="VText2" Color="#c8c8ce" />
+        <SolidColorBrush x:Key="VMuted" Color="#9a9aa2" />
+        <SolidColorBrush x:Key="VHint" Color="#9a9aa2" />
+        <SolidColorBrush x:Key="VDisabled" Color="#5a5a62" />
+        <SolidColorBrush x:Key="VAccent" Color="#4f9cff" />
+        <SolidColorBrush x:Key="VAccentDim" Color="#2b4d7a" />
+        <SolidColorBrush x:Key="VGood" Color="#4ec98a" />
+        <SolidColorBrush x:Key="VGoodBg" Color="#1c2a23" />
+        <SolidColorBrush x:Key="VGoodLine" Color="#2f5c45" />
+        <SolidColorBrush x:Key="VGoodLabel" Color="#9fc4b1" />
+        <SolidColorBrush x:Key="VWarn" Color="#e0a83c" />
+        <SolidColorBrush x:Key="VBad" Color="#e5533c" />
+        <SolidColorBrush x:Key="VBadBg" Color="#453132" />
+        <SolidColorBrush x:Key="VBadLine" Color="#93473e" />
+        <SolidColorBrush x:Key="VBadText" Color="#eab9ae" />
+        <FontFamily x:Key="VMono">Cascadia Mono, Consolas</FontFamily>
     </Application.Resources>
 
     <Application.Styles>
@@ -37,6 +46,7 @@
         <Style Selector="Window">
             <Setter Property="Background" Value="{StaticResource VBg}" />
             <Setter Property="Foreground" Value="{StaticResource VText}" />
+            <Setter Property="FontSize" Value="14" />
         </Style>
         <Style Selector="TextBlock">
             <Setter Property="Foreground" Value="{StaticResource VText}" />
@@ -44,17 +54,27 @@
 
         <!-- text -->
         <Style Selector="TextBlock.h1">
-            <Setter Property="FontWeight" Value="Bold" />
-            <Setter Property="FontSize" Value="36" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="FontSize" Value="16" />
         </Style>
+        <!-- a section's heading: small capitals over a thin line (Border.capline) -->
         <Style Selector="TextBlock.cap">
-            <Setter Property="FontFamily" Value="{StaticResource VMono}" />
             <Setter Property="FontSize" Value="11" />
-            <Setter Property="LetterSpacing" Value="1.5" />
+            <Setter Property="FontWeight" Value="Medium" />
+            <Setter Property="LetterSpacing" Value="0.9" />
             <Setter Property="Foreground" Value="{StaticResource VMuted}" />
         </Style>
+        <Style Selector="Border.capline">
+            <Setter Property="Height" Value="1" />
+            <Setter Property="Background" Value="{StaticResource VLine}" />
+            <Setter Property="Margin" Value="0,8,0,0" />
+        </Style>
         <Style Selector="TextBlock.label">
-            <Setter Property="FontSize" Value="14.5" />
+            <Setter Property="FontSize" Value="14" />
+        </Style>
+        <Style Selector="TextBlock.key">
+            <Setter Property="FontSize" Value="13.5" />
+            <Setter Property="Foreground" Value="{StaticResource VText2}" />
         </Style>
         <Style Selector="TextBlock.hint">
             <Setter Property="FontSize" Value="12.5" />
@@ -70,185 +90,186 @@
         <Style Selector="TextBlock.bad">
             <Setter Property="Foreground" Value="{StaticResource VBad}" />
         </Style>
+        <Style Selector="TextBlock.warn">
+            <Setter Property="Foreground" Value="{StaticResource VWarn}" />
+        </Style>
         <Style Selector="TextBlock.mono">
             <Setter Property="FontFamily" Value="{StaticResource VMono}" />
             <Setter Property="FontSize" Value="12.5" />
         </Style>
-
-        <!-- cards and setting rows -->
-        <Style Selector="Border.card">
-            <Setter Property="Background" Value="{StaticResource VPanel}" />
-            <Setter Property="CornerRadius" Value="12" />
-            <Setter Property="Padding" Value="18" />
-        </Style>
-        <Style Selector="Grid.row">
-            <Setter Property="MinHeight" Value="56" />
-        </Style>
-        <Style Selector="Border.sep">
-            <Setter Property="Height" Value="1" />
-            <Setter Property="Background" Value="{StaticResource VRowLine}" />
-        </Style>
-
-        <!-- the side menu -->
-        <Style Selector="Button.nav">
-            <Setter Property="Background" Value="Transparent" />
-            <Setter Property="Foreground" Value="{StaticResource VMuted}" />
-            <Setter Property="HorizontalAlignment" Value="Stretch" />
-            <Setter Property="HorizontalContentAlignment" Value="Left" />
-            <Setter Property="Height" Value="44" />
-            <Setter Property="Padding" Value="12,0" />
-            <Setter Property="CornerRadius" Value="8" />
-            <Setter Property="FontSize" Value="15" />
-            <Setter Property="FontWeight" Value="Medium" />
-        </Style>
-        <Style Selector="Button.nav TextBlock">
-            <Setter Property="VerticalAlignment" Value="Center" />
-        </Style>
-        <Style Selector="Button.nav.active">
-            <Setter Property="Background" Value="{StaticResource VPanel2}" />
-            <Setter Property="Foreground" Value="#ffffff" />
-            <Setter Property="FontWeight" Value="SemiBold" />
-        </Style>
-        <Style Selector="Button.nav:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-            <Setter Property="Background" Value="#1d1b20" />
-            <Setter Property="Foreground" Value="#ffffff" />
-        </Style>
-        <Style Selector="Button.nav.active:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-            <Setter Property="Background" Value="{StaticResource VPanel2}" />
-        </Style>
-
-        <!-- buttons -->
-        <Style Selector="Button.outline">
-            <Setter Property="Background" Value="Transparent" />
-            <Setter Property="BorderBrush" Value="#4a4650" />
-            <Setter Property="BorderThickness" Value="1" />
-            <Setter Property="CornerRadius" Value="8" />
-            <Setter Property="Padding" Value="14,8" />
-            <Setter Property="FontSize" Value="13" />
-        </Style>
-        <Style Selector="Button.play">
-            <Setter Property="Background" Value="{StaticResource VAccent}" />
-            <Setter Property="Foreground" Value="#ffffff" />
-            <Setter Property="CornerRadius" Value="10" />
-            <Setter Property="Height" Value="68" />
-            <Setter Property="Padding" Value="44,0" />
-            <Setter Property="FontWeight" Value="Bold" />
-            <Setter Property="FontSize" Value="28" />
-            <Setter Property="VerticalContentAlignment" Value="Center" />
-        </Style>
-        <Style Selector="Button.play:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-            <Setter Property="Background" Value="#ef3a50" />
-            <Setter Property="Foreground" Value="#ffffff" />
-        </Style>
-        <Style Selector="Button.play:disabled /template/ ContentPresenter#PART_ContentPresenter">
-            <Setter Property="Background" Value="#2a272f" />
-            <Setter Property="Foreground" Value="#6b6672" />
-        </Style>
-
-        <!-- a choice of a few: a ListBox laid out in a row, the selected one in red -->
-        <Style Selector="ListBox.seg">
-            <Setter Property="Background" Value="{StaticResource VNav}" />
-            <Setter Property="Padding" Value="3" />
-            <Setter Property="CornerRadius" Value="8" />
-            <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="VerticalAlignment" Value="Center" />
-            <Setter Property="ItemsPanel">
-                <ItemsPanelTemplate>
-                    <StackPanel Orientation="Horizontal" Spacing="2" />
-                </ItemsPanelTemplate>
-            </Setter>
-        </Style>
-        <Style Selector="ListBox.seg ListBoxItem">
-            <Setter Property="Padding" Value="12,7" />
-            <Setter Property="MinHeight" Value="0" />
-            <Setter Property="MinWidth" Value="40" />
-            <Setter Property="HorizontalContentAlignment" Value="Center" />
-            <Setter Property="CornerRadius" Value="6" />
-            <Setter Property="FontSize" Value="13" />
-            <Setter Property="Foreground" Value="#cfcad4" />
-        </Style>
-        <Style Selector="ListBox.seg ListBoxItem /template/ ContentPresenter#PART_ContentPresenter">
-            <Setter Property="CornerRadius" Value="6" />
-        </Style>
-        <Style Selector="ListBox.seg ListBoxItem:selected /template/ ContentPresenter#PART_ContentPresenter">
-            <Setter Property="Background" Value="{StaticResource VAccent}" />
-            <Setter Property="Foreground" Value="#ffffff" />
-        </Style>
-        <Style Selector="ListBox.seg ListBoxItem:selected:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-            <Setter Property="Background" Value="#ef3a50" />
-            <Setter Property="Foreground" Value="#ffffff" />
-        </Style>
-        <Style Selector="ListBox.seg ListBoxItem:selected:focus /template/ ContentPresenter#PART_ContentPresenter">
-            <Setter Property="Background" Value="{StaticResource VAccent}" />
-            <Setter Property="Foreground" Value="#ffffff" />
-        </Style>
-        <Style Selector="ListBox.seg ListBoxItem:disabled /template/ ContentPresenter#PART_ContentPresenter">
-            <Setter Property="Foreground" Value="#6b6672" />
-        </Style>
-
-        <!-- the settings tabs -->
-        <Style Selector="TabControl.pages TabItem">
-            <Setter Property="FontSize" Value="15" />
-            <Setter Property="MinHeight" Value="44" />
-            <Setter Property="Padding" Value="16,0" />
-        </Style>
-
-        <Style Selector="ComboBox">
-            <Setter Property="Background" Value="{StaticResource VNav}" />
-            <Setter Property="BorderBrush" Value="#3a363f" />
-            <Setter Property="CornerRadius" Value="8" />
-            <Setter Property="FontSize" Value="13" />
-            <Setter Property="MinHeight" Value="34" />
-        </Style>
-        <!-- the first-run setup -->
-        <Style Selector="Border.stepnow, Border.stepdone, Border.stepnext">
-            <Setter Property="Width" Value="32" />
-            <Setter Property="Height" Value="32" />
-            <Setter Property="CornerRadius" Value="16" />
-            <Setter Property="VerticalAlignment" Value="Top" />
-        </Style>
-        <Style Selector="Border.stepnow"><Setter Property="Background" Value="{StaticResource VAccent}" /></Style>
-        <Style Selector="Border.stepdone"><Setter Property="Background" Value="#23573a" /></Style>
-        <Style Selector="Border.stepnext">
-            <Setter Property="BorderBrush" Value="#3a363f" />
-            <Setter Property="BorderThickness" Value="2" />
-        </Style>
-        <Style Selector="Border.stepnow TextBlock, Border.stepdone TextBlock, Border.stepnext TextBlock">
-            <Setter Property="HorizontalAlignment" Value="Center" />
-            <Setter Property="VerticalAlignment" Value="Center" />
-            <Setter Property="FontWeight" Value="Black" />
-            <Setter Property="FontSize" Value="15" />
-        </Style>
-        <Style Selector="Border.stepdone TextBlock"><Setter Property="Foreground" Value="{StaticResource VGood}" /></Style>
-        <Style Selector="Border.stepnext TextBlock"><Setter Property="Foreground" Value="{StaticResource VMuted}" /></Style>
-        <Style Selector="Border.steprow.now"><Setter Property="Background" Value="{StaticResource VPanel}" /></Style>
-        <Style Selector="TextBlock.warn"><Setter Property="Foreground" Value="{StaticResource VWarn}" /></Style>
         <Style Selector="TextBlock.strong">
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Foreground" Value="#ffffff" />
         </Style>
-        <Style Selector="Button.accent">
-            <Setter Property="Background" Value="{StaticResource VAccent}" />
-            <Setter Property="Foreground" Value="#ffffff" />
-            <Setter Property="CornerRadius" Value="10" />
-            <Setter Property="Height" Value="48" />
-            <Setter Property="Padding" Value="26,0" />
+
+        <!-- a setting's row: the label (and its hint) left, the control right, a faint line under it -->
+        <Style Selector="Border.row">
+            <Setter Property="BorderBrush" Value="{StaticResource VRowLine}" />
+            <Setter Property="BorderThickness" Value="0,0,0,1" />
+            <Setter Property="Padding" Value="0,10" />
+        </Style>
+        <!-- a small outlined tag (the version, "✓ checked") -->
+        <Style Selector="Border.tag">
+            <Setter Property="BorderBrush" Value="{StaticResource VAccent}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="Padding" Value="6,1" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+        </Style>
+        <Style Selector="Border.tag TextBlock">
+            <Setter Property="FontSize" Value="11.5" />
             <Setter Property="FontWeight" Value="SemiBold" />
-            <Setter Property="FontSize" Value="15" />
+            <Setter Property="Foreground" Value="{StaticResource VAccent}" />
+        </Style>
+        <Style Selector="Border.tag.good">
+            <Setter Property="BorderBrush" Value="{StaticResource VGood}" />
+        </Style>
+        <Style Selector="Border.tag.good TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource VGood}" />
+        </Style>
+        <!-- the status at the right of the header: a dot and a few words -->
+        <Style Selector="Ellipse.dot">
+            <Setter Property="Width" Value="8" />
+            <Setter Property="Height" Value="8" />
+            <Setter Property="Fill" Value="{StaticResource VGood}" />
+        </Style>
+        <Style Selector="Ellipse.dot.warn"><Setter Property="Fill" Value="{StaticResource VWarn}" /></Style>
+        <Style Selector="Ellipse.dot.bad"><Setter Property="Fill" Value="{StaticResource VBad}" /></Style>
+
+        <!-- the menu bar -->
+        <Style Selector="Menu">
+            <Setter Property="Background" Value="{StaticResource VChrome}" />
+            <Setter Property="Height" Value="32" />
+        </Style>
+
+        <!-- the page list -->
+        <Style Selector="Button.nav">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="Foreground" Value="{StaticResource VText2}" />
+            <Setter Property="HorizontalAlignment" Value="Stretch" />
+            <Setter Property="HorizontalContentAlignment" Value="Left" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="Height" Value="36" />
+            <Setter Property="Padding" Value="14,0" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="FontSize" Value="14" />
+        </Style>
+        <Style Selector="Button.nav.sub">
+            <Setter Property="Padding" Value="28,0,14,0" />
+        </Style>
+        <Style Selector="Button.nav.active">
+            <Setter Property="Background" Value="{StaticResource VAccentDim}" />
+            <Setter Property="Foreground" Value="#ffffff" />
+        </Style>
+        <Style Selector="Button.nav:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{StaticResource VPanel2}" />
+            <Setter Property="Foreground" Value="#ffffff" />
+        </Style>
+        <Style Selector="Button.nav.active:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{StaticResource VAccentDim}" />
+        </Style>
+        <!-- the setup's steps, in the page list's place -->
+        <Style Selector="Border.step">
+            <Setter Property="Height" Value="36" />
+            <Setter Property="Padding" Value="14,0" />
+            <Setter Property="CornerRadius" Value="6" />
+        </Style>
+        <Style Selector="Border.step.now">
+            <Setter Property="Background" Value="{StaticResource VAccentDim}" />
+        </Style>
+
+        <!-- buttons: grey (Button.outline) and the main one (Button.accent / Button.play) -->
+        <Style Selector="Button.outline">
+            <Setter Property="Background" Value="{StaticResource VPanel2}" />
+            <Setter Property="BorderBrush" Value="{StaticResource VLine}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Height" Value="32" />
+            <Setter Property="Padding" Value="14,0" />
+            <Setter Property="FontSize" Value="13.5" />
             <Setter Property="VerticalContentAlignment" Value="Center" />
         </Style>
-        <Style Selector="Button.accent:pointerover /template/ ContentPresenter#PART_ContentPresenter">
-            <Setter Property="Background" Value="#ef3a50" />
+        <Style Selector="Button.accent, Button.play">
+            <Setter Property="Background" Value="{StaticResource VAccent}" />
+            <Setter Property="Foreground" Value="#ffffff" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="Height" Value="34" />
+            <Setter Property="Padding" Value="18,0" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+            <Setter Property="FontSize" Value="13.5" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+        </Style>
+        <Style Selector="Button.accent:pointerover /template/ ContentPresenter#PART_ContentPresenter, Button.play:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#6aacff" />
             <Setter Property="Foreground" Value="#ffffff" />
         </Style>
-        <Style Selector="Button.accent:disabled /template/ ContentPresenter#PART_ContentPresenter">
-            <Setter Property="Background" Value="#2a272f" />
-            <Setter Property="Foreground" Value="#6b6672" />
+        <Style Selector="Button.accent:disabled /template/ ContentPresenter#PART_ContentPresenter, Button.play:disabled /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{StaticResource VPanel2}" />
+            <Setter Property="Foreground" Value="{StaticResource VDisabled}" />
         </Style>
+
+        <!-- a choice of a few: a ListBox laid out in a row, the chosen one filled -->
+        <Style Selector="ListBox.seg">
+            <Setter Property="Background" Value="{StaticResource VNav}" />
+            <Setter Property="BorderBrush" Value="{StaticResource VLine}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="2" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="ItemsPanel">
+                <ItemsPanelTemplate>
+                    <StackPanel Orientation="Horizontal" Spacing="0" />
+                </ItemsPanelTemplate>
+            </Setter>
+        </Style>
+        <Style Selector="ListBox.seg ListBoxItem">
+            <Setter Property="Padding" Value="12,5" />
+            <Setter Property="MinHeight" Value="0" />
+            <Setter Property="MinWidth" Value="36" />
+            <Setter Property="HorizontalContentAlignment" Value="Center" />
+            <Setter Property="CornerRadius" Value="4" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Foreground" Value="{StaticResource VText2}" />
+        </Style>
+        <Style Selector="ListBox.seg ListBoxItem /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="CornerRadius" Value="4" />
+        </Style>
+        <Style Selector="ListBox.seg ListBoxItem:selected /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{StaticResource VAccentDim}" />
+            <Setter Property="Foreground" Value="#ffffff" />
+            <Setter Property="FontWeight" Value="SemiBold" />
+        </Style>
+        <Style Selector="ListBox.seg ListBoxItem:selected:pointerover /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="#33598c" />
+            <Setter Property="Foreground" Value="#ffffff" />
+        </Style>
+        <Style Selector="ListBox.seg ListBoxItem:selected:focus /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Background" Value="{StaticResource VAccentDim}" />
+            <Setter Property="Foreground" Value="#ffffff" />
+        </Style>
+        <Style Selector="ListBox.seg ListBoxItem:disabled /template/ ContentPresenter#PART_ContentPresenter">
+            <Setter Property="Foreground" Value="{StaticResource VDisabled}" />
+        </Style>
+
+        <Style Selector="ComboBox">
+            <Setter Property="Background" Value="{StaticResource VNav}" />
+            <Setter Property="BorderBrush" Value="{StaticResource VLine}" />
+            <Setter Property="CornerRadius" Value="6" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="MinHeight" Value="30" />
+        </Style>
+
         <Style Selector="ProgressBar">
             <Setter Property="Foreground" Value="{StaticResource VAccent}" />
-            <Setter Property="Background" Value="#2a272f" />
+            <Setter Property="Background" Value="{StaticResource VPanel2}" />
+            <Setter Property="MinHeight" Value="8" />
         </Style>
-        <Style Selector="ProgressBar.done"><Setter Property="Foreground" Value="#4cc38a" /></Style>
+        <Style Selector="ProgressBar.done"><Setter Property="Foreground" Value="{StaticResource VGood}" /></Style>
+        <!-- the build's list of steps: the one running has a fill -->
+        <Style Selector="Border.steprow">
+            <Setter Property="BorderBrush" Value="{StaticResource VRowLine}" />
+            <Setter Property="BorderThickness" Value="0,0,0,1" />
+        </Style>
+        <Style Selector="Border.steprow.now"><Setter Property="Background" Value="{StaticResource VPanel}" /></Style>
     </Application.Styles>
 </Application>

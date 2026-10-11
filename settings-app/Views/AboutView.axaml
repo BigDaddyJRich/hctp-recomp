@@ -3,70 +3,65 @@
              xmlns:vm="using:VendettaSettings.ViewModels"
              x:Class="VendettaSettings.Views.AboutView"
              x:DataType="vm:MainViewModel">
-    <!-- one column of full-width boxes; the label column (140) is the same in each, so their rows line up -->
-    <DockPanel Margin="30,26">
-        <TextBlock DockPanel.Dock="Top" Classes="h1" Text="ABOUT" Margin="0,0,0,18" />
-        <ScrollViewer HorizontalScrollBarVisibility="Disabled">
-            <StackPanel Spacing="14">
-                <!-- the program, its version, who made it -->
-                <Border Classes="card" Padding="20,16">
-                    <Grid ColumnDefinitions="Auto,*,Auto" ColumnSpacing="20">
-                        <Image Source="/Assets/icon.png" Width="56" Height="56" VerticalAlignment="Center" />
-                        <StackPanel Grid.Column="1" VerticalAlignment="Center" Spacing="2">
-                            <TextBlock Text="Def Jam Vendetta Recompiled" FontSize="18" FontWeight="SemiBold" />
-                            <TextBlock Classes="muted" FontSize="13.5" Text="{Binding Version, StringFormat='Version {0}'}" />
+    <!-- flat sections, one label column (150) in every one so their rows line up -->
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+        <StackPanel Margin="26,22" Spacing="20" MaxWidth="760" HorizontalAlignment="Left">
+            <TextBlock Classes="h1" Text="About" />
+
+            <StackPanel>
+                <TextBlock Classes="cap" Text="PROGRAM" />
+                <Border Classes="capline" Margin="0,8,0,8" />
+                <Grid ColumnDefinitions="150,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="8">
+                    <TextBlock Classes="key" Text="Name" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Classes="mono" Text="Def Jam Vendetta Recompiled" VerticalAlignment="Center" />
+                    <TextBlock Grid.Row="1" Classes="key" Text="Version" VerticalAlignment="Center" />
+                    <Border Grid.Row="1" Grid.Column="1" Classes="tag" HorizontalAlignment="Left"><TextBlock Text="{Binding Version}" /></Border>
+                    <TextBlock Grid.Row="2" Classes="key" Text="Made by" VerticalAlignment="Center" />
+                    <Button Grid.Row="2" Grid.Column="1" Classes="outline" Command="{Binding OpenXCommand}" HorizontalAlignment="Left">
+                        <StackPanel Orientation="Horizontal" Spacing="8">
+                            <PathIcon Width="12" Height="12" Data="M2,2 H7 L22,22 H17 Z M19.5,2 H22 L4.5,22 H2 Z" />
+                            <TextBlock Text="@jcsix on X" FontWeight="SemiBold" FontSize="13" />
                         </StackPanel>
-                        <Button Grid.Column="2" Command="{Binding OpenXCommand}" Background="{StaticResource VPanel2}"
-                                CornerRadius="8" Padding="14,9" VerticalAlignment="Center">
-                            <StackPanel Orientation="Horizontal" Spacing="10">
-                                <PathIcon Width="13" Height="13" Data="M2,2 H7 L22,22 H17 Z M19.5,2 H22 L4.5,22 H2 Z" />
-                                <TextBlock Text="Made by @jcsix694" FontWeight="SemiBold" FontSize="14" />
-                            </StackPanel>
-                        </Button>
-                    </Grid>
-                </Border>
-
-                <!-- this install -->
-                <Border Classes="card" Padding="20,16">
-                    <StackPanel Spacing="12">
-                        <TextBlock Classes="cap" Text="YOUR INSTALL" />
-                        <Grid ColumnDefinitions="140,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="8">
-                            <TextBlock Classes="muted" FontSize="14" Text="Built from" />
-                            <TextBlock Grid.Column="1" FontSize="14" TextWrapping="Wrap"
-                                       Text="{Binding DiscTitle, StringFormat='{}{0} · SLUS-20639'}" />
-                            <TextBlock Grid.Row="1" Classes="muted" FontSize="14" Text="The game" />
-                            <TextBlock Grid.Row="1" Grid.Column="1" Classes="mono" TextWrapping="Wrap" Text="{Binding GameExeName}" />
-                            <TextBlock Grid.Row="2" Classes="muted" FontSize="14" Text="Folder" />
-                            <TextBlock Grid.Row="2" Grid.Column="1" Classes="mono" TextWrapping="Wrap" Text="{Binding FolderPath}" />
-                        </Grid>
-                        <StackPanel Orientation="Horizontal" Spacing="8" Margin="140,2,0,0">
-                            <Button Classes="outline" Content="Open game folder" Command="{Binding OpenFolderCommand}" />
-                            <Button Classes="outline" Content="Open save data" Command="{Binding OpenSavesCommand}" />
-                        </StackPanel>
-                    </StackPanel>
-                </Border>
-
-                <!-- what it's made with -->
-                <Border Classes="card" Padding="20,16">
-                    <StackPanel Spacing="12">
-                        <TextBlock Classes="cap" Text="MADE WITH" />
-                        <Grid ColumnDefinitions="140,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="8">
-                            <TextBlock FontSize="14" FontWeight="SemiBold" Text="PS2Recomp" />
-                            <TextBlock Grid.Column="1" Classes="muted" FontSize="14" TextWrapping="Wrap"
-                                       Text="by ran-j: turns the PS2 game's code into C++ (GPL)" />
-                            <TextBlock Grid.Row="1" FontSize="14" FontWeight="SemiBold" Text="paraLLEl-GS" />
-                            <TextBlock Grid.Row="1" Grid.Column="1" Classes="muted" FontSize="14" TextWrapping="Wrap"
-                                       Text="by Arntzen Software: the PS2's graphics chip on your graphics card (LGPL)" />
-                            <TextBlock Grid.Row="2" FontSize="14" FontWeight="SemiBold" Text="adjmk" />
-                            <TextBlock Grid.Row="2" Grid.Column="1" Classes="muted" FontSize="14" TextWrapping="Wrap"
-                                       Text="the Def Jam mod kit: its map of the game's files and code" />
-                        </Grid>
-                    </StackPanel>
-                </Border>
-
-                <TextBlock Classes="hint" Margin="2,2,0,0" TextWrapping="Wrap"
-                           Text="Not made by or affiliated with Electronic Arts or Def Jam. No game files come with this program: the game is built on your PC from your own disc." />
+                    </Button>
+                </Grid>
             </StackPanel>
-        </ScrollViewer>
-    </DockPanel>
+
+            <StackPanel>
+                <TextBlock Classes="cap" Text="YOUR INSTALL" />
+                <Border Classes="capline" Margin="0,8,0,8" />
+                <Grid ColumnDefinitions="150,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="8">
+                    <TextBlock Classes="key" Text="Built from" />
+                    <TextBlock Grid.Column="1" Classes="mono" TextWrapping="Wrap"
+                               Text="{Binding DiscTitle, StringFormat='{}{0} · SLUS-20639'}" />
+                    <TextBlock Grid.Row="1" Classes="key" Text="The game" />
+                    <TextBlock Grid.Row="1" Grid.Column="1" Classes="mono" TextWrapping="Wrap" Text="{Binding GameExeName}" />
+                    <TextBlock Grid.Row="2" Classes="key" Text="Folder" />
+                    <TextBlock Grid.Row="2" Grid.Column="1" Classes="mono" TextWrapping="Wrap" Text="{Binding FolderPath}" />
+                </Grid>
+                <StackPanel Orientation="Horizontal" Spacing="8" Margin="150,12,0,0">
+                    <Button Classes="outline" Content="Open game folder" Command="{Binding OpenFolderCommand}" />
+                    <Button Classes="outline" Content="Open save data" Command="{Binding OpenSavesCommand}" />
+                </StackPanel>
+            </StackPanel>
+
+            <StackPanel>
+                <TextBlock Classes="cap" Text="MADE WITH" />
+                <Border Classes="capline" Margin="0,8,0,8" />
+                <Grid ColumnDefinitions="150,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="8">
+                    <TextBlock FontSize="13.5" FontWeight="SemiBold" Text="PS2Recomp" />
+                    <TextBlock Grid.Column="1" Classes="muted" FontSize="13.5" TextWrapping="Wrap"
+                               Text="by ran-j: turns the PS2 game's code into C++ (GPL)" />
+                    <TextBlock Grid.Row="1" FontSize="13.5" FontWeight="SemiBold" Text="paraLLEl-GS" />
+                    <TextBlock Grid.Row="1" Grid.Column="1" Classes="muted" FontSize="13.5" TextWrapping="Wrap"
+                               Text="by Arntzen Software: the PS2's graphics chip on your graphics card (LGPL)" />
+                    <TextBlock Grid.Row="2" FontSize="13.5" FontWeight="SemiBold" Text="adjmk" />
+                    <TextBlock Grid.Row="2" Grid.Column="1" Classes="muted" FontSize="13.5" TextWrapping="Wrap"
+                               Text="the Def Jam mod kit: its map of the game's files and code" />
+                </Grid>
+            </StackPanel>
+
+            <TextBlock Classes="hint" LineHeight="18"
+                       Text="Not made by or affiliated with Electronic Arts or Def Jam. No game files come with this program: the game is built on your PC from your own disc." />
+        </StackPanel>
+    </ScrollViewer>
 </UserControl>

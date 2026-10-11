@@ -14720,10 +14720,10 @@ index c9aa2c6..25ae0ea 100644
                  ImGui::InputScalar("Address", ImGuiDataType_U32, &m_memoryAddress, nullptr, nullptr, "%08X", ImGuiInputTextFlags_CharsHexadecimal);
 diff --git a/ps2xRuntime/src/lib/ps2_host_settings.cpp b/ps2xRuntime/src/lib/ps2_host_settings.cpp
 new file mode 100644
-index 0000000..44e93c2
+index 0000000..5efd01d
 --- /dev/null
 +++ b/ps2xRuntime/src/lib/ps2_host_settings.cpp
-@@ -0,0 +1,454 @@
+@@ -0,0 +1,461 @@
 +#include "runtime/ps2_host_settings.h"
 +
 +#include <algorithm>
@@ -14766,7 +14766,8 @@ index 0000000..44e93c2
 +            "refresh_rate = \"smoothest\" # fullscreen only: \"smoothest\" (the highest multiple of 60 Hz the screen has),\n"
 +            "                         # a number such as 60 or 120, or 0 = the screen's own\n"
 +            "vsync = true             # wait for the screen before showing each picture (no tearing)\n"
-+            "shape = \"4:3\"            # \"4:3\" (as on the PS2, bars at the sides) or \"stretch\" (fill the window)\n"
++            "shape = \"widescreen\"     # \"widescreen\" (matches at 16:9 with more of the arena; menus and movies 4:3),\n"
++            "                         # \"4:3\" (as on the PS2, bars at the sides) or \"stretch\" (fill the window)\n"
 +            "\n"
 +            "[graphics]\n"
 +            "renderer = \"gpu\"         # \"gpu\" (the graphics card) or \"cpu\"\n"
@@ -15004,8 +15005,13 @@ index 0000000..44e93c2
 +            else
 +                reader.integer("display.refresh_rate", s.refreshRate, 0, 1000);
 +            reader.boolean("display.vsync", s.vsync);
-+            if (const int shape = reader.choice("display.shape", {"4:3", "stretch"}); shape >= 0)
-+                s.stretch = shape == 1;
++            // "widescreen" (the default, also when the line is missing): matches at 16:9 with more of the arena (menus
++            // and movies stay 4:3) — the game's widescreen switch, VENDETTA_WIDESCREEN (runtime/ps2_widescreen.h),
++            // filled in like the other switches. No settings file at all (VENDETTA_SETTINGS=none, test runs): off.
++            const int shape = reader.choice("display.shape", {"4:3", "stretch", "widescreen"});
++            s.stretch = shape == 1;
++            if (shape == 2 || shape < 0)
++                fillSwitch("VENDETTA_WIDESCREEN", "16:9");
 +            reader.integer("sound.volume", s.volume, 0, 100);
 +            bool multitap = s.multitapPort >= 0;
 +            reader.boolean("controls.multitap", multitap);
@@ -15154,7 +15160,8 @@ index 0000000..44e93c2
 +                                                   : std::string(s.refreshRate == kRefreshSmoothest ? " at the smoothest rate"
 +                                                                                                    : " at the screen's rate"))
 +                          : std::string(""))
-+                  << ", vsync " << (s.vsync ? "on" : "off") << ", " << (s.stretch ? "stretched" : "4:3")
++                  << ", vsync " << (s.vsync ? "on" : "off") << ", "
++                  << (s.stretch ? std::string("stretched") : std::getenv("VENDETTA_WIDESCREEN") && *std::getenv("VENDETTA_WIDESCREEN") && std::string(std::getenv("VENDETTA_WIDESCREEN")) != "0" ? "widescreen " + std::string(std::getenv("VENDETTA_WIDESCREEN")) + " in matches" : std::string("4:3"))
 +                  << ", volume " << s.volume << "%"
 +                  << (s.multitapPort >= 0 ? ", multitap in port " + std::to_string(s.multitapPort + 1) : std::string(", no multitap"))
 +                  << ", vibration " << s.vibration[0] << s.vibration[1] << s.vibration[2] << s.vibration[3] << std::endl;

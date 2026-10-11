@@ -5,54 +5,114 @@
         x:Class="VendettaSettings.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Title="Def Jam Vendetta Recompiled · Settings"
-        Width="1120" Height="700" MinWidth="980" MinHeight="660"
+        Width="1280" Height="800" MinWidth="1080" MinHeight="680"
         Icon="/Assets/icon.ico"
         WindowStartupLocation="CenterScreen">
 
-    <Panel>
-    <v:SetupView DataContext="{Binding Setup}" IsVisible="{Binding $parent[Window].((vm:MainViewModel)DataContext).InSetup}" />
-    <Grid ColumnDefinitions="228,*" IsVisible="{Binding NotInSetup}">
-        <!-- the side menu -->
-        <Border Background="{StaticResource VNav}" Padding="16,28">
-            <DockPanel>
-                <StackPanel DockPanel.Dock="Top" Spacing="6" Margin="4,0,4,26">
-                    <Image Source="/Assets/name.png" Width="188" HorizontalAlignment="Left" />
+    <DockPanel>
+        <!-- the menu bar -->
+        <Menu DockPanel.Dock="Top">
+            <MenuItem Header="File">
+                <MenuItem Header="Open game folder" Command="{Binding OpenFolderCommand}" />
+                <MenuItem Header="Open save data" Command="{Binding OpenSavesCommand}" />
+                <Separator />
+                <MenuItem Header="Exit" Command="{Binding ExitCommand}" />
+            </MenuItem>
+            <MenuItem Header="Help">
+                <MenuItem Header="About" Command="{Binding ShowAboutCommand}" IsEnabled="{Binding NotInSetup}" />
+                <MenuItem Header="@jcsix on X" Command="{Binding OpenXCommand}" />
+            </MenuItem>
+        </Menu>
+
+        <!-- the header: the program left; the status, a grey button and PLAY right -->
+        <Border DockPanel.Dock="Top" Height="56" Padding="14,0" BorderBrush="{StaticResource VRowLine}" BorderThickness="0,0,0,1">
+            <Grid ColumnDefinitions="Auto,Auto,Auto,Auto,*,Auto,Auto,Auto" ColumnSpacing="14">
+                <Image Source="/Assets/name.png" Height="38" VerticalAlignment="Center" />
+                <Border Grid.Column="1" Width="1" Height="26" Background="{StaticResource VLine}" />
+                <TextBlock Grid.Column="2" Text="Def Jam Vendetta Recompiled" FontSize="18" FontWeight="Bold"
+                           Foreground="{StaticResource VAccent}" VerticalAlignment="Center" />
+                <Border Grid.Column="3" Classes="tag"><TextBlock Text="{Binding Version}" /></Border>
+                <StackPanel Grid.Column="5" Orientation="Horizontal" Spacing="7" VerticalAlignment="Center">
+                    <Ellipse Classes="dot" Classes.warn="{Binding StatusWarn}" Classes.bad="{Binding StatusBad}"
+                             VerticalAlignment="Center" />
+                    <TextBlock Text="{Binding Status}" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"
+                               Classes.good="{Binding StatusGood}" Classes.warn="{Binding StatusWarn}" Classes.bad="{Binding StatusBad}" />
                 </StackPanel>
-                <StackPanel DockPanel.Dock="Bottom" Spacing="6" Margin="8,0">
-                    <TextBlock Text="{Binding DiscLine}" FontSize="12.5" Classes.good="{Binding HasGame}" Classes.bad="{Binding NoGame}" />
-                    <TextBlock Text="{Binding Version}" FontSize="12.5" Classes="muted" />
-                </StackPanel>
-                <StackPanel Spacing="4">
-                    <Button Classes="nav" Classes.active="{Binding IsPlay}" Command="{Binding ShowPlayCommand}">
-                        <StackPanel Orientation="Horizontal" Spacing="12">
-                            <PathIcon Width="15" Height="15" Data="M6,3 L21,12 L6,21 Z" />
-                            <TextBlock Text="Play" />
-                        </StackPanel>
-                    </Button>
-                    <Button Classes="nav" Classes.active="{Binding IsSettings}" Command="{Binding ShowSettingsCommand}">
-                        <StackPanel Orientation="Horizontal" Spacing="12">
-                            <PathIcon Width="15" Height="15" Data="M3,5 H21 V7.5 H3 Z M3,16.5 H21 V19 H3 Z M14,2.5 H17.5 V10 H14 Z M6.5,14 H10 V21.5 H6.5 Z" />
-                            <TextBlock Text="Settings" />
-                        </StackPanel>
-                    </Button>
-                    <Button Classes="nav" Classes.active="{Binding IsAbout}" Command="{Binding ShowAboutCommand}">
-                        <StackPanel Orientation="Horizontal" Spacing="12">
-                            <PathIcon Width="15" Height="15" Data="F0 M12,2 A10,10 0 1 1 11.99,2 Z M10.75,10 H13.25 V17.5 H10.75 Z M10.75,6 H13.25 V8.5 H10.75 Z" />
-                            <TextBlock Text="About" />
-                        </StackPanel>
-                    </Button>
-                </StackPanel>
-            </DockPanel>
+                <Panel Grid.Column="6" VerticalAlignment="Center" IsVisible="{Binding NotInSetup}">
+                    <Button Classes="outline" Content="Open game folder" Command="{Binding OpenFolderCommand}"
+                            IsVisible="{Binding ShowOpenFolder}" />
+                    <Button Classes="outline" Content="Reset to defaults" Command="{Binding Settings.ResetToDefaultsCommand}"
+                            IsVisible="{Binding IsSettings}" />
+                </Panel>
+                <Button Grid.Column="7" Classes="play" Command="{Binding PlayCommand}" IsEnabled="{Binding CanPlay}"
+                        VerticalAlignment="Center">
+                    <StackPanel Orientation="Horizontal" Spacing="8">
+                        <PathIcon Width="10" Height="11" Data="M1,1 L10,6 L1,11 Z" />
+                        <TextBlock Text="PLAY" VerticalAlignment="Center" />
+                    </StackPanel>
+                </Button>
+            </Grid>
         </Border>
 
-        <!-- the pages -->
-        <Panel Grid.Column="1">
-            <v:PlayView IsVisible="{Binding IsPlay}" />
-            <Panel IsVisible="{Binding IsSettings}">
-                <v:SettingsView DataContext="{Binding Settings}" />
+        <Grid ColumnDefinitions="210,*">
+            <!-- the page list -->
+            <Border Background="{StaticResource VNav}" Padding="8,10" IsVisible="{Binding NotInSetup}">
+                <StackPanel Spacing="2">
+                    <Button Classes="nav" Classes.active="{Binding IsPlay}" Content="Play" Command="{Binding ShowPlayCommand}" />
+                    <TextBlock Text="Settings" Margin="14,12,0,6" Foreground="{StaticResource VText2}" />
+                    <Button Classes="nav sub" Classes.active="{Binding IsDisplay}" Content="Display" Command="{Binding ShowDisplayCommand}" />
+                    <Button Classes="nav sub" Classes.active="{Binding IsGraphics}" Content="Graphics" Command="{Binding ShowGraphicsCommand}" />
+                    <Button Classes="nav sub" Classes.active="{Binding IsSound}" Content="Sound" Command="{Binding ShowSoundCommand}" />
+                    <Button Classes="nav sub" Classes.active="{Binding IsControls}" Content="Controls" Command="{Binding ShowControlsCommand}" />
+                    <Button Classes="nav" Classes.active="{Binding IsAbout}" Content="About" Command="{Binding ShowAboutCommand}"
+                            Margin="0,10,0,0" />
+                </StackPanel>
+            </Border>
+
+            <!-- the setup's steps, in the page list's place -->
+            <Border Background="{StaticResource VNav}" Padding="8,14" IsVisible="{Binding InSetup}">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Classes="cap" Text="SETUP" Margin="14,0,0,10" />
+                    <TextBlock DockPanel.Dock="Bottom" Classes="hint" Margin="14,0" LineHeight="18"
+                               Text="No game files come with this download. The game is built here, from your own copy, and never leaves your PC." />
+                    <StackPanel Spacing="2">
+                        <Border Classes="step" Classes.now="{Binding SetupStep1Now}">
+                            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                <TextBlock Text="1" FontWeight="Bold" IsVisible="{Binding SetupStep1Now}" Foreground="#ffffff" />
+                                <TextBlock Text="✓" FontWeight="Bold" IsVisible="{Binding !SetupStep1Now}" Classes="good" />
+                                <TextBlock Text="Your disc" Classes.strong="{Binding SetupStep1Now}" />
+                            </StackPanel>
+                        </Border>
+                        <Border Classes="step" Classes.now="{Binding SetupStep2Now}">
+                            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                <TextBlock Text="2" FontWeight="Bold" IsVisible="{Binding !SetupStep2Done}"
+                                           Classes.muted="{Binding SetupStep2Next}" />
+                                <TextBlock Text="✓" FontWeight="Bold" IsVisible="{Binding SetupStep2Done}" Classes="good" />
+                                <TextBlock Text="Build the game" Classes.strong="{Binding SetupStep2Now}"
+                                           Classes.muted="{Binding SetupStep2Next}" />
+                            </StackPanel>
+                        </Border>
+                        <Border Classes="step">
+                            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                <TextBlock Text="3" FontWeight="Bold" Classes="muted" />
+                                <TextBlock Text="Your settings" Classes="muted" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </DockPanel>
+            </Border>
+
+            <!-- the page -->
+            <Panel Grid.Column="1">
+                <v:SetupView DataContext="{Binding Setup}" IsVisible="{Binding $parent[Window].((vm:MainViewModel)DataContext).InSetup}" />
+                <Panel IsVisible="{Binding NotInSetup}">
+                    <v:PlayView IsVisible="{Binding IsPlay}" />
+                    <Panel IsVisible="{Binding IsSettings}">
+                        <v:SettingsView DataContext="{Binding Settings}" />
+                    </Panel>
+                    <v:AboutView IsVisible="{Binding IsAbout}" />
+                </Panel>
             </Panel>
-            <v:AboutView IsVisible="{Binding IsAbout}" />
-        </Panel>
-    </Grid>
-    </Panel>
+        </Grid>
+    </DockPanel>
 </Window>

@@ -1,7 +1,9 @@
 using System.ComponentModel;
 using System.Reflection;
-using CommunityToolkit.Mvvm.ComponentModel;
+using Avalonia;
+using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Threading;
+using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
 using VendettaSettings.Services;
 
@@ -9,7 +11,7 @@ namespace VendettaSettings.ViewModels;
 
 public partial class MainViewModel : ObservableObject
 {
-    public const string XUrl = "https://x.com/jcsix694";
+    public const string XUrl = "https://x.com/jcsix";
 
     public GameFolder Folder { get; }
     public SettingsViewModel Settings { get; }
@@ -23,8 +25,23 @@ public partial class MainViewModel : ObservableObject
         InSetup = folder.NeedsSetup;
         Settings.PropertyChanged += (_, e) =>
         {
-            if (e.PropertyName == nameof(SettingsViewModel.Summary))
-                OnPropertyChanged(nameof(PlaySummary));
+            if (e.PropertyName == nameof(SettingsViewModel.TabIndex))
+                OnPageChanged();
+            if (e.PropertyName == nameof(SettingsViewModel.Status))
+                OnStatusChanged();
+        };
+        Setup.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName is nameof(SetupViewModel.Page) or nameof(SetupViewModel.Done) or
+                nameof(SetupViewModel.Error) or nameof(SetupViewModel.Building))
+            {
+                OnStatusChanged();
+                OnPropertyChanged(nameof(CanPlay));
+                OnPropertyChanged(nameof(SetupStep1Now));
+                OnPropertyChanged(nameof(SetupStep2Now));
+                OnPropertyChanged(nameof(SetupStep2Done));
+                OnPropertyChanged(nameof(SetupStep2Next));
+            }
         };
         if (!readOnly)
         {
@@ -36,14 +53,31 @@ public partial class MainViewModel : ObservableObject
         }
     }
 
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsPlay), nameof(IsSettings), nameof(IsAbout))]
-    private int _pageIndex;
+    [ObservableProperty] private int _pageIndex;
 
-    /// <summary>First run (no game built yet): the setup screens instead of the pages.</summary>
+    partial void OnPageIndexChanged(int value) => OnPageChanged();
+
+    private void OnPageChanged()
+    {
+        foreach (var name in new[]
+                 {
+                     nameof(IsPlay), nameof(IsSettings), nameof(IsAbout), nameof(IsDisplay), nameof(IsGraphics),
+                     nameof(IsSound), nameof(IsControls), nameof(ShowOpenFolder),
+                 })
+            OnPropertyChanged(name);
+        OnStatusChanged();
+    }
+
+    /// <summary>First run (no game built yet): the setup in the page list's place and in the page.</summary>
     [ObservableProperty]
     [NotifyPropertyChangedFor(nameof(NotInSetup))]
     private bool _inSetup;
+
+    partial void OnInSetupChanged(bool value)
+    {
+        OnStatusChanged();
+        OnPropertyChanged(nameof(CanPlay));
+    }
 
     public bool NotInSetup => !InSetup;
 
@@ -58,41 +92,90 @@ public partial class MainViewModel : ObservableObject
     public bool IsPlay => PageIndex == 0;
     public bool IsSettings => PageIndex == 1;
     public bool IsAbout => PageIndex == 2;
+    public bool IsDisplay => IsSettings && Settings.TabIndex == 0;
+    public bool IsGraphics => IsSettings && Settings.TabIndex == 1;
+    public bool IsSound => IsSettings && Settings.TabIndex == 2;
+    public bool IsControls => IsSettings && Settings.TabIndex == 3;
+    /// <summary>The header's grey button: Open game folder, or on the settings pages Reset to defaults.</summary>
+    public bool ShowOpenFolder => !IsSettings;
 
-    [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(ShowRunning))]
-    private string _message = "";
+    // the setup's steps in the page list
+    public bool SetupStep1Now => Setup.IsDiscPage;
+    public bool SetupStep2Now => Setup.IsBuildPage && !Setup.Done;
+    public bool SetupStep2Done => Setup.Done;
+    public bool SetupStep2Next => Setup.IsDiscPage;
+
+    [ObservableProperty] private string _message = "";
+
+    partial void OnMessageChanged(string value) => OnStatusChanged();
 
     /// <summary>The game is open: PLAY is off (two copies would share the memory card).</summary>
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(CanPlay), nameof(ShowRunning))]
+    [NotifyPropertyChangedFor(nameof(CanPlay))]
     private bool _gameRunning;
-
-    public bool ShowRunning => GameRunning && Message.Length == 0;
 
     partial void OnGameRunningChanged(bool value)
     {
         if (!value && Message == GameFolder.AlreadyRunning)
             Message = "";
+        OnStatusChanged();
+    }
+
+    // --- the status at the right of the header: a dot (good / warn / bad) and a few words ---
+    public string Status
+    {
+        get
+        {
+            if (InSetup)
+            {
+                if (Setup.HasError) return "The setup stopped";
+                if (Setup.Done) return "Ready to play";
+                return Setup.IsBuildPage ? "Building…" : "First launch: set up from your disc";
+            }
+            if (Message.Length > 0) return Message;
+            if (GameRunning) return "The game is running";
+            if (IsSettings) return Settings.Status.Length > 0 ? Settings.Status : "Saved as you change them";
+            return CanPlay ? "Ready to play" : "The game isn't built yet";
+        }
+    }
+
+    public bool StatusGood => !StatusWarn && !StatusBad;
+    public bool StatusWarn =>
+        InSetup ? !Setup.Done && !Setup.HasError : Message.Length > 0 || GameRunning;
+    public bool StatusBad => InSetup ? Setup.HasError : !CanPlay && !GameRunning && Message.Length == 0 && !IsSettings;
+
+    private void OnStatusChanged()
+    {
+        OnPropertyChanged(nameof(Status));
+        OnPropertyChanged(nameof(StatusGood));
+        OnPropertyChanged(nameof(StatusWarn));
+        OnPropertyChanged(nameof(StatusBad));
     }
 
     public string Version =>
         "v" + (Assembly.GetExecutingAssembly().GetName().Version is { } v ? $"{v.Major}.{v.Minor}.{v.Build}" : "0.1.0");
 
     public bool HasGame => Folder.HasGame;
-    public bool NoGame => !Folder.HasGame;
-    public string DiscLine => Folder.HasGame ? $"✓ {GameFolder.Serial}" : "No game files yet";
     public string DiscTitle => Folder.HasGame ? "Def Jam Vendetta · PS2 · USA" : "Not set up yet";
-    public string SaveTitle => Folder.HasSave ? "Saved" : "No save yet";
-    public string SaveLine => "Kept in this folder, in game\\mc0\\";
-    public bool CanPlay => Folder.HasGame && Folder.GameExe != null && !GameRunning;
-    public string PlaySummary => Settings.Summary;
+    public string SaveLine => Folder.HasSave ? "Saved · game\\mc0" : "No save yet";
+    // during the setup PLAY waits for the build to finish
+    public bool CanPlay => Folder.HasGame && Folder.GameExe != null && !GameRunning && (!InSetup || Setup.Done);
     public string GameExeName => Folder.GameExe is { } exe ? Path.GetFileName(exe) : "not built yet";
     public string FolderPath => Folder.Root;
 
     [RelayCommand] private void ShowPlay() => PageIndex = 0;
-    [RelayCommand] private void ShowSettings() => PageIndex = 1;
+    [RelayCommand] private void ShowDisplay() => ShowSettingsTab(0);
+    [RelayCommand] private void ShowGraphics() => ShowSettingsTab(1);
+    [RelayCommand] private void ShowSound() => ShowSettingsTab(2);
+    [RelayCommand] private void ShowControls() => ShowSettingsTab(3);
     [RelayCommand] private void ShowAbout() => PageIndex = 2;
+
+    private void ShowSettingsTab(int tab)
+    {
+        Settings.TabIndex = tab;
+        PageIndex = 1;
+        OnPageChanged();
+    }
 
     [RelayCommand]
     private async Task Play()
@@ -114,7 +197,12 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand] private void OpenSaves() => GameFolder.Open(Folder.SavesPath);
     [RelayCommand] private void OpenX() => GameFolder.Open(XUrl);
 
-    /// <summary>For pictures of the pages (--shot): play, display, graphics, sound, controls or about.</summary>
+    [RelayCommand]
+    private void Exit() =>
+        (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown();
+
+    /// <summary>For pictures of the pages (--shot): play, display, graphics, sound, controls, about, setup1, setup2,
+    /// setupdone.</summary>
     public void ShowPage(string page)
     {
         switch (page)
@@ -123,10 +211,10 @@ public partial class MainViewModel : ObservableObject
             case "setup2": InSetup = true; Setup.ShowSample(0.62, false); return;
             case "setupdone": InSetup = true; Setup.ShowSample(1, true); return;
             case "about": PageIndex = 2; break;
-            case "display": PageIndex = 1; Settings.TabIndex = 0; break;
-            case "graphics": PageIndex = 1; Settings.TabIndex = 1; break;
-            case "sound": PageIndex = 1; Settings.TabIndex = 2; break;
-            case "controls": PageIndex = 1; Settings.TabIndex = 3; break;
+            case "display": ShowSettingsTab(0); break;
+            case "graphics": ShowSettingsTab(1); break;
+            case "sound": ShowSettingsTab(2); break;
+            case "controls": ShowSettingsTab(3); break;
             default: PageIndex = 0; break;
         }
     }

@@ -544,7 +544,7 @@ namespace
         // alone); SIGNAL / FINISH (bits 0-1, from the GS front end on the worker) only reach a dead stack slot. So that
         // read needs no fence (VENDETTA_CHAIN_VERIFY=1 checks it, VENDETTA_CHAIN_CSR_EXEMPT=0 turns it off).
         runtime.chain().allowUnfencedCsrRead(0x1A16C0u);
-        ps2_game_overrides::setWindowTitle(runtime, "Def Jam Vendetta Recompiled | @jcsix694");
+        ps2_game_overrides::setWindowTitle(runtime, "Def Jam Vendetta Recompiled | @jcsix");
         startThreadDump(runtime);
         startPadWatch(runtime);
         startHostProfile(runtime);

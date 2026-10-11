@@ -18,7 +18,7 @@ public sealed class GameSettings
     public int FullscreenHeight;
     public int RefreshRate = RefreshSmoothest;
     public bool Vsync = true;
-    public string Shape = "4:3";            // 4:3 | stretch
+    public string Shape = "widescreen";     // widescreen (the default) | 4:3 | stretch
     // [graphics]
     public string Renderer = "gpu";         // gpu | cpu
     public int Scale = 8;                   // 1 2 4 8 16
@@ -45,7 +45,8 @@ public sealed class GameSettings
         "refresh_rate = \"smoothest\" # fullscreen only: \"smoothest\" (the highest multiple of 60 Hz the screen has),\n" +
         "                         # a number such as 60 or 120, or 0 = the screen's own\n" +
         "vsync = true             # wait for the screen before showing each picture (no tearing)\n" +
-        "shape = \"4:3\"            # \"4:3\" (as on the PS2, bars at the sides) or \"stretch\" (fill the window)\n" +
+        "shape = \"widescreen\"     # \"widescreen\" (matches at 16:9 with more of the arena; menus and movies 4:3),\n" +
+        "                         # \"4:3\" (as on the PS2, bars at the sides) or \"stretch\" (fill the window)\n" +
         "\n" +
         "[graphics]\n" +
         "renderer = \"gpu\"         # \"gpu\" (the graphics card) or \"cpu\"\n" +
@@ -83,7 +84,7 @@ public sealed class GameSettings
                         ? RefreshSmoothest : Int(value, s.RefreshRate, 0, 1000);
                     break;
                 case "display.vsync": s.Vsync = Bool(value, s.Vsync); break;
-                case "display.shape": s.Shape = OneOf(value, s.Shape, "4:3", "stretch"); break;
+                case "display.shape": s.Shape = OneOf(value, s.Shape, "4:3", "stretch", "widescreen"); break;
                 case "graphics.renderer": s.Renderer = OneOf(value, s.Renderer, "gpu", "cpu"); break;
                 case "graphics.scale":
                     var scale = Int(value, s.Scale, 1, 16);

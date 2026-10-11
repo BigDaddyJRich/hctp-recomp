@@ -11,23 +11,27 @@ namespace VendettaSettings.ViewModels;
 /// <summary>One line of the build's step list.</summary>
 public partial class SetupStep : ObservableObject
 {
-    public SetupStep(string label, double weight)
+    public SetupStep(string label, double weight, string note)
     {
         Label = label;
         Weight = weight;
+        Note = note;
     }
 
     public string Label { get; }
+    public string Note { get; }    // about how long it takes
     public double Weight { get; }  // its share of the whole
     [ObservableProperty] private string _state = "next"; // next | now | done
     public string Mark => State switch { "done" => "✓", "now" => "●", _ => "○" };
     public bool IsDone => State == "done";
     public bool IsNow => State == "now";
+    public bool IsNext => State == "next";
     partial void OnStateChanged(string value)
     {
         OnPropertyChanged(nameof(Mark));
         OnPropertyChanged(nameof(IsDone));
         OnPropertyChanged(nameof(IsNow));
+        OnPropertyChanged(nameof(IsNext));
     }
 }
 
@@ -48,12 +52,12 @@ public partial class SetupViewModel : ObservableObject
         // the steps tools\setup_game.py goes through, with about how much of the time each takes
         Steps = new ObservableCollection<SetupStep>
         {
-            new("Reading your disc", 0.06),
-            new("Getting the build tools", 0.04),
-            new("Building the recompiler", 0.12),
-            new("Turning the game's code into C++", 0.10),
-            new("Building the game", 0.66),
-            new("Finishing", 0.02),
+            new("Reading your disc", 0.06, "about 1 min"),
+            new("Getting the build tools", 0.04, "only if they're missing"),
+            new("Building the recompiler", 0.12, "about 1 min"),
+            new("Turning the game's code into C++", 0.10, "under a minute"),
+            new("Building the game", 0.66, "about 10 min"),
+            new("Finishing", 0.02, ""),
         };
     }
 
@@ -93,6 +97,15 @@ public partial class SetupViewModel : ObservableObject
     public bool CanBuild => !Checking && (DiscOk || (DiscPath == null && _folder.HasGame));
     public bool DiscAlreadyRead => DiscPath == null && _folder.HasGame;
     public string FolderPath => _folder.Root;
+    public string SpaceText
+    {
+        get
+        {
+            var free = _folder.FreeSpaceGb;
+            return "About 8 GB needed" + (free >= 0 ? $" · {free.ToString("0", CultureInfo.InvariantCulture)} GB free" : "");
+        }
+    }
+
     public string SpaceLine
     {
         get
@@ -141,7 +154,7 @@ public partial class SetupViewModel : ObservableObject
     public bool HasError => Error.Length > 0;
     public string PercentText => $"{Math.Round(Percent * 100)}%";
     public double BarWidth => Percent; // 0-1, the view scales it
-    public string Title => Done ? "THE GAME IS BUILT" : HasError ? "THE SETUP STOPPED" : "BUILDING THE GAME FROM YOUR DISC";
+    public string Title => Done ? "The game is built" : HasError ? "The setup stopped" : "Building the game from your disc";
     public string LogPath => Path.Combine(_folder.LogsPath, "setup.log");
 
     [RelayCommand]
@@ -283,7 +296,7 @@ public partial class SetupViewModel : ObservableObject
         if (MakeShortcuts && _folder.CreateShortcuts() is { } problem)
             LastLine = problem;
         else if (MakeShortcuts)
-            LastLine = "Shortcuts to the game and to Settings are on your desktop.";
+            LastLine = "Shortcuts to the game are on your desktop and in this folder.";
         TimeLine = $"Done in {Math.Max(1, (int)Math.Round(_clock.Elapsed.TotalMinutes))} minutes";
         Done = true;
     }
@@ -337,6 +350,6 @@ public partial class SetupViewModel : ObservableObject
         Percent = percent;
         Done = done;
         TimeLine = done ? "Done in 17 minutes" : "About 7 minutes left";
-        LastLine = done ? "Shortcuts to the game and to Settings are on your desktop." : "[512/799] Building CXX object ps2xRuntime/…";
+        LastLine = done ? "Shortcuts to the game are on your desktop and in this folder." : "[512/799] Building CXX object ps2xRuntime/…";
     }
 }

@@ -71,7 +71,7 @@ What's inside:
   game\mc0 - Settings > About > "Open save data" takes you there), disc\ (your disc as an .iso), settings.toml,
   logs\ and build\ (the build's working files: can be deleted once the game runs, to save space).
 
-Made by @jcsix694 (https://x.com/jcsix694). PS2Recomp is GPL; paraLLEl-GS is LGPL-3.0+; the libraries in
+Made by @jcsix (https://x.com/jcsix). PS2Recomp is GPL; paraLLEl-GS is LGPL-3.0+; the libraries in
 files\source\deps keep their own licences. Def Jam Vendetta is (c) its owners; this download includes none of it.
 """
 

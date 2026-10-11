@@ -108,7 +108,8 @@ public sealed class GameFolder
         return start;
     }
 
-    /// <summary>Desktop shortcuts: the game, and this program. Both with the logo (this program's icon).</summary>
+    /// <summary>Shortcuts, with the logo (this program's icon): on the desktop the game and this program; in a player's
+    /// install folder the game too, beside this program (the game itself lives in <c>files\</c>).</summary>
     public string? CreateShortcuts(string? folder = null)
     {
         try
@@ -116,7 +117,11 @@ public sealed class GameFolder
             var desktop = folder ?? Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
             var settings = Environment.ProcessPath ?? Path.Combine(Root, "Vendetta Settings.exe");
             if (GameExe is { } exe)
+            {
                 Shortcut(Path.Combine(desktop, "Def Jam Vendetta Recompiled.lnk"), exe, Data, settings);
+                if (Data != Root)
+                    Shortcut(Path.Combine(Root, "Def Jam Vendetta Recompiled.lnk"), exe, Data, settings);
+            }
             Shortcut(Path.Combine(desktop, "Vendetta Settings.lnk"), settings, Root, settings);
             return null;
         }
