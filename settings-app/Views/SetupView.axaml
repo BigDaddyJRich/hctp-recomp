@@ -79,6 +79,11 @@
                         </Grid>
                         <TextBlock Classes="hint" Margin="0,8,0,0"
                                    Text="Want it somewhere else? Close this, move the folder, open it again." />
+                        <StackPanel Margin="0,10,0,0" Spacing="2" IsVisible="{Binding FolderTooLong}">
+                            <TextBlock Text="This folder is too deep inside other folders" FontWeight="SemiBold" Classes="bad" />
+                            <TextBlock Classes="hint" TextWrapping="Wrap"
+                                       Text="The build tools can't use paths this long. Close this, move the folder somewhere shorter, such as your Desktop or C:\Games, and open it again." />
+                        </StackPanel>
                     </StackPanel>
 
                     <StackPanel>

@@ -94,7 +94,12 @@ public partial class SetupViewModel : ObservableObject
     public bool ShowDiscOk => DiscOk && !Checking;
     public bool ShowDiscBad => DiscProblem.Length > 0 && !Checking;
     // a disc read in an earlier attempt (game\ is there) needs no new one
-    public bool CanBuild => !Checking && (DiscOk || (DiscPath == null && _folder.HasGame));
+    public bool CanBuild => !Checking && !FolderTooLong && (DiscOk || (DiscPath == null && _folder.HasGame));
+
+    // The build's deepest files lie ~140 characters below this folder, and the compiler can't write past Windows'
+    // 260-character path limit ("cannot open program database"): a folder deep inside others has to move first.
+    public const int MaxFolderLength = 100;
+    public bool FolderTooLong => _folder.Root.Length > MaxFolderLength;
     public bool DiscAlreadyRead => DiscPath == null && _folder.HasGame;
     public string FolderPath => _folder.Root;
     public string SpaceText
