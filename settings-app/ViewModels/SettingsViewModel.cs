@@ -14,6 +14,7 @@ public partial class SettingsViewModel : ObservableObject
     private static readonly int[] Scales = { 1, 2, 4, 8, 16 };
     private static readonly string[] Modes = { "window", "borderless", "fullscreen" };
     private static readonly string[] Filters = { "fsr", "smooth", "blocky" };
+    private static readonly string[] Cameras = { "vendetta", "nomercy", "wk2" };
 
     // the properties that are settings (a change is saved); the others are worked out from them
     private static readonly HashSet<string> Saved = new()
@@ -21,7 +22,7 @@ public partial class SettingsViewModel : ObservableObject
         nameof(ModeIndex), nameof(Screen), nameof(Maximised), nameof(Resolution), nameof(Refresh), nameof(VsyncIndex),
         nameof(ShapeIndex), nameof(RendererIndex), nameof(ScaleIndex), nameof(FilterIndex), nameof(Sharpening),
         nameof(Volume), nameof(Reverb), nameof(Multitap), nameof(Vibration1), nameof(Vibration2), nameof(Vibration3),
-        nameof(Vibration4), nameof(HighPoly), nameof(Sharp2D), nameof(KeyboardIndex), nameof(CheckUpdates),
+        nameof(Vibration4), nameof(HighPoly), nameof(Sharp2D), nameof(KeyboardIndex), nameof(CheckUpdates), nameof(CameraIndex),
     };
 
     private readonly GameFolder _folder;
@@ -121,6 +122,8 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private double _sharpening;
     [ObservableProperty] private bool _highPoly;
     [ObservableProperty] private bool _sharp2D;
+    /// <summary>The fight camera: 0 Def Jam Vendetta (the game's own), 1 WWF No Mercy, 2 Wrestle Kingdom 2.</summary>
+    [ObservableProperty] private int _cameraIndex;
     [ObservableProperty] private bool _checkUpdates = true;
     // Sound
     [ObservableProperty] private double _volume;
@@ -287,6 +290,7 @@ public partial class SettingsViewModel : ObservableObject
             Sharpening = s.Sharpening;
             HighPoly = s.HighPoly;
             Sharp2D = s.Sharp2D;
+            CameraIndex = Math.Max(0, Array.IndexOf(Cameras, s.Camera));
             Volume = s.Volume;
             Reverb = s.Reverb;
             Multitap = s.Multitap;
@@ -375,6 +379,7 @@ public partial class SettingsViewModel : ObservableObject
         Sharpening = (int)Math.Round(Sharpening),
         HighPoly = HighPoly,
         Sharp2D = Sharp2D,
+        Camera = Cameras[Math.Clamp(CameraIndex, 0, 2)],
         Volume = (int)Math.Round(Volume),
         Reverb = Reverb,
         Multitap = Multitap,

@@ -209,6 +209,24 @@
                         </Grid>
                     </Border>
                 </StackPanel>
+                <StackPanel>
+                    <TextBlock Classes="cap" Text="CAMERA" />
+                    <Border Classes="capline" />
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Classes="label" Text="Camera in matches" />
+                                <TextBlock Classes="hint" TextWrapping="Wrap"
+                                           Text="How the camera follows the fight. Intros, entrances and finishers keep the game's own camera" />
+                            </StackPanel>
+                            <ComboBox Grid.Column="1" MinWidth="240" VerticalAlignment="Center" SelectedIndex="{Binding CameraIndex}">
+                                <ComboBoxItem Content="Def Jam Vendetta (default)" />
+                                <ComboBoxItem Content="WWF No Mercy" />
+                                <ComboBoxItem Content="Wrestle Kingdom 2" />
+                            </ComboBox>
+                        </Grid>
+                    </Border>
+                </StackPanel>
             </StackPanel>
         </ScrollViewer>
 
