@@ -14,7 +14,7 @@
     <Panel>
         <!-- Display -->
         <ScrollViewer HorizontalScrollBarVisibility="Disabled" IsVisible="{Binding IsDisplayTab}">
-            <StackPanel Margin="26,22" Spacing="20" MaxWidth="760" HorizontalAlignment="Left">
+            <StackPanel Margin="26,22" Spacing="20">
                 <TextBlock Classes="h1" Text="Display" />
                 <StackPanel>
                     <TextBlock Classes="cap" Text="WINDOW" />
@@ -119,7 +119,7 @@
 
         <!-- Graphics -->
         <ScrollViewer HorizontalScrollBarVisibility="Disabled" IsVisible="{Binding IsGraphicsTab}">
-            <StackPanel Margin="26,22" Spacing="20" MaxWidth="760" HorizontalAlignment="Left">
+            <StackPanel Margin="26,22" Spacing="20">
                 <TextBlock Classes="h1" Text="Graphics" />
                 <StackPanel>
                     <TextBlock Classes="cap" Text="DRAWING" />
@@ -203,7 +203,7 @@
 
         <!-- Sound -->
         <ScrollViewer HorizontalScrollBarVisibility="Disabled" IsVisible="{Binding IsSoundTab}">
-            <StackPanel Margin="26,22" Spacing="20" MaxWidth="760" HorizontalAlignment="Left">
+            <StackPanel Margin="26,22" Spacing="20">
                 <TextBlock Classes="h1" Text="Sound" />
                 <StackPanel>
                     <TextBlock Classes="cap" Text="SOUND" />
@@ -235,7 +235,7 @@
 
         <!-- Controls -->
         <ScrollViewer HorizontalScrollBarVisibility="Disabled" IsVisible="{Binding IsControlsTab}">
-            <StackPanel Margin="26,22" Spacing="20" MaxWidth="760" HorizontalAlignment="Left">
+            <StackPanel Margin="26,22" Spacing="20">
                 <TextBlock Classes="h1" Text="Controls" />
                 <StackPanel>
                     <TextBlock Classes="cap" Text="PLAYERS" />

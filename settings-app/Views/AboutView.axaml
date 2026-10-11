@@ -5,7 +5,7 @@
              x:DataType="vm:MainViewModel">
     <!-- flat sections, one label column (150) in every one so their rows line up -->
     <ScrollViewer HorizontalScrollBarVisibility="Disabled">
-        <StackPanel Margin="26,22" Spacing="20" MaxWidth="760" HorizontalAlignment="Left">
+        <StackPanel Margin="26,22" Spacing="20">
             <TextBlock Classes="h1" Text="About" />
 
             <StackPanel>

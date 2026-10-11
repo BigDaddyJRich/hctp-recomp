@@ -6,7 +6,7 @@
     <!-- the first launch: the page (the setup's steps are in the page list's place, MainWindow) -->
     <Panel>
         <!-- 1: your disc -->
-        <DockPanel Margin="26,22" IsVisible="{Binding IsDiscPage}" Width="760" HorizontalAlignment="Left">
+        <DockPanel Margin="26,22" IsVisible="{Binding IsDiscPage}">
             <StackPanel DockPanel.Dock="Top" Spacing="4" Margin="0,0,0,20">
                 <TextBlock Classes="h1" Text="Choose your disc" />
                 <TextBlock Classes="muted" FontSize="13" TextWrapping="Wrap"
@@ -103,7 +103,7 @@
         </DockPanel>
 
         <!-- 2: building -->
-        <DockPanel Margin="26,22" IsVisible="{Binding IsBuildPage}" Width="760" HorizontalAlignment="Left">
+        <DockPanel Margin="26,22" IsVisible="{Binding IsBuildPage}">
             <TextBlock DockPanel.Dock="Top" Classes="h1" Text="{Binding Title}" Margin="0,0,0,20" />
             <Grid DockPanel.Dock="Bottom" ColumnDefinitions="Auto,*,Auto" Margin="0,14,0,0">
                 <Button Classes="outline" Content="Cancel" Command="{Binding CancelCommand}" IsVisible="{Binding Building}" />
