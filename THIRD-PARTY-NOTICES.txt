@@ -1,5 +1,5 @@
 Def Jam Vendetta Recompiled
-Copyright (C) 2026 jcsix694
+Copyright (C) 2026 jcsix694 (@jcsix on X)
 
 This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
 License version 3 (the file LICENSE). It is distributed WITHOUT ANY WARRANTY; without even the implied warranty of

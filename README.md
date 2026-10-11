@@ -5,6 +5,8 @@
 that stands in for the PS2's hardware. The goal is a version of the game where the PS2's limits (memory, disc size,
 fixed tables) can be lifted, and, later, where [adjmk](https://github.com/jcsix694/adjmk) mods can run without them.
 
+Made by [@jcsix on X](https://x.com/jcsix) · [jcsix694 on GitHub](https://github.com/jcsix694).
+
 > **Status: work in progress.** The game boots, plays its movies, runs its menus and plays a full match at 60 frames/s
 > with music, sound effects and two pads, drawn on the graphics card at up to 16× the PS2's detail. Not finished yet:
 > story mode, saving, reverb.
@@ -77,7 +79,7 @@ card prepares its shaders.
 
 ## Licence
 
-Copyright (C) 2026 jcsix694. Free software under the **GNU General Public License version 3** (`LICENSE`): use it,
+Copyright (C) 2026 jcsix694 (@jcsix on X). Free software under the **GNU General Public License version 3** (`LICENSE`): use it,
 change it and share it; a changed version you share must come with its source, under the same licence.
 
 It has to be the GPL: PS2Recomp (ran-j, GPL-3.0) is built into the game program, and our changes to it (`patches\`)
