@@ -62,4 +62,51 @@ internal static class Shot
         Console.WriteLine("--- settings.toml now:");
         Console.Write(File.ReadAllText(folder.SettingsPath));
     }
+
+    /// <summary>Dev only (--selftest-update, with VENDETTA_ROOT = a test install and VENDETTA_UPDATE_URL = a test
+    /// server): an update's steps without the window: check, download and check it, put it in place, rebuild (the
+    /// install's tools\setup_game.py), then finish, or undo it all when the rebuild fails.</summary>
+    public static async Task<int> SelfTestUpdate()
+    {
+        var folder = GameFolder.Find();
+        Console.WriteLine($"folder {folder.Root}; can update {Updater.CanUpdate(folder)}; this version {Updater.CurrentText}");
+        try
+        {
+            var release = await Updater.CheckAsync();
+            Console.WriteLine(release == null
+                ? "no release"
+                : $"latest {release.Version} ({release.ZipSize} bytes, sha256 {release.Sha256 ?? "none"})");
+            if (release == null || release.Version <= Updater.Current)
+                return 0;
+            var zip = Updater.ZipPath(folder);
+            await Updater.DownloadAsync(release, zip, (_, _) => { }, CancellationToken.None);
+            Console.WriteLine("downloaded and checked");
+            var restart = Updater.Apply(folder, zip, release, _ => { });
+            var journal = Updater.LoadJournal(folder)!;
+            foreach (var e in journal.Entries)
+                Console.WriteLine($"  {e.Kind} {e.Path}");
+            Console.WriteLine($"in place (journal: {journal.State}); this program replaced: {restart}");
+            using var rebuild = System.Diagnostics.Process.Start(folder.SetupStart(null))!;
+            var output = await rebuild.StandardOutput.ReadToEndAsync();
+            await rebuild.WaitForExitAsync();
+            Console.Write(output);
+            if (rebuild.ExitCode == 0)
+            {
+                Updater.Finish(folder);
+                Console.WriteLine("rebuilt: the update is finished");
+            }
+            else
+            {
+                var back = Updater.RollBack(folder, journal);
+                Updater.DeleteJournal(folder);
+                Console.WriteLine($"the rebuild failed: undone (this program put back: {back})");
+            }
+            return 0;
+        }
+        catch (UpdateException ex)
+        {
+            Console.WriteLine($"stopped ({ex.Kind}): {ex.Message}");
+            return 1;
+        }
+    }
 }

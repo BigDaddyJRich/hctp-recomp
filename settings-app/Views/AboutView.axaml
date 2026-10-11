@@ -35,6 +35,44 @@
             </StackPanel>
 
             <StackPanel>
+                <TextBlock Classes="cap" Text="UPDATES" />
+                <Border Classes="capline" />
+                <Border Classes="row">
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                        <StackPanel VerticalAlignment="Center" Spacing="2">
+                            <TextBlock Classes="label" Text="{Binding Updates.CurrentVersion, StringFormat='Version {0}'}" />
+                            <TextBlock Classes="hint" Text="{Binding Updates.CheckText}" />
+                        </StackPanel>
+                        <Button Grid.Column="1" Classes="outline" VerticalAlignment="Center" Content="{Binding Updates.CheckButton}"
+                                Command="{Binding Updates.CheckNowCommand}" IsEnabled="{Binding Updates.CanCheck}" />
+                    </Grid>
+                </Border>
+                <Border Classes="row">
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                        <StackPanel VerticalAlignment="Center" Spacing="2">
+                            <TextBlock Classes="label" Text="Check when this program opens" />
+                            <TextBlock Classes="hint"
+                                       Text="Asks GitHub for the newest version. Nothing else is sent, and nothing installs until you press Update." />
+                        </StackPanel>
+                        <ToggleSwitch Grid.Column="1" OnContent="" OffContent="" VerticalAlignment="Center"
+                                      IsChecked="{Binding Settings.CheckUpdates}" />
+                    </Grid>
+                </Border>
+                <Border Classes="row">
+                    <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                        <StackPanel VerticalAlignment="Center" Spacing="2">
+                            <TextBlock Classes="label" Text="Release notes" />
+                            <TextBlock Classes="hint" Text="What changed in each version" />
+                        </StackPanel>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                            <Button Classes="outline" Content="This version's notes" Command="{Binding Updates.OpenThisVersionCommand}" />
+                            <Button Classes="outline" Content="All versions" Command="{Binding Updates.OpenAllVersionsCommand}" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+            </StackPanel>
+
+            <StackPanel>
                 <TextBlock Classes="cap" Text="YOUR INSTALL" />
                 <Border Classes="capline" Margin="0,8,0,8" />
                 <Grid ColumnDefinitions="150,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="8">

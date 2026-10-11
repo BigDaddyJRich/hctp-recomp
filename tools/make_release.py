@@ -216,6 +216,7 @@ def main():
                 if not os.path.isdir(folder):
                     raise SystemExit(f'{folder} is missing: build PS2Recomp here once (setup.bat, build-fast.bat)')
                 counts['deps/' + name] = add_tree(z, folder, SRC + 'deps/' + name + '/', skip)
+        add_manifest(out + '.part')
         os.replace(out + '.part', out)
     print(counts)
 
@@ -234,6 +235,33 @@ def main():
               f'{sum(i.file_size for i in infos) / 1e6:.1f} MB unzipped; longest name {len(longest.filename)}: '
               f'{longest.filename}')
     print('->', out)
+
+
+def version():
+    """The version, from Def Jam Vendetta Recompiled Settings' project (the one place it is set)."""
+    with open(os.path.join(REPO, 'settings-app', 'VendettaSettings.csproj'), encoding='utf-8') as f:
+        text = f.read()
+    start = text.index('<Version>') + len('<Version>')
+    return text[start:text.index('</Version>', start)].strip()
+
+
+def add_manifest(path):
+    """files/release-manifest.txt: every file of the zip with its SHA-256 and size. The updater compares it with what is
+    installed, so an update replaces only the files that changed (and keeps the build's work for the rest)."""
+    import hashlib
+    lines = [f'# {TOP} {version()}', f'# sha256 size path (below "{TOP}/")']
+    with zipfile.ZipFile(path) as z:
+        for info in z.infolist():
+            if info.is_dir():
+                continue
+            digest = hashlib.sha256()
+            with z.open(info) as f:
+                for chunk in iter(lambda: f.read(1 << 20), b''):
+                    digest.update(chunk)
+            lines.append(f'{digest.hexdigest()} {info.file_size} {info.filename[len(TOP) + 1:]}')
+    with zipfile.ZipFile(path, 'a', zipfile.ZIP_DEFLATED) as z:
+        z.writestr(FILES + 'release-manifest.txt', '\n'.join(lines) + '\n')
+    print(f'release-manifest.txt: {len(lines) - 2} files, version {version()}')
 
 
 if __name__ == '__main__':

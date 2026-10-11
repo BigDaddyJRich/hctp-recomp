@@ -7,6 +7,26 @@
         <StackPanel Margin="26,22" Spacing="18">
             <TextBlock Classes="h1" Text="Play" />
 
+            <!-- a newer version on GitHub -->
+            <Border BorderBrush="{StaticResource VAccent}" BorderThickness="1" CornerRadius="8" Padding="18,16" Background="#1f2530"
+                    IsVisible="{Binding Updates.ShowNotice}">
+                <Grid ColumnDefinitions="*,Auto" ColumnSpacing="18">
+                    <StackPanel Spacing="6">
+                        <TextBlock Text="{Binding Updates.NoticeTitle}" FontSize="15" FontWeight="SemiBold" Foreground="#ffffff" />
+                        <TextBlock Text="{Binding Updates.NoticeSummary}" FontSize="13" Foreground="{StaticResource VText2}" TextWrapping="Wrap" />
+                        <TextBlock Classes="hint" Text="{Binding Updates.NoticeSize}" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Spacing="8" MinWidth="170">
+                        <Button Classes="accent" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Content="Update now"
+                                Command="{Binding Updates.UpdateNowCommand}" />
+                        <Button Classes="outline" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Content="What's new"
+                                Command="{Binding Updates.ShowNotesCommand}" />
+                        <Button Classes="outline" HorizontalAlignment="Stretch" HorizontalContentAlignment="Center" Content="Later"
+                                Background="Transparent" BorderThickness="0" Command="{Binding Updates.LaterOnCommand}" />
+                    </StackPanel>
+                </Grid>
+            </Border>
+
             <Grid ColumnDefinitions="*,*" ColumnSpacing="28">
                 <StackPanel>
                     <TextBlock Classes="cap" Text="YOUR GAME" />

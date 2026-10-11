@@ -15091,10 +15091,10 @@ index c9aa2c6..95eac26 100644
                  ImGui::InputScalar("Address", ImGuiDataType_U32, &m_memoryAddress, nullptr, nullptr, "%08X", ImGuiInputTextFlags_CharsHexadecimal);
 diff --git a/ps2xRuntime/src/lib/ps2_host_settings.cpp b/ps2xRuntime/src/lib/ps2_host_settings.cpp
 new file mode 100644
-index 0000000..fab1dcf
+index 0000000..101ad70
 --- /dev/null
 +++ b/ps2xRuntime/src/lib/ps2_host_settings.cpp
-@@ -0,0 +1,484 @@
+@@ -0,0 +1,488 @@
 +#include "runtime/ps2_host_settings.h"
 +
 +#include <algorithm>
@@ -15339,7 +15339,11 @@ index 0000000..fab1dcf
 +            void reportLeftovers() const
 +            {
 +                for (const auto &[key, value] : m_values)
++                {
++                    if (key.rfind("updates.", 0) == 0)
++                        continue; // [updates]: the settings program's own (whether it checks for a new version)
 +                    std::cerr << "[settings] " << m_file.string() << ": " << key << " is not a setting (ignored)" << std::endl;
++                }
 +            }
 +
 +        private:

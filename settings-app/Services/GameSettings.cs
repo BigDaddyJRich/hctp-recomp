@@ -33,6 +33,8 @@ public sealed class GameSettings
     public bool Multitap = true;            // up to 4 players (a multitap in port 2)
     public bool[] Vibration = { true, true, true, true }; // per player
     public int Keyboard = 0;                // the player the keyboard plays as: 1-4, 0 = nobody (the default)
+    // [updates] (this program's own: the game skips the section)
+    public bool CheckUpdates = true;        // ask GitHub for a newer version when this program opens
 
     /// <summary>The same file the game writes when there is none.</summary>
     public const string DefaultFile =
@@ -109,6 +111,7 @@ public sealed class GameSettings
                 case "controls.vibration_3": s.Vibration[2] = Bool(value, s.Vibration[2]); break;
                 case "controls.vibration_4": s.Vibration[3] = Bool(value, s.Vibration[3]); break;
                 case "controls.keyboard": s.Keyboard = Int(value, s.Keyboard, 0, 4); break;
+                case "updates.check_on_open": s.CheckUpdates = Bool(value, s.CheckUpdates); break;
             }
         }
         return s;
@@ -145,6 +148,7 @@ public sealed class GameSettings
             ("controls", "vibration_3", Vibration[2] ? "true" : "false"),
             ("controls", "vibration_4", Vibration[3] ? "true" : "false"),
             ("controls", "keyboard", Keyboard.ToString(CultureInfo.InvariantCulture)),
+            ("updates", "check_on_open", CheckUpdates ? "true" : "false"),
         };
         foreach (var (section, key, value) in values)
             SetLine(lines, section, key, value);

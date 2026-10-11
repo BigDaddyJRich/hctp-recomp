@@ -249,10 +249,13 @@ def step_finish(out_dir, data):
     exe = os.path.join(out_dir, 'ps2EntryRunner.exe')
     if not os.path.isfile(exe):
         raise SetupError('the game was not built')
-    shutil.copyfile(exe, os.path.join(data, GAME_EXE))
-    for name in os.listdir(out_dir):  # the DLLs it needs (ffmpeg)
-        if name.lower().endswith('.dll'):
-            shutil.copyfile(os.path.join(out_dir, name), os.path.join(data, name))
+    # each copied beside its place first, then swapped in: an update's rebuild replaces the game only once it is all here
+    files = [(exe, GAME_EXE)] + [(os.path.join(out_dir, name), name) for name in os.listdir(out_dir)
+                                  if name.lower().endswith('.dll')]  # the DLLs it needs (ffmpeg)
+    for source, name in files:
+        shutil.copyfile(source, os.path.join(data, name + '.new'))
+    for _, name in files:
+        os.replace(os.path.join(data, name + '.new'), os.path.join(data, name))
     say(f'the game: {os.path.join(data, GAME_EXE)}')
     progress(1.0)
 

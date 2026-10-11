@@ -1,0 +1,128 @@
+<UserControl xmlns="https://github.com/avaloniaui"
+             xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+             xmlns:vm="using:VendettaSettings.ViewModels"
+             x:Class="VendettaSettings.Views.UpdateView"
+             x:DataType="vm:UpdateViewModel">
+    <!-- an update's pages (its steps are in the page list's place, MainWindow): what's new, updating, updated, couldn't finish -->
+    <Panel>
+        <!-- what's new, before updating -->
+        <DockPanel Margin="26,22" IsVisible="{Binding IsNotes}">
+            <TextBlock DockPanel.Dock="Top" Classes="h1" Text="{Binding NotesTitle}" Margin="0,0,0,16" />
+            <Grid DockPanel.Dock="Bottom" ColumnDefinitions="Auto,*,Auto" Margin="0,14,0,0">
+                <Button Classes="outline" Content="Back" Command="{Binding BackCommand}" />
+                <TextBlock Grid.Column="1" Classes="hint" VerticalAlignment="Center" Margin="14,0" Text="{Binding NoticeSize}" />
+                <Button Grid.Column="2" Classes="accent" Content="Update now" Command="{Binding UpdateNowCommand}" />
+            </Grid>
+            <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+                <ItemsControl ItemsSource="{Binding NoteLines}">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate x:DataType="vm:NoteLine">
+                            <Panel>
+                                <TextBlock Classes="strong" FontSize="13.5" Margin="0,14,0,6" Text="{Binding Text}" IsVisible="{Binding IsHeading}" />
+                                <Grid ColumnDefinitions="18,*" Margin="0,0,0,5" IsVisible="{Binding IsBullet}">
+                                    <TextBlock Classes="muted" Text="•" />
+                                    <TextBlock Grid.Column="1" FontSize="13.5" Foreground="{StaticResource VText2}" TextWrapping="Wrap" Text="{Binding Text}" />
+                                </Grid>
+                                <TextBlock FontSize="13.5" Foreground="{StaticResource VText2}" TextWrapping="Wrap" Margin="0,0,0,6"
+                                           Text="{Binding Text}" IsVisible="{Binding IsText}" />
+                            </Panel>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+        </DockPanel>
+
+        <!-- updating -->
+        <DockPanel Margin="26,22" IsVisible="{Binding IsWorking}">
+            <TextBlock DockPanel.Dock="Top" Classes="h1" Text="{Binding WorkingTitle}" Margin="0,0,0,20" />
+            <StackPanel Spacing="20">
+                <StackPanel Spacing="8">
+                    <Grid ColumnDefinitions="*,Auto">
+                        <TextBlock Text="{Binding PercentText}" FontWeight="SemiBold" FontSize="13.5" />
+                        <TextBlock Grid.Column="1" Classes="muted" FontSize="13.5" Text="{Binding TimeLine}" />
+                    </Grid>
+                    <ProgressBar Minimum="0" Maximum="1" Value="{Binding Percent}" Height="8" CornerRadius="4" />
+                </StackPanel>
+                <StackPanel>
+                    <TextBlock Classes="cap" Text="STEPS" />
+                    <Border Classes="capline" />
+                    <ItemsControl ItemsSource="{Binding Steps}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:SetupStep">
+                                <Border Classes="steprow" Classes.now="{Binding IsNow}" Height="38" Padding="10,0" Margin="-10,0">
+                                    <Grid ColumnDefinitions="18,*,Auto" ColumnSpacing="12" VerticalAlignment="Center">
+                                        <TextBlock FontWeight="Bold" Text="{Binding Mark}"
+                                                   Classes.good="{Binding IsDone}" Classes.warn="{Binding IsNow}"
+                                                   Classes.muted="{Binding IsNext}" />
+                                        <TextBlock Grid.Column="1" Text="{Binding Label}" Classes.strong="{Binding IsNow}"
+                                                   Classes.muted="{Binding IsNext}" />
+                                        <TextBlock Grid.Column="2" Classes="hint" Text="{Binding Note}" />
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Classes="mono muted" FontSize="12" Margin="0,10,0,0" TextTrimming="CharacterEllipsis" Text="{Binding LastLine}" />
+                </StackPanel>
+                <TextBlock Classes="hint" Text="If anything goes wrong you keep the version you have now, exactly as it is." />
+            </StackPanel>
+        </DockPanel>
+
+        <!-- updated -->
+        <DockPanel Margin="26,22" IsVisible="{Binding IsDone}">
+            <TextBlock DockPanel.Dock="Top" Classes="h1" Text="{Binding DoneTitle}" Margin="0,0,0,16" />
+            <Border DockPanel.Dock="Top" Background="{StaticResource VGoodBg}" BorderBrush="{StaticResource VGoodLine}" BorderThickness="1"
+                    CornerRadius="8" Padding="16,12" Margin="0,0,0,16">
+                <TextBlock Classes="good" FontSize="13.5" TextWrapping="Wrap"
+                           Text="✓ The game is rebuilt and ready. Your saves and settings are as they were." />
+            </Border>
+            <Grid DockPanel.Dock="Bottom" ColumnDefinitions="Auto,*,Auto" Margin="0,14,0,0">
+                <Button Classes="outline" Content="All release notes on GitHub" Command="{Binding OpenAllVersionsCommand}" />
+                <Button Grid.Column="2" Classes="accent" Content="Done" Command="{Binding FinishedCommand}" />
+            </Grid>
+            <DockPanel>
+                <TextBlock DockPanel.Dock="Top" Classes="cap" Text="WHAT'S NEW" />
+                <Border DockPanel.Dock="Top" Classes="capline" Margin="0,8,0,4" />
+                <ScrollViewer HorizontalScrollBarVisibility="Disabled">
+                    <ItemsControl ItemsSource="{Binding NoteLines}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:NoteLine">
+                                <Panel>
+                                    <TextBlock Classes="strong" FontSize="13.5" Margin="0,14,0,6" Text="{Binding Text}" IsVisible="{Binding IsHeading}" />
+                                    <Grid ColumnDefinitions="18,*" Margin="0,0,0,5" IsVisible="{Binding IsBullet}">
+                                        <TextBlock Classes="muted" Text="•" />
+                                        <TextBlock Grid.Column="1" FontSize="13.5" Foreground="{StaticResource VText2}" TextWrapping="Wrap" Text="{Binding Text}" />
+                                    </Grid>
+                                    <TextBlock FontSize="13.5" Foreground="{StaticResource VText2}" TextWrapping="Wrap" Margin="0,0,0,6"
+                                               Text="{Binding Text}" IsVisible="{Binding IsText}" />
+                                </Panel>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </ScrollViewer>
+            </DockPanel>
+        </DockPanel>
+
+        <!-- couldn't finish -->
+        <DockPanel Margin="26,22" IsVisible="{Binding IsFailed}">
+            <TextBlock DockPanel.Dock="Top" Classes="h1" Text="{Binding FailTitle}" Margin="0,0,0,16" />
+            <StackPanel Spacing="18">
+                <Border Background="{StaticResource VBadBg}" BorderBrush="{StaticResource VBadLine}" BorderThickness="1"
+                        CornerRadius="8" Padding="16,12">
+                    <TextBlock FontSize="13.5" Foreground="{StaticResource VBadText}" TextWrapping="Wrap" Text="{Binding KeptVersion}" />
+                </Border>
+                <StackPanel>
+                    <TextBlock Classes="cap" Text="WHAT WENT WRONG" />
+                    <Border Classes="capline" Margin="0,8,0,10" />
+                    <TextBlock FontSize="13.5" TextWrapping="Wrap" Text="{Binding FailReason}" />
+                    <TextBlock Classes="hint" Margin="0,6,0,0" Text="{Binding FailAdvice}" />
+                </StackPanel>
+                <StackPanel Orientation="Horizontal" Spacing="8">
+                    <Button Classes="accent" Content="Try again" Command="{Binding TryAgainCommand}" />
+                    <Button Classes="outline" Content="Open the update's log" Command="{Binding OpenLogCommand}" />
+                    <Button Classes="outline" Content="Back to Play" Command="{Binding FinishedCommand}" />
+                </StackPanel>
+            </StackPanel>
+        </DockPanel>
+    </Panel>
+</UserControl>

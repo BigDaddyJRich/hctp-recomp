@@ -31,7 +31,7 @@
                     <TextBlock Text="{Binding Status}" FontSize="13" FontWeight="SemiBold" VerticalAlignment="Center"
                                Classes.good="{Binding StatusGood}" Classes.warn="{Binding StatusWarn}" Classes.bad="{Binding StatusBad}" />
                 </StackPanel>
-                <Panel Grid.Column="4" VerticalAlignment="Center" IsVisible="{Binding NotInSetup}">
+                <Panel Grid.Column="4" VerticalAlignment="Center" IsVisible="{Binding NormalPages}">
                     <Button Classes="outline" Content="Open game folder" Command="{Binding OpenFolderCommand}"
                             IsVisible="{Binding ShowOpenFolder}" />
                     <Button Classes="outline" Content="Reset to defaults" Command="{Binding Settings.ResetToDefaultsCommand}"
@@ -49,7 +49,7 @@
 
         <Grid ColumnDefinitions="210,*">
             <!-- the page list -->
-            <Border Background="{StaticResource VNav}" Padding="8,10" IsVisible="{Binding NotInSetup}">
+            <Border Background="{StaticResource VNav}" Padding="8,10" IsVisible="{Binding NormalPages}">
                 <StackPanel Spacing="2">
                     <Button Classes="nav" Classes.active="{Binding IsPlay}" Content="Play" Command="{Binding ShowPlayCommand}" />
                     <TextBlock Text="Settings" Margin="14,12,0,6" Foreground="{StaticResource VText2}" />
@@ -93,10 +93,44 @@
                 </DockPanel>
             </Border>
 
+            <!-- an update's steps, in the page list's place -->
+            <Border Background="{StaticResource VNav}" Padding="8,14" IsVisible="{Binding InUpdate}">
+                <DockPanel>
+                    <TextBlock DockPanel.Dock="Top" Classes="cap" Text="{Binding Updates.NavTitle}" Margin="14,0,0,10" />
+                    <TextBlock DockPanel.Dock="Bottom" Classes="hint" Margin="14,0" LineHeight="18"
+                               Text="Your saves, settings and mods aren't touched. You can keep using your PC while it rebuilds." />
+                    <StackPanel Spacing="2">
+                        <Border Classes="step" Classes.now="{Binding Updates.NavDownloadNow}">
+                            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                <TextBlock Text="1" FontWeight="Bold" IsVisible="{Binding !Updates.NavDownloadDone}" />
+                                <TextBlock Text="✓" FontWeight="Bold" IsVisible="{Binding Updates.NavDownloadDone}" Classes="good" />
+                                <TextBlock Text="Download" Classes.strong="{Binding Updates.NavDownloadNow}" />
+                            </StackPanel>
+                        </Border>
+                        <Border Classes="step" Classes.now="{Binding Updates.NavRebuildNow}">
+                            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                <TextBlock Text="2" FontWeight="Bold" IsVisible="{Binding !Updates.NavRebuildDone}"
+                                           Classes.muted="{Binding Updates.NavRebuildNext}" />
+                                <TextBlock Text="✓" FontWeight="Bold" IsVisible="{Binding Updates.NavRebuildDone}" Classes="good" />
+                                <TextBlock Text="Rebuild the game" Classes.strong="{Binding Updates.NavRebuildNow}"
+                                           Classes.muted="{Binding Updates.NavRebuildNext}" />
+                            </StackPanel>
+                        </Border>
+                        <Border Classes="step" Classes.now="{Binding Updates.NavDoneNow}">
+                            <StackPanel Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                <TextBlock Text="3" FontWeight="Bold" Classes.muted="{Binding Updates.NavDoneNext}" />
+                                <TextBlock Text="Done" Classes.strong="{Binding Updates.NavDoneNow}" Classes.muted="{Binding Updates.NavDoneNext}" />
+                            </StackPanel>
+                        </Border>
+                    </StackPanel>
+                </DockPanel>
+            </Border>
+
             <!-- the page -->
             <Panel Grid.Column="1">
                 <v:SetupView DataContext="{Binding Setup}" IsVisible="{Binding $parent[Window].((vm:MainViewModel)DataContext).InSetup}" />
-                <Panel IsVisible="{Binding NotInSetup}">
+                <v:UpdateView DataContext="{Binding Updates}" IsVisible="{Binding $parent[Window].((vm:MainViewModel)DataContext).InUpdate}" />
+                <Panel IsVisible="{Binding NormalPages}">
                     <v:PlayView IsVisible="{Binding IsPlay}" />
                     <Panel IsVisible="{Binding IsSettings}">
                         <v:SettingsView DataContext="{Binding Settings}" />

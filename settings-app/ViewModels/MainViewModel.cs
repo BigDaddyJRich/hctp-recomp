@@ -17,13 +17,30 @@ public partial class MainViewModel : ObservableObject
     public GameFolder Folder { get; }
     public SettingsViewModel Settings { get; }
     public SetupViewModel Setup { get; }
+    public UpdateViewModel Updates { get; }
+
+    private readonly bool _readOnly;
 
     public MainViewModel(GameFolder folder, bool readOnly)
     {
         Folder = folder;
+        _readOnly = readOnly;
         Settings = new SettingsViewModel(folder, readOnly);
         Setup = new SetupViewModel(folder, FinishSetup);
+        Updates = new UpdateViewModel(folder, () => Settings.CheckUpdates, () => Exit());
         InSetup = folder.NeedsSetup;
+        Updates.PropertyChanged += (_, e) =>
+        {
+            if (e.PropertyName is nameof(UpdateViewModel.Mode) or nameof(UpdateViewModel.ShowNotice))
+            {
+                OnPropertyChanged(nameof(InUpdate));
+                OnPropertyChanged(nameof(NormalPages));
+                OnPropertyChanged(nameof(CanPlay));
+                OnStatusChanged();
+                if (e.PropertyName == nameof(UpdateViewModel.Mode) && !Updates.Active)
+                    OnPropertyChanged(string.Empty); // after an update: the version, the game and the save read again
+            }
+        };
         Settings.PropertyChanged += (_, e) =>
         {
             if (e.PropertyName == nameof(SettingsViewModel.TabIndex))
@@ -81,6 +98,9 @@ public partial class MainViewModel : ObservableObject
     }
 
     public bool NotInSetup => !InSetup;
+    /// <summary>An update's pages (what's new, updating, updated, couldn't finish) in the window's place.</summary>
+    public bool InUpdate => Updates.Active;
+    public bool NormalPages => !InSetup && !InUpdate;
 
     // step 3: the settings, with everything the pages show read again (the game, the disc, the save)
     private void FinishSetup()
@@ -133,8 +153,10 @@ public partial class MainViewModel : ObservableObject
                 if (Setup.Done) return "Ready to play";
                 return Setup.IsBuildPage ? "Building…" : "First launch: set up from your disc";
             }
+            if (InUpdate) return Updates.Status;
             if (Message.Length > 0) return Message;
             if (GameRunning) return "The game is running";
+            if (Updates.ShowNotice && IsPlay) return "Update available";
             if (IsSettings) return Settings.Status.Length > 0 ? Settings.Status : "Saved as you change them";
             return CanPlay ? "Ready to play" : "The game isn't built yet";
         }
@@ -142,8 +164,13 @@ public partial class MainViewModel : ObservableObject
 
     public bool StatusGood => !StatusWarn && !StatusBad;
     public bool StatusWarn =>
-        InSetup ? !Setup.Done && !Setup.HasError : Message.Length > 0 || GameRunning;
-    public bool StatusBad => InSetup ? Setup.HasError : !CanPlay && !GameRunning && Message.Length == 0 && !IsSettings;
+        InSetup ? !Setup.Done && !Setup.HasError
+        : InUpdate ? Updates.IsWorking
+        : Message.Length > 0 || GameRunning || (Updates.ShowNotice && IsPlay);
+    public bool StatusBad =>
+        InSetup ? Setup.HasError
+        : InUpdate ? Updates.IsFailed
+        : !CanPlay && !GameRunning && Message.Length == 0 && !IsSettings;
 
     private void OnStatusChanged()
     {
@@ -153,14 +180,13 @@ public partial class MainViewModel : ObservableObject
         OnPropertyChanged(nameof(StatusBad));
     }
 
-    public string Version =>
-        "v" + (Assembly.GetExecutingAssembly().GetName().Version is { } v ? $"{v.Major}.{v.Minor}.{v.Build}" : "0.1.0");
+    public string Version => "v" + Updater.CurrentText;
 
     public bool HasGame => Folder.HasGame;
     public string DiscTitle => Folder.HasGame ? "Def Jam Vendetta · PS2 · USA" : "Not set up yet";
     public string SaveLine => Folder.HasSave ? "Saved · game\\mc0" : "No save yet";
     // during the setup PLAY waits for the build to finish
-    public bool CanPlay => Folder.HasGame && Folder.GameExe != null && !GameRunning && (!InSetup || Setup.Done);
+    public bool CanPlay => Folder.HasGame && Folder.GameExe != null && !GameRunning && (!InSetup || Setup.Done) && !Updates.IsWorking;
     public string GameExeName => Folder.GameExe is { } exe ? Path.GetFileName(exe) : "not built yet";
     public string FolderPath => Folder.Root;
 
@@ -205,6 +231,9 @@ public partial class MainViewModel : ObservableObject
     private void Exit() =>
         (Application.Current?.ApplicationLifetime as IClassicDesktopStyleApplicationLifetime)?.Shutdown();
 
+    /// <summary>When the window has opened: an update left halfway, or a check for a new one.</summary>
+    public Task OnOpenedAsync() => _readOnly ? Task.CompletedTask : Updates.StartAsync(InSetup); // not for pictures
+
     /// <summary>For pictures of the pages (--shot): play, display, graphics, sound, controls, about, setup1, setup2,
     /// setupdone.</summary>
     public void ShowPage(string page)
@@ -214,6 +243,11 @@ public partial class MainViewModel : ObservableObject
             case "setup1": InSetup = true; return;
             case "setup2": InSetup = true; Setup.ShowSample(0.62, false); return;
             case "setupdone": InSetup = true; Setup.ShowSample(1, true); return;
+            case "update-notice": PageIndex = 0; Updates.ShowSample("notice"); return;
+            case "update-notes": Updates.ShowSample("notes"); return;
+            case "update-working": Updates.ShowSample("working"); return;
+            case "update-done": Updates.ShowSample("done"); return;
+            case "update-failed": Updates.ShowSample("failed"); return;
             case "about": PageIndex = 2; break;
             case "display": ShowSettingsTab(0); break;
             case "graphics": ShowSettingsTab(1); break;

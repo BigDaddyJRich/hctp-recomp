@@ -20,6 +20,12 @@ internal static class Program
             Console.WriteLine(Services.GameFolder.Find().CreateShortcuts(args[1]) ?? "made");
             return;
         }
+        // Dev: an update without the window (VENDETTA_ROOT = a test install, VENDETTA_UPDATE_URL = a test server)
+        if (args.Length >= 1 && args[0] == "--selftest-update")
+        {
+            Environment.ExitCode = Shot.SelfTestUpdate().GetAwaiter().GetResult();
+            return;
+        }
         // Dev: the saving checked on a scratch folder (VENDETTA_ROOT): --selftest [play]
         if (args.Length >= 1 && args[0] == "--selftest")
         {

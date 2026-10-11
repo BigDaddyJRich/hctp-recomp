@@ -21,7 +21,7 @@ public partial class SettingsViewModel : ObservableObject
         nameof(ModeIndex), nameof(Screen), nameof(Maximised), nameof(Resolution), nameof(Refresh), nameof(VsyncIndex),
         nameof(ShapeIndex), nameof(RendererIndex), nameof(ScaleIndex), nameof(FilterIndex), nameof(Sharpening),
         nameof(Volume), nameof(Reverb), nameof(Multitap), nameof(Vibration1), nameof(Vibration2), nameof(Vibration3),
-        nameof(Vibration4), nameof(HighPoly), nameof(Sharp2D), nameof(KeyboardIndex),
+        nameof(Vibration4), nameof(HighPoly), nameof(Sharp2D), nameof(KeyboardIndex), nameof(CheckUpdates),
     };
 
     private readonly GameFolder _folder;
@@ -121,6 +121,7 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private double _sharpening;
     [ObservableProperty] private bool _highPoly;
     [ObservableProperty] private bool _sharp2D;
+    [ObservableProperty] private bool _checkUpdates = true;
     // Sound
     [ObservableProperty] private double _volume;
     [ObservableProperty] private bool _reverb;
@@ -294,6 +295,7 @@ public partial class SettingsViewModel : ObservableObject
             Vibration3 = s.Vibration[2];
             Vibration4 = s.Vibration[3];
             KeyboardIndex = s.Keyboard is >= 1 and <= 4 ? s.Keyboard - 1 : 4;
+            CheckUpdates = s.CheckUpdates;
         }
         finally
         {
@@ -378,6 +380,7 @@ public partial class SettingsViewModel : ObservableObject
         Multitap = Multitap,
         Vibration = new[] { Vibration1, Vibration2, Vibration3, Vibration4 },
         Keyboard = KeyboardIndex is >= 0 and <= 3 ? KeyboardIndex + 1 : 0,
+        CheckUpdates = CheckUpdates,
     };
 
     private void Save()
