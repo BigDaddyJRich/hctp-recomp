@@ -95,6 +95,8 @@
                                               IsChecked="{Binding MakeShortcuts}" />
                             </Grid>
                         </Border>
+                        <TextBlock Classes="hint" Margin="0,10,0,0" LineHeight="18" TextWrapping="Wrap"
+                                   Text="No game files come with this download. The game is built here, from your own copy, and never leaves your PC." />
                     </StackPanel>
                 </StackPanel>
             </ScrollViewer>
