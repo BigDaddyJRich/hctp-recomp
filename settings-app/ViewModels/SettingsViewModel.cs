@@ -204,8 +204,8 @@ public partial class SettingsViewModel : ObservableObject
         0 => "As sharp as the PS2",
         1 => "A little sharper",
         2 => "Sharp",
-        3 => "Default: very sharp",
-        _ => "Sharpest: four times the PS2's detail, needs a strong graphics card",
+        3 => "Very sharp, lighter on the graphics card",
+        _ => "Default: sharpest, four times the PS2's detail",
     };
 
     public string FilterHint => FilterIndex switch

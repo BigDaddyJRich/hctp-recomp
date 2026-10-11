@@ -14797,10 +14797,10 @@ index c9aa2c6..95eac26 100644
                  ImGui::InputScalar("Address", ImGuiDataType_U32, &m_memoryAddress, nullptr, nullptr, "%08X", ImGuiInputTextFlags_CharsHexadecimal);
 diff --git a/ps2xRuntime/src/lib/ps2_host_settings.cpp b/ps2xRuntime/src/lib/ps2_host_settings.cpp
 new file mode 100644
-index 0000000..475d89c
+index 0000000..fab1dcf
 --- /dev/null
 +++ b/ps2xRuntime/src/lib/ps2_host_settings.cpp
-@@ -0,0 +1,481 @@
+@@ -0,0 +1,484 @@
 +#include "runtime/ps2_host_settings.h"
 +
 +#include <algorithm>
@@ -14848,7 +14848,7 @@ index 0000000..475d89c
 +            "\n"
 +            "[graphics]\n"
 +            "renderer = \"gpu\"         # \"gpu\" (the graphics card) or \"cpu\"\n"
-+            "scale = 8                # how much sharper than the PS2: 1, 2, 4, 8 or 16\n"
++            "scale = 16               # how much sharper than the PS2: 1, 2, 4, 8 or 16 (16: four times its detail)\n"
 +            "filter = \"fsr\"           # scaling to the window: \"fsr\", \"smooth\" or \"blocky\"\n"
 +            "sharpening = 75          # 0-100, with \"fsr\"\n"
 +            "sharp_2d = true          # the HUD, text and menus in the same detail as the 3-D (as PCSX2 upscales them); false = as on the PS2\n"
@@ -15109,13 +15109,16 @@ index 0000000..475d89c
 +            // the ones the runtime already reads as switches
 +            if (const int renderer = reader.choice("graphics.renderer", {"gpu", "cpu"}); renderer >= 0)
 +                fillSwitch("VENDETTA_GS", renderer == 0 ? "gpu" : "cpu");
-+            int scale = 0;
++            // 16 (the default, also when the line is missing): sharp 2-D and a 4x picture; no settings file at all
++            // (test runs): the runtime's own 8
++            int scale = 16;
 +            reader.integer("graphics.scale", scale, 1, 16);
-+            if (scale == 1 || scale == 2 || scale == 4 || scale == 8 || scale == 16)
-+                fillSwitch("VENDETTA_SSAA", std::to_string(scale));
-+            else if (scale != 0)
-+                std::cerr << "[settings] graphics.scale = " << scale << " is not 1, 2, 4, 8 or 16; the default is used"
-+                          << std::endl;
++            if (scale != 1 && scale != 2 && scale != 4 && scale != 8 && scale != 16)
++            {
++                std::cerr << "[settings] graphics.scale = " << scale << " is not 1, 2, 4, 8 or 16; 16 is used" << std::endl;
++                scale = 16;
++            }
++            fillSwitch("VENDETTA_SSAA", std::to_string(scale));
 +            if (const int filter = reader.choice("graphics.filter", {"fsr", "smooth", "blocky"}); filter >= 0)
 +                fillSwitch("VENDETTA_FILTER", filter == 0 ? "fsr" : (filter == 1 ? "bilinear" : "nearest"));
 +            int sharpening = -1;

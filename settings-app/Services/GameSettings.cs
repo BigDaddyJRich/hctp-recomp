@@ -21,7 +21,7 @@ public sealed class GameSettings
     public string Shape = "widescreen";     // widescreen (the default) | 4:3 | stretch
     // [graphics]
     public string Renderer = "gpu";         // gpu | cpu
-    public int Scale = 8;                   // 1 2 4 8 16
+    public int Scale = 16;                  // 1 2 4 8 16 (16 the default)
     public string Filter = "fsr";           // fsr | smooth | blocky
     public int Sharpening = 75;             // 0-100
     public bool HighPoly = true;            // High Poly wrestlers and arenas in every match
@@ -53,7 +53,7 @@ public sealed class GameSettings
         "\n" +
         "[graphics]\n" +
         "renderer = \"gpu\"         # \"gpu\" (the graphics card) or \"cpu\"\n" +
-        "scale = 8                # how much sharper than the PS2: 1, 2, 4, 8 or 16\n" +
+        "scale = 16               # how much sharper than the PS2: 1, 2, 4, 8 or 16 (16: four times its detail)\n" +
         "filter = \"fsr\"           # scaling to the window: \"fsr\", \"smooth\" or \"blocky\"\n" +
         "sharpening = 75          # 0-100, with \"fsr\"\n" +
         "sharp_2d = true          # the HUD, text and menus in the same detail as the 3-D (as PCSX2 upscales them); false = as on the PS2\n" +

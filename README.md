@@ -49,7 +49,7 @@ shape), graphics (with High Poly in every match) and sound — and has a PLAY bu
 
 | | |
 |---|---|
-| `VENDETTA_SSAA=1/2/4/8/16` | samples per pixel on the graphics card (default 8); 4 and up also draw at twice the resolution |
+| `VENDETTA_SSAA=1/2/4/8/16` | samples per pixel on the graphics card (`scale` in `settings.toml`, default 16 — four times the PS2's detail; 8 with no settings file); 4 and up also draw at twice the resolution |
 | `VENDETTA_GS=cpu` | draw on the CPU instead (the PS2's own resolution) |
 | `VENDETTA_FILTER=fsr/bilinear/nearest` | how the picture is scaled to the window: AMD FSR upscaling + sharpening on the graphics card (default), plain smoothing, or none (the blocky look) |
 | `VENDETTA_SHARPEN=0..2` | FSR's sharpening (default 0.5; 0 = the most) |
