@@ -196,6 +196,8 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand] private void OpenFolder() => GameFolder.Open(Folder.Root);
     [RelayCommand] private void OpenSaves() => GameFolder.Open(Folder.SavesPath);
     [RelayCommand] private void OpenX() => GameFolder.Open(XUrl);
+    [RelayCommand] private void OpenLicence() => GameFolder.OpenText(Path.Combine(Folder.SourceRoot, "LICENSE"));
+    [RelayCommand] private void OpenNotices() => GameFolder.OpenText(Path.Combine(Folder.SourceRoot, "THIRD-PARTY-NOTICES.txt"));
 
     [RelayCommand]
     private void Exit() =>

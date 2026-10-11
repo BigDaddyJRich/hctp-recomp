@@ -74,8 +74,12 @@ card prepares its shaders.
 
 ## Licence
 
-PS2Recomp is GPL-licensed and included as a submodule; our changes to it (`patches\`) are under the same licence.
-paraLLEl-GS (© Arntzen Software AS) is LGPL-3.0+ and uses Granite (© Hans-Kristian Arntzen, MIT); both are included as
-submodules.
+Copyright (C) 2026 jcsix694. Free software under the **GNU General Public License version 3** (`LICENSE`): use it,
+change it and share it; a changed version you share must come with its source, under the same licence.
+
+It has to be the GPL: PS2Recomp (ran-j, GPL-3.0) is built into the game program, and our changes to it (`patches\`)
+are under its licence. paraLLEl-GS (© Arntzen Software AS) is LGPL-3.0+ and uses Granite (© Hans-Kristian Arntzen,
+MIT); both are included as submodules. Every other part and its licence: `THIRD-PARTY-NOTICES.txt`.
+
 Def Jam Vendetta is © its owners. This project includes none of its files or code; the settings program's pictures
-(`settings-app\Assets`) are artwork based on its logo.
+(`settings-app\Assets`) are artwork based on its logo, and the licence doesn't cover them.

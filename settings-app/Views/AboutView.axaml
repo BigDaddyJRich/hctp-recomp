@@ -58,10 +58,14 @@
                     <TextBlock Grid.Row="2" Grid.Column="1" Classes="muted" FontSize="13.5" TextWrapping="Wrap"
                                Text="the Def Jam mod kit: its map of the game's files and code" />
                 </Grid>
+                <StackPanel Orientation="Horizontal" Spacing="8" Margin="150,12,0,0">
+                    <Button Classes="outline" Content="Licence (GPL-3.0)" Command="{Binding OpenLicenceCommand}" />
+                    <Button Classes="outline" Content="Third-party notices" Command="{Binding OpenNoticesCommand}" />
+                </StackPanel>
             </StackPanel>
 
             <TextBlock Classes="hint" LineHeight="18"
-                       Text="Not made by or affiliated with Electronic Arts or Def Jam. No game files come with this program: the game is built on your PC from your own disc." />
+                       Text="Free software under the GNU GPL version 3. Not made by or affiliated with Electronic Arts or Def Jam. No game files come with this program: the game is built on your PC from your own disc." />
         </StackPanel>
     </ScrollViewer>
 </UserControl>

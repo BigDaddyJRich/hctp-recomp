@@ -211,4 +211,11 @@ public sealed class GameFolder
             Directory.CreateDirectory(pathOrUrl);
         Process.Start(new ProcessStartInfo(pathOrUrl) { UseShellExecute = true });
     }
+
+    /// <summary>A text file in Notepad (LICENSE has no extension for Windows to go by).</summary>
+    public static void OpenText(string path)
+    {
+        if (File.Exists(path))
+            Process.Start(new ProcessStartInfo("notepad.exe", $"\"{path}\"") { UseShellExecute = true });
+    }
 }
