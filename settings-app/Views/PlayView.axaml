@@ -3,17 +3,9 @@
              xmlns:vm="using:VendettaSettings.ViewModels"
              x:Class="VendettaSettings.Views.PlayView"
              x:DataType="vm:MainViewModel">
-    <ScrollViewer x:Name="Page" HorizontalScrollBarVisibility="Disabled">
+    <ScrollViewer HorizontalScrollBarVisibility="Disabled">
         <StackPanel Margin="26,22" Spacing="18">
             <TextBlock Classes="h1" Text="Play" />
-
-            <!-- the picture (2400 x 1100, the logo on its left), always whole: its box keeps the picture's shape, as wide
-                 as the page unless that would push the rows below off the window (PlayView.axaml.cs sizes it) -->
-            <Border x:Name="Banner" CornerRadius="8" ClipToBounds="True" HorizontalAlignment="Left" Height="330">
-                <Border.Background>
-                    <ImageBrush Source="/Assets/background.jpg" Stretch="UniformToFill" AlignmentX="Center" AlignmentY="Top" />
-                </Border.Background>
-            </Border>
 
             <Grid ColumnDefinitions="*,*" ColumnSpacing="28">
                 <StackPanel>
