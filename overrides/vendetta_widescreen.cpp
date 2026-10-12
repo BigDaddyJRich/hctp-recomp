@@ -14,11 +14,24 @@
 // display buffer (FBP 0x0 / 0x40); the 3-D scene uses context 2 with the depth test, the shadows context 2 into FBP
 // 0x160. That rule goes to the GS front end, which squeezes each HUD element back to its shape at the screen's left
 // edge, right edge or centre (GS::setWidescreenOverlayRule).
+//
+// The 3-D crowd: its draw FUN_00197428 (one pose routine per arena) asks FUN_00197b88(p) for each person whether the
+// point p (view space: x at +0, z at +8, in front when z <= 0) is on screen: the half field of view a = fov (0x258130,
+// degrees) x 0.5 x two constants at gp - 0x7328 / gp - 0x7324 / 180 (radians), sin / cos by FUN_001f7dd0 / FUN_001f7ce8,
+// and the point kept (v0 = 0) when x cos a - z sin a >= -10 and -x cos a - z sin a >= -10, else v0 = 1. Those are the
+// 4:3 picture's edges: in widescreen the people standing in the widened sides were skipped and popped in and out as
+// the camera moved. Here the test is answered with the edges as wide as the picture: tan a x the same factor the
+// projection's aspect was divided by (target / (4/3)). VENDETTA_WIDECROWD=0: the game's own 4:3 test. Checked once
+// against the game's own test with the factor 1: 16,384 calls, 0 different answers (the check called the original
+// routine from here and then carried on, which isn't safe while the original can be resumed later: not kept).
 #include "ps2_runtime.h"
+#include "ps2_runtime_macros.h"
 #include "runtime/ps2_widescreen.h"
 #include "runtime/gs/gs_frontend.h"
 
+#include <cmath>
 #include <cstdlib>
+#include <cstring>
 #include <iostream>
 
 namespace vendetta_widescreen
@@ -58,6 +71,42 @@ namespace vendetta_widescreen
         g_originalBuildProjection(rdram, ctx, runtime);
     }
 
+    constexpr uint32_t kCrowdOnScreen = 0x197B88u; // FUN_00197b88(p): 0 = draw this crowd member, 1 = skip
+    constexpr uint32_t kFov = 0x258130u;           // the match camera's field of view (degrees)
+    float g_widen = 1.0f;                          // the picture's horizontal widening: target / (4/3)
+
+    float readFloat(uint8_t *rdram, uint32_t address)
+    {
+        const uint32_t bits = Ps2FastRead32(rdram, address);
+        float value;
+        std::memcpy(&value, &bits, sizeof(value));
+        return value;
+    }
+
+    uint32_t crowdSkip(uint8_t *rdram, uint32_t gp, uint32_t point, float widen)
+    {
+        const float x = readFloat(rdram, point);
+        const float z = readFloat(rdram, point + 8u);
+        if (!(z <= 0.0f))
+            return 1u;
+        float half = readFloat(rdram, kFov) * 0.5f;
+        half = half * readFloat(rdram, gp - 0x7328u) * readFloat(rdram, gp - 0x7324u) / 180.0f;
+        if (widen != 1.0f)
+            half = std::atan(std::tan(half) * widen);
+        const float s = std::sin(half);
+        const float c = std::cos(half);
+        return x * c - z * s >= -10.0f && -x * c - z * s >= -10.0f ? 0u : 1u;
+    }
+
+    void crowdOnScreen(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t point = getRegU32(ctx, 4);
+        const uint32_t gp = getRegU32(ctx, 28);
+        const uint32_t ra = getRegU32(ctx, 31);
+        setReturnU32(ctx, crowdSkip(rdram, gp, point, g_widen));
+        ctx->pc = ra;
+    }
+
     bool isHud(const GSDrawState &state)
     {
         return state.prim.ctxt == 0u && (state.context.test & 0x10000u) == 0u && state.context.frame.fbp < 0x80u;
@@ -75,6 +124,14 @@ namespace vendetta_widescreen
             runtime.replaceFunction(kSetProjection, setProjection);
         if (!std::getenv("VENDETTA_WIDEHUD") || std::getenv("VENDETTA_WIDEHUD")[0] != '0')
             runtime.gs().setWidescreenOverlayRule(isHud); // VENDETTA_WIDEHUD=0: the HUD stretched
+        const char *crowd = std::getenv("VENDETTA_WIDECROWD");
+        if (!crowd || crowd[0] != '0')
+        {
+            g_widen = ps2_widescreen::targetAspect() / (4.0f / 3.0f);
+            runtime.replaceFunction(kCrowdOnScreen, crowdOnScreen);
+            std::cerr << "[widescreen] the crowd drawn across the whole wide picture (its on-screen test widened x"
+                      << g_widen << ")" << std::endl;
+        }
     }
 }
 
