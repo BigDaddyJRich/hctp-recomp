@@ -36,6 +36,12 @@ internal static class Shot
     /// pages do, prints settings.toml after each, and with "play" starts the game as PLAY does.</summary>
     public static void SelfTest(bool play)
     {
+        // it changes and saves settings: only ever on a scratch copy, never the real settings.toml
+        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("VENDETTA_ROOT")))
+        {
+            Console.WriteLine("--selftest changes and saves settings: set VENDETTA_ROOT to a scratch copy of the folder first");
+            return;
+        }
         var folder = GameFolder.Find();
         Console.WriteLine($"folder {folder.Root}; game {folder.HasGame}; exe {folder.GameExe ?? "none"}");
         if (play)

@@ -14,6 +14,20 @@ public static class Displays
         public IReadOnlyList<int> RatesAt(int width, int height) =>
             Modes.Where(m => m.Width == width && m.Height == height).Select(m => m.Rate).Distinct().OrderBy(r => r).ToList();
 
+        /// <summary>Does a rate show each of the game's 60 frames for the same time (60, 120, 240, or 59 / 119)?</summary>
+        public static bool FitsSixtyFrames(int hz) => hz > 0 && (hz % 60 == 0 || (hz + 1) % 60 == 0);
+
+        /// <summary>What the game's "automatic" picks (the same rule as the game): the screen's rate when it fits 60
+        /// frames and the size has it, else the smoothest it has, else the screen's rate.</summary>
+        public int AutomaticAt(int width, int height)
+        {
+            var rates = RatesAt(width, height);
+            if (FitsSixtyFrames(Current.Rate) && (rates.Count == 0 || rates.Contains(Current.Rate)))
+                return Current.Rate;
+            var even = rates.Where(FitsSixtyFrames).ToList();
+            return even.Count > 0 ? even.Max() : Current.Rate;
+        }
+
         /// <summary>What the game's "smoothest" picks: the highest multiple of 60 Hz (59 / 60, 119 / 120 …), else the highest.</summary>
         public int SmoothestAt(int width, int height)
         {

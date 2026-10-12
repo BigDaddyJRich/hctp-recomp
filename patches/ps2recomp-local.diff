@@ -4435,14 +4435,16 @@ index 0000000..b9483b6
 +}
 diff --git a/ps2xRuntime/include/runtime/ps2_host_settings.h b/ps2xRuntime/include/runtime/ps2_host_settings.h
 new file mode 100644
-index 0000000..434f2a5
+index 0000000..8337038
 --- /dev/null
 +++ b/ps2xRuntime/include/runtime/ps2_host_settings.h
-@@ -0,0 +1,52 @@
+@@ -0,0 +1,82 @@
 +#pragma once
 +
++#include <algorithm>
 +#include <filesystem>
 +#include <string>
++#include <vector>
 +
 +// The player's settings: settings.toml, written by a settings program or by hand. Read once at start, before anything
 +// else reads a switch. A VENDETTA_* switch set in the environment always wins over the file, so test runs and debugging
@@ -4462,6 +4464,34 @@ index 0000000..434f2a5
 +    // refresh_rate = "smoothest": the highest rate the screen has that is a multiple of 60 Hz (each of the game's ~60
 +    // pictures a second then stays on screen the same time); a screen with none: its highest rate
 +    constexpr int kRefreshSmoothest = -1;
++    // refresh_rate = "automatic" (the default): the screen's own rate when it already fits the game's 60 pictures a
++    // second (60, 120, 240, or 59 / 119 for 59.94 / 119.88), so nothing switches; else the smoothest rate the screen
++    // has (a switch, e.g. 165 -> 120 or 60); a screen with no fitting rate keeps its own. Worked out at every start.
++    constexpr int kRefreshAutomatic = -2;
++
++    // Does a rate show each of the game's ~60 pictures for the same time?
++    inline bool fitsSixtyPictures(int hz) { return hz > 0 && (hz % 60 == 0 || (hz + 1) % 60 == 0); }
++
++    // The rate to ask the screen for. setting: refreshRate; screenRate: the screen's rate now (0 = not known); rates:
++    // the rates the screen has at the fullscreen size, ascending. A fixed rate the screen hasn't got is asked for as it
++    // is (the window library takes the closest one). 0 back = the screen's own, whatever it is.
++    inline int chooseRefreshRate(int setting, int screenRate, const std::vector<int> &rates)
++    {
++        if (setting > 0)
++            return setting;
++        if (setting == 0)
++            return screenRate;
++        int smoothest = 0;
++        for (int r : rates)
++            if (fitsSixtyPictures(r))
++                smoothest = std::max(smoothest, r);
++        if (setting == kRefreshSmoothest)
++            return smoothest ? smoothest : (rates.empty() ? screenRate : rates.back());
++        const bool screenHasIt = rates.empty() || std::find(rates.begin(), rates.end(), screenRate) != rates.end();
++        if (fitsSixtyPictures(screenRate) && screenHasIt)
++            return screenRate;
++        return smoothest ? smoothest : screenRate;
++    }
 +
 +    struct Settings
 +    {
@@ -4471,7 +4501,7 @@ index 0000000..434f2a5
 +        bool maximised = true;     // Window only
 +        int fullscreenWidth = 0;   // Fullscreen only; 0 = the screen's own resolution
 +        int fullscreenHeight = 0;
-+        int refreshRate = -1;      // Fullscreen only: Hz, 0 = the screen's own rate, kRefreshSmoothest = the smoothest
++        int refreshRate = kRefreshAutomatic; // Fullscreen only: Hz, 0 = the screen's own, kRefreshSmoothest, kRefreshAutomatic
 +        bool vsync = true;         // wait for the screen before showing each picture
 +        bool stretch = false;      // the picture fills the window (false: 4:3, bars at the sides)
 +        // [sound]
@@ -16258,10 +16288,10 @@ index 0000000..8bb1d56
 +}
 diff --git a/ps2xRuntime/src/lib/ps2_host_settings.cpp b/ps2xRuntime/src/lib/ps2_host_settings.cpp
 new file mode 100644
-index 0000000..4b6fb79
+index 0000000..15b357f
 --- /dev/null
 +++ b/ps2xRuntime/src/lib/ps2_host_settings.cpp
-@@ -0,0 +1,516 @@
+@@ -0,0 +1,520 @@
 +#include "runtime/ps2_host_settings.h"
 +
 +#include <algorithm>
@@ -16301,8 +16331,9 @@ index 0000000..4b6fb79
 +            "maximised = true         # start maximised (window only)\n"
 +            "fullscreen_width = 0     # fullscreen resolution; 0 = the screen's own\n"
 +            "fullscreen_height = 0\n"
-+            "refresh_rate = 0         # fullscreen only: 0 = the screen's own (no switch), a number such as 60 or 120, or\n"
-+            "                         # \"smoothest\" (the highest multiple of 60 Hz the screen has: the game makes 60 frames a second)\n"
++            "refresh_rate = \"automatic\" # fullscreen only: \"automatic\" (the screen's rate when it suits the game's 60 frames a\n"
++            "                         # second, else the smoothest rate it has), \"smoothest\" (the highest multiple of 60 Hz),\n"
++            "                         # 0 = the screen's own (no switch), or a number such as 60 or 120\n"
 +            "vsync = true             # wait for the screen before showing each picture (no tearing)\n"
 +            "shape = \"widescreen\"     # \"widescreen\" (matches at 16:9 with more of the arena; menus and movies 4:3),\n"
 +            "                         # \"4:3\" (as on the PS2, bars at the sides) or \"stretch\" (fill the window)\n"
@@ -16555,14 +16586,14 @@ index 0000000..4b6fb79
 +            reader.boolean("display.maximised", s.maximised);
 +            reader.integer("display.fullscreen_width", s.fullscreenWidth, 0, 16384);
 +            reader.integer("display.fullscreen_height", s.fullscreenHeight, 0, 16384);
-+            // the screen's own rate when the line is missing (the default since 0.1.3: no mode switch, which Microsoft
-+            // Copilot's Quick View answers by taking the front); "smoothest" as before
++            // "automatic" (the default, also when the line is missing: the screen's rate when it suits 60 pictures a
++            // second, else the smoothest it has, worked out at each start), "smoothest", 0 = the screen's own, or Hz
 +            std::string refresh;
-+            s.refreshRate = 0;
-+            if (reader.peek("display.refresh_rate", refresh) && lower(refresh) == "smoothest")
++            s.refreshRate = kRefreshAutomatic;
++            if (reader.peek("display.refresh_rate", refresh) && (lower(refresh) == "smoothest" || lower(refresh) == "automatic"))
 +            {
 +                reader.take("display.refresh_rate", refresh);
-+                s.refreshRate = kRefreshSmoothest;
++                s.refreshRate = lower(refresh) == "smoothest" ? kRefreshSmoothest : kRefreshAutomatic;
 +            }
 +            else
 +                reader.integer("display.refresh_rate", s.refreshRate, 0, 1000);
@@ -16677,7 +16708,9 @@ index 0000000..4b6fb79
 +                }
 +            }
 +            if (const char *value = std::getenv("VENDETTA_REFRESH"); value && *value)
-+                s.refreshRate = lower(value) == "smoothest" ? kRefreshSmoothest : std::clamp(std::atoi(value), 0, 1000);
++                s.refreshRate = lower(value) == "smoothest"   ? kRefreshSmoothest
++                                : lower(value) == "automatic" ? kRefreshAutomatic
++                                                              : std::clamp(std::atoi(value), 0, 1000);
 +            if (const char *value = std::getenv("VENDETTA_VSYNC"); value && *value)
 +                s.vsync = std::string(value) != "0";
 +            if (const char *value = std::getenv("VENDETTA_VOLUME"); value && *value)
@@ -16750,8 +16783,9 @@ index 0000000..4b6fb79
 +                          ? ", " + (s.fullscreenWidth ? std::to_string(s.fullscreenWidth) + "x" + std::to_string(s.fullscreenHeight)
 +                                                      : std::string("screen's resolution")) +
 +                                (s.refreshRate > 0 ? " at " + std::to_string(s.refreshRate) + " Hz"
-+                                                   : std::string(s.refreshRate == kRefreshSmoothest ? " at the smoothest rate"
-+                                                                                                    : " at the screen's rate"))
++                                                   : std::string(s.refreshRate == kRefreshSmoothest   ? " at the smoothest rate"
++                                                                 : s.refreshRate == kRefreshAutomatic ? " at the automatic rate"
++                                                                                                      : " at the screen's rate"))
 +                          : std::string(""))
 +                  << ", vsync " << (s.vsync ? "on" : "off") << ", "
 +                  << (s.stretch ? std::string("stretched") : std::getenv("VENDETTA_WIDESCREEN") && *std::getenv("VENDETTA_WIDESCREEN") && std::string(std::getenv("VENDETTA_WIDESCREEN")) != "0" ? "widescreen " + std::string(std::getenv("VENDETTA_WIDESCREEN")) + " in matches" : std::string("4:3"))
@@ -18925,7 +18959,7 @@ index 0000000..c24f5c8
 +    }
 +}
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..9d5ad85 100644
+index 45cb9d2..6dd4441 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
 @@ -1,3 +1,7 @@
@@ -18992,18 +19026,29 @@ index 45cb9d2..9d5ad85 100644
  
      constexpr uint32_t COP0_CAUSE_EXCCODE_MASK = 0x0000007Cu;
      constexpr uint32_t COP0_CAUSE_BD = 0x80000000u;
-@@ -373,10 +406,330 @@ namespace
+@@ -373,10 +406,325 @@ namespace
      }
  }
  
 -static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint32_t &outHeight)
 +namespace
-+{
+ {
+-    static uint64_t s_lastPresentationTick = std::numeric_limits<uint64_t>::max();
+-    static bool s_hasLatchedInitialFrame = false;
 +    int s_frameTextureFilter = TEXTURE_FILTER_BILINEAR;
 +    // shown through Vulkan: the newest picture shared with the window's Vulkan device (valid until the next take)
 +    const GSGpuFrame *s_sharedFrame = nullptr;
 +    // The graphics card's picture: (covered share of the video mode's width) / (share of its height), for the aspect.
 +    float s_presentAspectScale = 1.0f;
++
++    // the log's note on the refresh choice
++    const char *refreshChoiceName(int refreshRate)
++    {
++        return refreshRate == ps2_host_settings::kRefreshSmoothest ? " (the smoothest)"
++               : refreshRate == ps2_host_settings::kRefreshAutomatic ? " (automatic)"
++               : refreshRate == 0                                    ? " (the screen's own)"
++                                                                     : "";
++    }
 +}
 +
 +// The window as the settings ask (ps2_host_settings): which screen, maximised, borderless, or fullscreen at a chosen
@@ -19054,18 +19099,12 @@ index 45cb9d2..9d5ad85 100644
 +                    rates.push_back(modes[i].refreshRate);
 +            std::sort(rates.begin(), rates.end());
 +            const GLFWvidmode *current = glfwGetVideoMode(monitors[monitor]);
-+            int rate = settings.refreshRate > 0 ? settings.refreshRate : (current ? current->refreshRate : GLFW_DONT_CARE);
-+            if (settings.refreshRate == ps2_host_settings::kRefreshSmoothest && !rates.empty())
-+            {
-+                // The game makes ~60 pictures a second: at a multiple of 60 Hz (59 / 60, 119 / 120, 239 / 240 …) each one
-+                // stays on screen the same time. The highest such rate; a screen with none: its highest rate.
-+                rate = rates.back();
-+                for (int r : rates) // ascending: the last match is the highest
-+                    if (r % 60 == 0 || (r + 1) % 60 == 0)
-+                        rate = r;
-+            }
++            // the game makes ~60 pictures a second: automatic / smoothest / the screen's own / a fixed rate
++            // (ps2_host_settings::chooseRefreshRate)
++            const int chosen = ps2_host_settings::chooseRefreshRate(settings.refreshRate, current ? current->refreshRate : 0, rates);
++            const int rate = chosen > 0 ? chosen : GLFW_DONT_CARE;
 +            std::cerr << "[window] fullscreen " << width << "x" << height << " at " << rate << " Hz"
-+                      << (settings.refreshRate == ps2_host_settings::kRefreshSmoothest ? " (the smoothest)" : "")
++                      << refreshChoiceName(settings.refreshRate)
 +                      << "; the screen has";
 +            for (int r : rates)
 +                std::cerr << " " << r;
@@ -19131,15 +19170,8 @@ index 45cb9d2..9d5ad85 100644
 +                rates.push_back(modes[i].refreshRate);
 +        std::sort(rates.begin(), rates.end());
 +        const GLFWvidmode *current = glfwGetVideoMode(monitor);
-+        int rate = settings.refreshRate > 0 ? settings.refreshRate : (current ? current->refreshRate : GLFW_DONT_CARE);
-+        if (settings.refreshRate == ps2_host_settings::kRefreshSmoothest && !rates.empty())
-+        {
-+            rate = rates.back();
-+            for (int r : rates)
-+                if (r % 60 == 0 || (r + 1) % 60 == 0)
-+                    rate = r;
-+        }
-+        return rate;
++        const int chosen = ps2_host_settings::chooseRefreshRate(settings.refreshRate, current ? current->refreshRate : 0, rates);
++        return chosen > 0 ? chosen : GLFW_DONT_CARE;
 +    }
 +
 +    // Made hidden, placed as the settings ask (window / maximised / borderless / fullscreen at its resolution and
@@ -19205,8 +19237,7 @@ index 45cb9d2..9d5ad85 100644
 +            paintWindowBlack(window);
 +            glfwPollEvents();
 +            std::cerr << "[window] fullscreen " << width << "x" << height << " at " << rate << " Hz"
-+                      << (settings.refreshRate == ps2_host_settings::kRefreshSmoothest ? " (the smoothest)" : "")
-+                      << "; the screen has";
++                      << refreshChoiceName(settings.refreshRate) << "; the screen has";
 +            for (int r : rates)
 +                std::cerr << " " << r;
 +            std::cerr << (rates.empty() ? " no mode of that size" : " Hz") << std::endl;
@@ -19296,9 +19327,7 @@ index 45cb9d2..9d5ad85 100644
 +
 +// true = a new picture was uploaded
 +static bool UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint32_t &outHeight)
- {
--    static uint64_t s_lastPresentationTick = std::numeric_limits<uint64_t>::max();
--    static bool s_hasLatchedInitialFrame = false;
++{
 +    // the scaling filter can change at any time (the debug panel); FSR is done on the graphics card, the window then
 +    // only places its picture (drawn at exactly the window's size)
 +    const int wantedFilter =
@@ -19326,7 +19355,7 @@ index 45cb9d2..9d5ad85 100644
      static uint32_t s_lastDisplayFbp = std::numeric_limits<uint32_t>::max();
      static uint32_t s_lastSourceFbp = std::numeric_limits<uint32_t>::max();
      static bool s_lastPreferred = false;
-@@ -386,35 +739,29 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -386,35 +734,29 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      static std::vector<uint8_t> s_scratch;
      static std::vector<uint8_t> s_uploadBuffer(DEFAULT_FB_SIZE, 0u);
  
@@ -19361,21 +19390,21 @@ index 45cb9d2..9d5ad85 100644
 -                                                   &usedPreferredDisplaySource))
 +                                                   &usedPreferredDisplaySource);
 +    if (!fresh && s_hasUploadedFrame)
-     {
--        Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, MAGENTA);
++    {
 +        outWidth = (s_lastWidth != 0u) ? s_lastWidth : FB_WIDTH;
 +        outHeight = (s_lastHeight != 0u) ? s_lastHeight : DEFAULT_DISPLAY_HEIGHT;
 +        return false;
 +    }
 +    if (!fresh || s_scratch.empty() || width == 0u || height == 0u)
-+    {
+     {
+-        Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, MAGENTA);
 +        // nothing to show (no picture yet, or both display circuits off — after a GS reset until the game sets its
 +        // display up again): black, as on the console
 +        Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLACK);
          UpdateTexture(tex, blank.data);
          UnloadImage(blank);
          outWidth = FB_WIDTH;
-@@ -422,7 +769,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -422,7 +764,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
          s_lastWidth = outWidth;
          s_lastHeight = outHeight;
          s_hasUploadedFrame = true;
@@ -19384,7 +19413,7 @@ index 45cb9d2..9d5ad85 100644
      }
  
      PS2_IF_AGRESSIVE_LOGS({
-@@ -435,7 +782,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -435,7 +777,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
              height != s_lastHeight)
          {
              std::cout << "[frame:upload] idx=" << s_uploadDebugCount
@@ -19393,7 +19422,7 @@ index 45cb9d2..9d5ad85 100644
                        << " displayFbp=" << displayFbp
                        << " sourceFbp=" << sourceFbp
                        << " size=" << width << "x" << height
-@@ -475,6 +822,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -475,6 +817,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      outWidth = width;
      outHeight = height;
      s_hasUploadedFrame = true;
@@ -19401,7 +19430,7 @@ index 45cb9d2..9d5ad85 100644
  }
  
  PS2Runtime::PS2Runtime()
-@@ -503,8 +851,8 @@ PS2Runtime::PS2Runtime()
+@@ -503,8 +846,8 @@ PS2Runtime::PS2Runtime()
      m_guestHeapLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
      m_guestHeapSuggestedBase = kGuestHeapDefaultBase;
      m_guestHeapConfigured = false;
@@ -19412,7 +19441,7 @@ index 45cb9d2..9d5ad85 100644
  }
  
  void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
-@@ -599,6 +947,12 @@ ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx,
+@@ -599,6 +942,12 @@ ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx,
      return m_iopSubsystem->handleRpc(request);
  }
  
@@ -19425,7 +19454,7 @@ index 45cb9d2..9d5ad85 100644
  void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransfer &transfer)
  {
      auto scope = m_iopHost->enterCall(nullptr, rdram);
-@@ -607,6 +961,7 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
+@@ -607,6 +956,7 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
  
  void PS2Runtime::advanceIopEeCycles(uint64_t eeCycles) noexcept
  {
@@ -19433,7 +19462,7 @@ index 45cb9d2..9d5ad85 100644
      m_iopSubsystem->runEeCycles(eeCycles);
  }
  
-@@ -665,45 +1020,32 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -665,45 +1015,32 @@ bool PS2Runtime::syncCoreSubsystems()
      }
  
      m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
@@ -19494,7 +19523,7 @@ index 45cb9d2..9d5ad85 100644
      resetIop();
      m_vu0.reset();
      m_vu1.reset();
-@@ -731,12 +1073,70 @@ bool PS2Runtime::initialize(const char *title)
+@@ -731,12 +1068,70 @@ bool PS2Runtime::initialize(const char *title)
  #if defined(PLATFORM_VITA)
          InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
  #else
@@ -19568,7 +19597,7 @@ index 45cb9d2..9d5ad85 100644
          if (m_debugUiInitCallback)
          {
              m_debugUiInitCallback(*this, m_debugUiUserData);
-@@ -971,9 +1371,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+@@ -971,9 +1366,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
      }
      {
          std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
@@ -19580,7 +19609,7 @@ index 45cb9d2..9d5ad85 100644
      }
  
      LoadedModule module;
-@@ -1013,6 +1412,17 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+@@ -1013,6 +1407,17 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
      return true;
  }
  
@@ -19598,7 +19627,7 @@ index 45cb9d2..9d5ad85 100644
  const PS2Runtime::IoPaths &PS2Runtime::getIoPaths()
  {
      return runtimeIoPaths();
-@@ -1316,6 +1726,16 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
+@@ -1316,6 +1721,16 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
              << " policy=" << static_cast<uint32_t>(policy)
              << " trace=" << formatDispatchHistory()
              << std::dec;
@@ -19615,7 +19644,7 @@ index 45cb9d2..9d5ad85 100644
  
          static std::mutex s_missingFunctionLogMutex;
          {
-@@ -1396,14 +1816,32 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
+@@ -1396,14 +1811,32 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
  
      RecompiledFunction targetFn = lookupFunction(targetPc);
      const uint32_t entryPc = ctx->pc;
@@ -19650,7 +19679,7 @@ index 45cb9d2..9d5ad85 100644
      {
          ctx->pc = fallthroughPc;
      }
-@@ -1945,12 +2383,96 @@ uint32_t PS2Runtime::guestRealloc(uint32_t guestAddr, uint32_t newSize, uint32_t
+@@ -1945,12 +2378,96 @@ uint32_t PS2Runtime::guestRealloc(uint32_t guestAddr, uint32_t newSize, uint32_t
      return newAddr;
  }
  
@@ -19747,7 +19776,7 @@ index 45cb9d2..9d5ad85 100644
  
      std::lock_guard<std::mutex> lock(m_guestHeapMutex);
      ensureGuestHeapInitializedLocked();
-@@ -2039,10 +2561,36 @@ uint16_t PS2Runtime::Load16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
+@@ -2039,10 +2556,36 @@ uint16_t PS2Runtime::Load16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
      }
  }
  
@@ -19784,7 +19813,7 @@ index 45cb9d2..9d5ad85 100644
          return m_memory.read32(vaddr);
      }
      catch (const std::exception &)
-@@ -2056,6 +2604,8 @@ uint64_t PS2Runtime::Load64(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
+@@ -2056,6 +2599,8 @@ uint64_t PS2Runtime::Load64(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
  {
      try
      {
@@ -19793,7 +19822,7 @@ index 45cb9d2..9d5ad85 100644
          return m_memory.read64(vaddr);
      }
      catch (const std::exception &)
-@@ -2187,6 +2737,14 @@ void PS2Runtime::requestStop()
+@@ -2187,6 +2732,14 @@ void PS2Runtime::requestStop()
      {
          m_eeScheduler->requestStop();
      }
@@ -19808,7 +19837,7 @@ index 45cb9d2..9d5ad85 100644
  }
  
  bool PS2Runtime::isStopRequested() const
-@@ -2339,8 +2897,12 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
+@@ -2339,8 +2892,12 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
      raiseCop0Exception(ctx, EXCEPTION_INTEGER_OVERFLOW);
  }
  
@@ -19821,7 +19850,7 @@ index 45cb9d2..9d5ad85 100644
      m_stopRequested.store(false, std::memory_order_relaxed);
      ps2_stubs::resetSifState();
      resetIop();
-@@ -2361,12 +2923,34 @@ void PS2Runtime::run()
+@@ -2361,12 +2918,34 @@ void PS2Runtime::run()
      Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
      Texture2D frameTex = LoadTextureFromImage(blank);
      UnloadImage(blank);
@@ -19856,7 +19885,7 @@ index 45cb9d2..9d5ad85 100644
          try
          {
              m_eeScheduler->reset(m_memory.getRDRAM(), m_cpuContext);
-@@ -2422,23 +3006,74 @@ void PS2Runtime::run()
+@@ -2422,23 +3001,74 @@ void PS2Runtime::run()
          });
          uint32_t presentWidth = FB_WIDTH;
          uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
@@ -19939,7 +19968,7 @@ index 45cb9d2..9d5ad85 100644
          DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
          if (m_debugUiInitialized && m_debugUiDrawCallback)
          {
-@@ -2446,6 +3081,33 @@ void PS2Runtime::run()
+@@ -2446,6 +3076,33 @@ void PS2Runtime::run()
          }
          EndDrawing();
  
@@ -19973,7 +20002,7 @@ index 45cb9d2..9d5ad85 100644
          if (WindowShouldClose())
          {
              RUNTIME_LOG("[run] window close requested, breaking out of loop");
-@@ -2459,12 +3121,22 @@ void PS2Runtime::run()
+@@ -2459,12 +3116,22 @@ void PS2Runtime::run()
      {
          gameThread.join();
      }

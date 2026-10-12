@@ -176,7 +176,8 @@ public partial class SettingsViewModel : ObservableObject
             return Refresh?.Value switch
             {
                 GameSettings.RefreshSmoothest => s.SmoothestAt(w, h),
-                GameSettings.RefreshScreens or null => s.Current.Rate,
+                GameSettings.RefreshAutomatic or null => s.AutomaticAt(w, h),
+                GameSettings.RefreshScreens => s.Current.Rate,
                 var r => r.Value,
             };
         }
@@ -189,6 +190,12 @@ public partial class SettingsViewModel : ObservableObject
             if (!IsFullscreen)
                 return "In a window or borderless, the screen keeps the rate set in Windows. Pick Fullscreen to choose it here.";
             var rate = ChosenRate;
+            if (Refresh?.Value is GameSettings.RefreshAutomatic or null && CurrentScreen is { } screen)
+                return rate == screen.Current.Rate
+                    ? $"Your screen runs at {rate} Hz, which suits the game's 60 frames a second: nothing switches."
+                    : Displays.Screen.FitsSixtyFrames(rate)
+                        ? $"Your screen runs at {screen.Current.Rate} Hz. For smooth motion the game switches it to {rate} Hz while it plays."
+                        : $"Your screen has no rate that suits 60 frames a second, so it stays at {rate} Hz.";
             return rate % 60 == 0 || (rate + 1) % 60 == 0
                 ? $"The game makes 60 frames a second: at {rate} Hz every frame stays on screen for the same time."
                 : $"The game makes 60 frames a second: at {rate} Hz some stay up longer than others, a slight judder. A multiple of 60 Hz is smoother.";
@@ -319,7 +326,7 @@ public partial class SettingsViewModel : ObservableObject
         Resolution is { Value: > 0 } r ? (r.Value, r.Value2) : (screen.Current.Width, screen.Current.Height);
 
     /// <summary>The resolutions and refresh rates of the chosen screen (keeping what is chosen).</summary>
-    private void RebuildChoices() => RebuildChoices(Resolution?.Value ?? 0, Resolution?.Value2 ?? 0, Refresh?.Value ?? GameSettings.RefreshScreens);
+    private void RebuildChoices() => RebuildChoices(Resolution?.Value ?? 0, Resolution?.Value2 ?? 0, Refresh?.Value ?? GameSettings.RefreshAutomatic);
 
     private void RebuildChoices(int width, int height, int rate)
     {
@@ -347,12 +354,14 @@ public partial class SettingsViewModel : ObservableObject
             if (screen != null)
             {
                 var (w, h) = FullscreenSize(screen);
+                rates.Add(new Choice($"Automatic · {screen.AutomaticAt(w, h)} Hz", GameSettings.RefreshAutomatic));
                 rates.Add(new Choice($"Smoothest · {screen.SmoothestAt(w, h)} Hz", GameSettings.RefreshSmoothest));
                 rates.AddRange(screen.RatesAt(w, h).Select(r => new Choice($"{r} Hz", r)));
                 rates.Add(new Choice($"The screen's own · {screen.Current.Rate} Hz", GameSettings.RefreshScreens));
             }
             else
             {
+                rates.Add(new Choice("Automatic", GameSettings.RefreshAutomatic));
                 rates.Add(new Choice("Smoothest", GameSettings.RefreshSmoothest));
                 rates.Add(new Choice("The screen's own", GameSettings.RefreshScreens));
             }
@@ -376,7 +385,7 @@ public partial class SettingsViewModel : ObservableObject
         Maximised = Maximised,
         FullscreenWidth = Resolution?.Value ?? 0,
         FullscreenHeight = Resolution?.Value2 ?? 0,
-        RefreshRate = Refresh?.Value ?? GameSettings.RefreshScreens,
+        RefreshRate = Refresh?.Value ?? GameSettings.RefreshAutomatic,
         Vsync = VsyncIndex == 1,
         Shape = ShapeIndex switch { 1 => "4:3", 2 => "stretch", _ => "widescreen" },
         Renderer = RendererIndex == 1 ? "cpu" : "gpu",

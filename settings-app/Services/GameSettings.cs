@@ -9,6 +9,7 @@ public sealed class GameSettings
 {
     public const int RefreshSmoothest = -1; // "smoothest": the highest multiple of 60 Hz the screen has
     public const int RefreshScreens = 0;    // the screen's own rate
+    public const int RefreshAutomatic = -2; // "automatic": the screen's rate when it suits 60 frames, else the smoothest
 
     // [display]
     public string Mode = "fullscreen";      // fullscreen (the default) | window | borderless
@@ -16,7 +17,7 @@ public sealed class GameSettings
     public bool Maximised = true;
     public int FullscreenWidth;             // 0 = the screen's own resolution
     public int FullscreenHeight;
-    public int RefreshRate = RefreshScreens;  // the screen's own (the default: no mode switch)
+    public int RefreshRate = RefreshAutomatic; // the default
     public bool Vsync = true;
     public string Shape = "widescreen";     // widescreen (the default) | 4:3 | stretch
     // [graphics]
@@ -50,8 +51,9 @@ public sealed class GameSettings
         "maximised = true         # start maximised (window only)\n" +
         "fullscreen_width = 0     # fullscreen resolution; 0 = the screen's own\n" +
         "fullscreen_height = 0\n" +
-        "refresh_rate = 0         # fullscreen only: 0 = the screen's own (no switch), a number such as 60 or 120, or\n" +
-        "                         # \"smoothest\" (the highest multiple of 60 Hz the screen has: the game makes 60 frames a second)\n" +
+        "refresh_rate = \"automatic\" # fullscreen only: \"automatic\" (the screen's rate when it suits the game's 60 frames a\n" +
+        "                         # second, else the smoothest rate it has), \"smoothest\" (the highest multiple of 60 Hz),\n" +
+        "                         # 0 = the screen's own (no switch), or a number such as 60 or 120\n" +
         "vsync = true             # wait for the screen before showing each picture (no tearing)\n" +
         "shape = \"widescreen\"     # \"widescreen\" (matches at 16:9 with more of the arena; menus and movies 4:3),\n" +
         "                         # \"4:3\" (as on the PS2, bars at the sides) or \"stretch\" (fill the window)\n" +
@@ -101,8 +103,9 @@ public sealed class GameSettings
                 case "display.fullscreen_width": s.FullscreenWidth = Int(value, s.FullscreenWidth, 0, 16384); break;
                 case "display.fullscreen_height": s.FullscreenHeight = Int(value, s.FullscreenHeight, 0, 16384); break;
                 case "display.refresh_rate":
-                    s.RefreshRate = value.Equals("smoothest", StringComparison.OrdinalIgnoreCase)
-                        ? RefreshSmoothest : Int(value, s.RefreshRate, 0, 1000);
+                    s.RefreshRate = value.Equals("smoothest", StringComparison.OrdinalIgnoreCase) ? RefreshSmoothest
+                        : value.Equals("automatic", StringComparison.OrdinalIgnoreCase) ? RefreshAutomatic
+                        : Int(value, s.RefreshRate, 0, 1000);
                     break;
                 case "display.vsync": s.Vsync = Bool(value, s.Vsync); break;
                 case "display.shape": s.Shape = OneOf(value, s.Shape, "4:3", "stretch", "widescreen"); break;
@@ -145,7 +148,8 @@ public sealed class GameSettings
             ("display", "maximised", Maximised ? "true" : "false"),
             ("display", "fullscreen_width", FullscreenWidth.ToString(CultureInfo.InvariantCulture)),
             ("display", "fullscreen_height", FullscreenHeight.ToString(CultureInfo.InvariantCulture)),
-            ("display", "refresh_rate", RefreshRate == RefreshSmoothest ? Quote("smoothest") : RefreshRate.ToString(CultureInfo.InvariantCulture)),
+            ("display", "refresh_rate", RefreshRate == RefreshSmoothest ? Quote("smoothest")
+                : RefreshRate == RefreshAutomatic ? Quote("automatic") : RefreshRate.ToString(CultureInfo.InvariantCulture)),
             ("display", "vsync", Vsync ? "true" : "false"),
             ("display", "shape", Quote(Shape)),
             ("graphics", "renderer", Quote(Renderer)),
