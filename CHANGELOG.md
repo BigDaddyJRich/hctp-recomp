@@ -13,9 +13,7 @@ No game files come with this download.
 ### New
 - **Built from your own disc.** Def Jam Vendetta Recompiled Settings reads your copy (an `.iso` or `.chd` file), installs Microsoft's
   build tools if your PC doesn't have them, and builds the game in 20 to 30 minutes. It only does this once.
-- **The whole game:** movies, menus, story mode, every match type, music and sound effects, saving and loading.
-- **Up to 4 players,** each with their own controller, with vibration on Xbox-style controllers. The keyboard can play
-  as any one player too.
+- **Up to 4 players**
 - **Widescreen** matches (menus and movies stay 4:3), and fullscreen, borderless or windowed play.
 - **A sharp picture:** drawn on your graphics card at up to 16 times the PS2's detail, with the HUD, text and menus
   as sharp as the 3D (Sharp 2D).
@@ -34,7 +32,7 @@ No game files come with this download.
 - Windows may say "Windows protected your PC" the first time: click **More info**, then **Run anyway**.
 - 16× (the default) needs a fairly strong graphics card. If the game runs slowly, set Scale to 8× under Graphics.
 - The keyboard plays as nobody by default: choose a player under Controls.
-- Mods are not supported yet, but are currently being worked on.
+- Mod support is actively being worked on and will come in a future update.
 - When a new version comes out, the game asks when it starts: **Update** opens the settings program on what's new,
   **Play** starts the game and doesn't ask about that version again. Turn it off under About.
 - After each update Windows may show "Windows protected your PC" again (the program isn't signed yet): **More info** →
