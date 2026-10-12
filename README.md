@@ -39,6 +39,9 @@ Vendetta (PlayStation 2, USA, **SLUS-20639**) as an `.iso` or `.chd`, and everyt
 - A settings program that sets everything up from your disc and updates itself
 - Your saves stay as memory card files on your PC
 
+**Mod support: coming in a future update**
+- Actively being worked on, and it will come.
+
 ## Screenshots
 
 <table>
@@ -153,7 +156,6 @@ Controls page.
   every player, with or without a save. Your save is never changed, and anything you unlock while playing is still
   saved, so turning it off puts you back where your save is.
 - **Your settings** are in `files\settings.toml`. Def Jam Vendetta Recompiled Settings writes it, and you can edit it by hand.
-- **Mods** are not supported yet, but are currently being worked on.
 
 <details>
 <summary><b>For developers: building from source</b></summary>
