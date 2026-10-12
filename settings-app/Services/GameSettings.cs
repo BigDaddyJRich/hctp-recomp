@@ -16,7 +16,7 @@ public sealed class GameSettings
     public bool Maximised = true;
     public int FullscreenWidth;             // 0 = the screen's own resolution
     public int FullscreenHeight;
-    public int RefreshRate = RefreshSmoothest;
+    public int RefreshRate = RefreshScreens;  // the screen's own (the default: no mode switch)
     public bool Vsync = true;
     public string Shape = "widescreen";     // widescreen (the default) | 4:3 | stretch
     // [graphics]
@@ -50,8 +50,8 @@ public sealed class GameSettings
         "maximised = true         # start maximised (window only)\n" +
         "fullscreen_width = 0     # fullscreen resolution; 0 = the screen's own\n" +
         "fullscreen_height = 0\n" +
-        "refresh_rate = \"smoothest\" # fullscreen only: \"smoothest\" (the highest multiple of 60 Hz the screen has),\n" +
-        "                         # a number such as 60 or 120, or 0 = the screen's own\n" +
+        "refresh_rate = 0         # fullscreen only: 0 = the screen's own (no switch), a number such as 60 or 120, or\n" +
+        "                         # \"smoothest\" (the highest multiple of 60 Hz the screen has: the game makes 60 frames a second)\n" +
         "vsync = true             # wait for the screen before showing each picture (no tearing)\n" +
         "shape = \"widescreen\"     # \"widescreen\" (matches at 16:9 with more of the arena; menus and movies 4:3),\n" +
         "                         # \"4:3\" (as on the PS2, bars at the sides) or \"stretch\" (fill the window)\n" +

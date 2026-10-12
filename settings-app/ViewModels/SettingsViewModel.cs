@@ -175,8 +175,8 @@ public partial class SettingsViewModel : ObservableObject
             var (w, h) = FullscreenSize(s);
             return Refresh?.Value switch
             {
-                GameSettings.RefreshSmoothest or null => s.SmoothestAt(w, h),
-                GameSettings.RefreshScreens => s.Current.Rate,
+                GameSettings.RefreshSmoothest => s.SmoothestAt(w, h),
+                GameSettings.RefreshScreens or null => s.Current.Rate,
                 var r => r.Value,
             };
         }
@@ -319,7 +319,7 @@ public partial class SettingsViewModel : ObservableObject
         Resolution is { Value: > 0 } r ? (r.Value, r.Value2) : (screen.Current.Width, screen.Current.Height);
 
     /// <summary>The resolutions and refresh rates of the chosen screen (keeping what is chosen).</summary>
-    private void RebuildChoices() => RebuildChoices(Resolution?.Value ?? 0, Resolution?.Value2 ?? 0, Refresh?.Value ?? GameSettings.RefreshSmoothest);
+    private void RebuildChoices() => RebuildChoices(Resolution?.Value ?? 0, Resolution?.Value2 ?? 0, Refresh?.Value ?? GameSettings.RefreshScreens);
 
     private void RebuildChoices(int width, int height, int rate)
     {
@@ -376,7 +376,7 @@ public partial class SettingsViewModel : ObservableObject
         Maximised = Maximised,
         FullscreenWidth = Resolution?.Value ?? 0,
         FullscreenHeight = Resolution?.Value2 ?? 0,
-        RefreshRate = Refresh?.Value ?? GameSettings.RefreshSmoothest,
+        RefreshRate = Refresh?.Value ?? GameSettings.RefreshScreens,
         Vsync = VsyncIndex == 1,
         Shape = ShapeIndex switch { 1 => "4:3", 2 => "stretch", _ => "widescreen" },
         Renderer = RendererIndex == 1 ? "cpu" : "gpu",

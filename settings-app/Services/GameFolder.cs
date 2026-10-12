@@ -200,18 +200,24 @@ public sealed class GameFolder
         if (IsGameRunning())
             return AlreadyRunning;
         Directory.CreateDirectory(LogsPath);
-        var log = Path.Combine(LogsPath, "game.log");
-        // through cmd, so the log keeps being written after this program closes; started in the game's folder
-        var start = new ProcessStartInfo("cmd.exe",
-            $"/c \"\"{exe}\" \"{ElfPath}\" > \"{log}\" 2> \"{log}.err\"\"")
+        // started directly, as a shortcut does: the game writes its own logs\game.log and game.log.err beside it (it has
+        // no console). It used to be started through cmd.exe for the log, and from there Windows left it behind this
+        // program: in fullscreen it then couldn't take the screen over. This program was just clicked, so it may let
+        // the game come to the front.
+        AllowSetForegroundWindow(AsfwAny);
+        var start = new ProcessStartInfo(exe, $"\"{ElfPath}\"")
         {
             WorkingDirectory = Data,
-            UseShellExecute = false,
-            CreateNoWindow = true,
+            UseShellExecute = true,
         };
         game = Process.Start(start);
         return null;
     }
+
+    private const int AsfwAny = -1;
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern bool AllowSetForegroundWindow(int processId);
 
     public static void Open(string pathOrUrl)
     {

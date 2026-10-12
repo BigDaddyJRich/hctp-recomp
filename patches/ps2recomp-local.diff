@@ -2650,10 +2650,10 @@ index 509fd07..71243e7 100644
  
      std::string CodeGenerator::translateVU_VMTIR(const Instruction &inst)
 diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
-index 589d768..ee7371f 100644
+index 589d768..ec80f47 100644
 --- a/ps2xRuntime/CMakeLists.txt
 +++ b/ps2xRuntime/CMakeLists.txt
-@@ -383,12 +383,20 @@ add_library(ps2_runtime STATIC
+@@ -383,12 +383,21 @@ add_library(ps2_runtime STATIC
      src/lib/gs/ps2_gs_memory.cpp
      src/lib/gs/gs_frontend.cpp
      src/lib/gs/gs_cpu_backend.cpp
@@ -2670,11 +2670,12 @@ index 589d768..ee7371f 100644
      src/lib/ps2_runtime.cpp
 +    src/lib/ps2_host_settings.cpp
 +    src/lib/ps2_host_update.cpp
++    src/lib/ps2_host_window.cpp
 +    src/lib/ps2_chain.cpp
      src/lib/ps2_vif1_interpreter.cpp
      src/lib/vu/ps2_vu1_core.cpp
      src/lib/vu/ps2_vu1_upper.cpp
-@@ -396,6 +404,27 @@ add_library(ps2_runtime STATIC
+@@ -396,6 +405,27 @@ add_library(ps2_runtime STATIC
      src/lib/games_database.cpp
  )
  
@@ -2702,7 +2703,7 @@ index 589d768..ee7371f 100644
  if(PS2X_ENABLE_RUNTIME_LOGS)
      target_compile_definitions(ps2_runtime PUBLIC
          PS2_RUNTIME_LOGS=1
-@@ -429,6 +458,12 @@ target_compile_definitions(ps2_runtime PRIVATE
+@@ -429,6 +459,12 @@ target_compile_definitions(ps2_runtime PRIVATE
      PS2X_HAS_FFMPEG=$<BOOL:${PS2X_ENABLE_FFMPEG}>
  )
  
@@ -2715,7 +2716,7 @@ index 589d768..ee7371f 100644
  file(GLOB_RECURSE KERNEL_SRC_FILES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/Kernel/*.cpp"
  )
-@@ -462,6 +497,17 @@ else()
+@@ -462,6 +498,17 @@ else()
      )
  endif()
  
@@ -2733,7 +2734,7 @@ index 589d768..ee7371f 100644
  if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
      set_target_properties(ps2EntryRunner PROPERTIES
          UNITY_BUILD ON
-@@ -507,6 +553,18 @@ target_include_directories(ps2_runtime PUBLIC
+@@ -507,6 +554,19 @@ target_include_directories(ps2_runtime PUBLIC
  )
  
  target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
@@ -2745,14 +2746,15 @@ index 589d768..ee7371f 100644
 +# The window's exact fullscreen mode (resolution and refresh rate) through GLFW, which raylib builds in on desktops
 +if(NOT PS2X_IS_VITA AND NOT PS2X_IS_ANDROID AND DEFINED raylib_SOURCE_DIR
 +   AND EXISTS "${raylib_SOURCE_DIR}/src/external/glfw/include/GLFW/glfw3.h")
-+    set_property(SOURCE src/lib/ps2_runtime.cpp src/lib/gs/gs_vulkan_present.cpp src/lib/ps2_host_input.cpp APPEND PROPERTY
-+        INCLUDE_DIRECTORIES "${raylib_SOURCE_DIR}/src/external/glfw/include")
-+    set_property(SOURCE src/lib/ps2_runtime.cpp src/lib/ps2_host_input.cpp APPEND PROPERTY COMPILE_DEFINITIONS PS2X_HAS_GLFW=1)
++    set_property(SOURCE src/lib/ps2_runtime.cpp src/lib/gs/gs_vulkan_present.cpp src/lib/ps2_host_input.cpp
++        src/lib/ps2_host_window.cpp APPEND PROPERTY INCLUDE_DIRECTORIES "${raylib_SOURCE_DIR}/src/external/glfw/include")
++    set_property(SOURCE src/lib/ps2_runtime.cpp src/lib/ps2_host_input.cpp src/lib/ps2_host_window.cpp APPEND PROPERTY
++        COMPILE_DEFINITIONS PS2X_HAS_GLFW=1)
 +endif()
  target_link_libraries(ps2EntryRunner
      PRIVATE
      ps2_runtime
-@@ -518,6 +576,18 @@ if(PS2X_ENABLE_DEBUG_UI AND NOT PS2X_IS_VITA AND NOT PS2X_IS_ANDROID)
+@@ -518,6 +578,18 @@ if(PS2X_ENABLE_DEBUG_UI AND NOT PS2X_IS_VITA AND NOT PS2X_IS_ANDROID)
      )
      target_link_libraries(ps2EntryRunner PRIVATE rlImGui imgui)
      target_compile_definitions(ps2EntryRunner PRIVATE PS2X_ENABLE_DEBUG_UI=1)
@@ -4521,6 +4523,26 @@ index 0000000..f98e608
 +    // gives up after 2 seconds; the popup waits for the player. Returns false when the player chose Update: the game
 +    // should end.
 +    bool checkAtStart();
++}
+diff --git a/ps2xRuntime/include/runtime/ps2_host_window.h b/ps2xRuntime/include/runtime/ps2_host_window.h
+new file mode 100644
+index 0000000..ffec6a2
+--- /dev/null
++++ b/ps2xRuntime/include/runtime/ps2_host_window.h
+@@ -0,0 +1,14 @@
++#pragma once
++
++struct GLFWwindow;
++
++// The game's window in fullscreen, when it loses the front. It is minimised (the screen gets its own mode back) only
++// when the player switched away: Alt-Tab, the Windows key, a click elsewhere. When another program takes the front
++// by itself (Microsoft Copilot's Quick View does at every screen mode change), the game stays fullscreen on screen:
++// one click or Alt-Tab brings it back, with no new mode change. Controllers keep working meanwhile; the keyboard goes
++// to the program in front until then.
++namespace ps2_host_window
++{
++    // Replaces GLFW's own minimise-on-focus-loss for this window (and keeps any focus callback already set).
++    void minimiseOnlyWhenThePlayerSwitchesAway(GLFWwindow *window);
 +}
 diff --git a/ps2xRuntime/include/runtime/ps2_memory.h b/ps2xRuntime/include/runtime/ps2_memory.h
 index ea86a9c..95396d6 100644
@@ -16236,10 +16258,10 @@ index 0000000..8bb1d56
 +}
 diff --git a/ps2xRuntime/src/lib/ps2_host_settings.cpp b/ps2xRuntime/src/lib/ps2_host_settings.cpp
 new file mode 100644
-index 0000000..18c9424
+index 0000000..4b6fb79
 --- /dev/null
 +++ b/ps2xRuntime/src/lib/ps2_host_settings.cpp
-@@ -0,0 +1,510 @@
+@@ -0,0 +1,516 @@
 +#include "runtime/ps2_host_settings.h"
 +
 +#include <algorithm>
@@ -16279,8 +16301,8 @@ index 0000000..18c9424
 +            "maximised = true         # start maximised (window only)\n"
 +            "fullscreen_width = 0     # fullscreen resolution; 0 = the screen's own\n"
 +            "fullscreen_height = 0\n"
-+            "refresh_rate = \"smoothest\" # fullscreen only: \"smoothest\" (the highest multiple of 60 Hz the screen has),\n"
-+            "                         # a number such as 60 or 120, or 0 = the screen's own\n"
++            "refresh_rate = 0         # fullscreen only: 0 = the screen's own (no switch), a number such as 60 or 120, or\n"
++            "                         # \"smoothest\" (the highest multiple of 60 Hz the screen has: the game makes 60 frames a second)\n"
 +            "vsync = true             # wait for the screen before showing each picture (no tearing)\n"
 +            "shape = \"widescreen\"     # \"widescreen\" (matches at 16:9 with more of the arena; menus and movies 4:3),\n"
 +            "                         # \"4:3\" (as on the PS2, bars at the sides) or \"stretch\" (fill the window)\n"
@@ -16533,9 +16555,15 @@ index 0000000..18c9424
 +            reader.boolean("display.maximised", s.maximised);
 +            reader.integer("display.fullscreen_width", s.fullscreenWidth, 0, 16384);
 +            reader.integer("display.fullscreen_height", s.fullscreenHeight, 0, 16384);
++            // the screen's own rate when the line is missing (the default since 0.1.3: no mode switch, which Microsoft
++            // Copilot's Quick View answers by taking the front); "smoothest" as before
 +            std::string refresh;
++            s.refreshRate = 0;
 +            if (reader.peek("display.refresh_rate", refresh) && lower(refresh) == "smoothest")
-+                reader.take("display.refresh_rate", refresh); // the default
++            {
++                reader.take("display.refresh_rate", refresh);
++                s.refreshRate = kRefreshSmoothest;
++            }
 +            else
 +                reader.integer("display.refresh_rate", s.refreshRate, 0, 1000);
 +            reader.boolean("display.vsync", s.vsync);
@@ -17088,6 +17116,83 @@ index 0000000..ed29a2e
 +    }
 +#endif
 +}
+diff --git a/ps2xRuntime/src/lib/ps2_host_window.cpp b/ps2xRuntime/src/lib/ps2_host_window.cpp
+new file mode 100644
+index 0000000..93beab2
+--- /dev/null
++++ b/ps2xRuntime/src/lib/ps2_host_window.cpp
+@@ -0,0 +1,71 @@
++#include "runtime/ps2_host_window.h"
++
++#if defined(PS2X_HAS_GLFW)
++#define GLFW_INCLUDE_NONE
++#include <GLFW/glfw3.h>
++
++#include <iostream>
++
++#if defined(_WIN32)
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <windows.h>
++#endif
++
++namespace ps2_host_window
++{
++    namespace
++    {
++        GLFWwindowfocusfun g_previous = nullptr;
++
++        // Did the player cause the focus loss? A key Windows switches with (Alt, Tab, Ctrl, the Windows keys) or a mouse
++        // button is down, or the player's last keyboard / mouse input was just now (the Windows key opens Start when it
++        // is let go). A program taking the front by itself comes with neither.
++        bool playerSwitchedAway()
++        {
++#if defined(_WIN32)
++            for (int key : {VK_MENU, VK_TAB, VK_CONTROL, VK_LWIN, VK_RWIN, VK_LBUTTON, VK_RBUTTON, VK_MBUTTON})
++                if (GetAsyncKeyState(key) & 0x8000)
++                    return true;
++            LASTINPUTINFO last{};
++            last.cbSize = sizeof(last);
++            if (GetLastInputInfo(&last) && GetTickCount() - last.dwTime < 1000u)
++                return true;
++            return false;
++#else
++            return true;
++#endif
++        }
++
++        void onFocus(GLFWwindow *window, int focused)
++        {
++            if (g_previous)
++                g_previous(window, focused);
++            if (focused || !glfwGetWindowMonitor(window))
++                return; // only a fullscreen window losing the front
++            if (playerSwitchedAway())
++            {
++                glfwIconifyWindow(window); // the screen gets its own mode back; clicking it or Alt-Tab restores both
++                return;
++            }
++            std::cerr << "[window] another program took the front by itself: the game stays fullscreen (a click or "
++                         "Alt-Tab brings it back)"
++                      << std::endl;
++        }
++    }
++
++    void minimiseOnlyWhenThePlayerSwitchesAway(GLFWwindow *window)
++    {
++        if (!window)
++            return;
++        glfwSetWindowAttrib(window, GLFW_AUTO_ICONIFY, GLFW_FALSE);
++        GLFWwindowfocusfun previous = glfwSetWindowFocusCallback(window, onFocus);
++        if (previous != onFocus)
++            g_previous = previous;
++    }
++}
++#endif
 diff --git a/ps2xRuntime/src/lib/ps2_iop_host.cpp b/ps2xRuntime/src/lib/ps2_iop_host.cpp
 index 8d46e03..a1a4eda 100644
 --- a/ps2xRuntime/src/lib/ps2_iop_host.cpp
@@ -18820,7 +18925,7 @@ index 0000000..c24f5c8
 +    }
 +}
 diff --git a/ps2xRuntime/src/lib/ps2_runtime.cpp b/ps2xRuntime/src/lib/ps2_runtime.cpp
-index 45cb9d2..67530fd 100644
+index 45cb9d2..9d5ad85 100644
 --- a/ps2xRuntime/src/lib/ps2_runtime.cpp
 +++ b/ps2xRuntime/src/lib/ps2_runtime.cpp
 @@ -1,3 +1,7 @@
@@ -18839,13 +18944,14 @@ index 45cb9d2..67530fd 100644
  #include <array>
  #include <cstring>
  #include <limits>
-@@ -26,6 +31,15 @@
+@@ -26,6 +31,16 @@
  #include <thread>
  #include <unordered_map>
  #include <sstream>
 +#if defined(PS2X_HAS_GLFW)
 +#define GLFW_INCLUDE_NONE
 +#include <GLFW/glfw3.h>
++#include "runtime/ps2_host_window.h"
 +#endif
 +#if defined(PS2X_HAS_GLFW) && defined(PS2X_HAS_PARALLEL_GS)
 +#include "gs/gs_vulkan_present.h"
@@ -18855,7 +18961,7 @@ index 45cb9d2..67530fd 100644
  
  namespace ps2_stubs
  {
-@@ -85,12 +99,30 @@ struct ProgramHeader
+@@ -85,12 +100,30 @@ struct ProgramHeader
      uint32_t align;
  };
  
@@ -18886,7 +18992,7 @@ index 45cb9d2..67530fd 100644
  
      constexpr uint32_t COP0_CAUSE_EXCCODE_MASK = 0x0000007Cu;
      constexpr uint32_t COP0_CAUSE_BD = 0x80000000u;
-@@ -373,10 +405,322 @@ namespace
+@@ -373,10 +406,330 @@ namespace
      }
  }
  
@@ -18982,9 +19088,10 @@ index 45cb9d2..67530fd 100644
 +                }
 +            }
 +            // Alt-Tab: raylib makes every window with GLFW_AUTO_ICONIFY off, so a fullscreen window (always on top)
-+            // stayed over the window Alt-Tab picked. On: losing focus minimises it and gives the screen back its own
-+            // mode; clicking it (or Alt-Tab back) restores both.
-+            glfwSetWindowAttrib(window, GLFW_AUTO_ICONIFY, GLFW_TRUE);
++            // stayed over the window Alt-Tab picked. Now losing focus to the player's own switch minimises it and gives
++            // the screen back its own mode (clicking it or Alt-Tab back restores both); another program taking the
++            // front by itself (Copilot's Quick View at a mode change) leaves it fullscreen (ps2_host_window).
++            ps2_host_window::minimiseOnlyWhenThePlayerSwitchesAway(window);
 +            glfwSetWindowMonitor(window, monitors[monitor], 0, 0, width, height, rate);
 +            switched = true;
 +        }
@@ -19037,7 +19144,8 @@ index 45cb9d2..67530fd 100644
 +
 +    // Made hidden, placed as the settings ask (window / maximised / borderless / fullscreen at its resolution and
 +    // rate, on its screen), painted black, then shown - for fullscreen the black window covers the screen first and
-+    // the mode changes under it (no desktop between). Losing focus in fullscreen minimises it (Alt-Tab).
++    // the mode changes under it (no desktop between). In fullscreen, losing focus to the player's own switch (Alt-Tab)
++    // minimises it; another program taking the front by itself doesn't (ps2_host_window).
 +    GLFWwindow *createVulkanWindow(const char *title)
 +    {
 +        const ps2_host_settings::Settings &settings = ps2_host_settings::get();
@@ -19062,6 +19170,7 @@ index 45cb9d2..67530fd 100644
 +        GLFWwindow *window = glfwCreateWindow(windowW, windowH, title, nullptr, nullptr);
 +        if (!window)
 +            return nullptr;
++        ps2_host_window::minimiseOnlyWhenThePlayerSwitchesAway(window);
 +
 +        switch (settings.mode)
 +        {
@@ -19070,12 +19179,14 @@ index 45cb9d2..67530fd 100644
 +            if (settings.maximised)
 +                glfwMaximizeWindow(window);
 +            glfwShowWindow(window);
++            glfwFocusWindow(window); // to the front (started from another program, Windows may leave it behind)
 +            break;
 +        case ps2_host_settings::WindowMode::Borderless:
 +            glfwSetWindowAttrib(window, GLFW_DECORATED, GLFW_FALSE);
 +            glfwSetWindowPos(window, monitorX, monitorY);
 +            glfwSetWindowSize(window, screenW, screenH);
 +            glfwShowWindow(window);
++            glfwFocusWindow(window);
 +            break;
 +        case ps2_host_settings::WindowMode::Fullscreen:
 +        {
@@ -19088,6 +19199,9 @@ index 45cb9d2..67530fd 100644
 +            glfwSetWindowPos(window, monitorX, monitorY);
 +            glfwSetWindowSize(window, screenW, screenH);
 +            glfwShowWindow(window);
++            // in front before the mode change: Windows only lets the window in front take the screen over (left behind,
++            // the game ran in the background and the screen kept its own rate)
++            glfwFocusWindow(window);
 +            paintWindowBlack(window);
 +            glfwPollEvents();
 +            std::cerr << "[window] fullscreen " << width << "x" << height << " at " << rate << " Hz"
@@ -19212,7 +19326,7 @@ index 45cb9d2..67530fd 100644
      static uint32_t s_lastDisplayFbp = std::numeric_limits<uint32_t>::max();
      static uint32_t s_lastSourceFbp = std::numeric_limits<uint32_t>::max();
      static bool s_lastPreferred = false;
-@@ -386,35 +730,29 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -386,35 +739,29 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      static std::vector<uint8_t> s_scratch;
      static std::vector<uint8_t> s_uploadBuffer(DEFAULT_FB_SIZE, 0u);
  
@@ -19261,7 +19375,7 @@ index 45cb9d2..67530fd 100644
          UpdateTexture(tex, blank.data);
          UnloadImage(blank);
          outWidth = FB_WIDTH;
-@@ -422,7 +760,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -422,7 +769,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
          s_lastWidth = outWidth;
          s_lastHeight = outHeight;
          s_hasUploadedFrame = true;
@@ -19270,7 +19384,7 @@ index 45cb9d2..67530fd 100644
      }
  
      PS2_IF_AGRESSIVE_LOGS({
-@@ -435,7 +773,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -435,7 +782,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
              height != s_lastHeight)
          {
              std::cout << "[frame:upload] idx=" << s_uploadDebugCount
@@ -19279,7 +19393,7 @@ index 45cb9d2..67530fd 100644
                        << " displayFbp=" << displayFbp
                        << " sourceFbp=" << sourceFbp
                        << " size=" << width << "x" << height
-@@ -475,6 +813,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
+@@ -475,6 +822,7 @@ static void UploadFrame(Texture2D &tex, PS2Runtime *rt, uint32_t &outWidth, uint
      outWidth = width;
      outHeight = height;
      s_hasUploadedFrame = true;
@@ -19287,7 +19401,7 @@ index 45cb9d2..67530fd 100644
  }
  
  PS2Runtime::PS2Runtime()
-@@ -503,8 +842,8 @@ PS2Runtime::PS2Runtime()
+@@ -503,8 +851,8 @@ PS2Runtime::PS2Runtime()
      m_guestHeapLimit = std::min(kGuestHeapHardLimit, PS2_RAM_SIZE);
      m_guestHeapSuggestedBase = kGuestHeapDefaultBase;
      m_guestHeapConfigured = false;
@@ -19298,7 +19412,7 @@ index 45cb9d2..67530fd 100644
  }
  
  void PS2Runtime::setDebugUiCallbacks(DebugUiCallback initCallback,
-@@ -599,6 +938,12 @@ ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx,
+@@ -599,6 +947,12 @@ ps2x::iop::RpcResult PS2Runtime::handleIopRpc(uint8_t *rdram, R5900Context *ctx,
      return m_iopSubsystem->handleRpc(request);
  }
  
@@ -19311,7 +19425,7 @@ index 45cb9d2..67530fd 100644
  void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransfer &transfer)
  {
      auto scope = m_iopHost->enterCall(nullptr, rdram);
-@@ -607,6 +952,7 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
+@@ -607,6 +961,7 @@ void PS2Runtime::notifyIopSifTransfer(uint8_t *rdram, const ps2x::iop::SifTransf
  
  void PS2Runtime::advanceIopEeCycles(uint64_t eeCycles) noexcept
  {
@@ -19319,7 +19433,7 @@ index 45cb9d2..67530fd 100644
      m_iopSubsystem->runEeCycles(eeCycles);
  }
  
-@@ -665,45 +1011,32 @@ bool PS2Runtime::syncCoreSubsystems()
+@@ -665,45 +1020,32 @@ bool PS2Runtime::syncCoreSubsystems()
      }
  
      m_gs.init(gsVram, static_cast<uint32_t>(PS2_GS_VRAM_SIZE), &m_memory.gs());
@@ -19380,7 +19494,7 @@ index 45cb9d2..67530fd 100644
      resetIop();
      m_vu0.reset();
      m_vu1.reset();
-@@ -731,12 +1064,70 @@ bool PS2Runtime::initialize(const char *title)
+@@ -731,12 +1073,70 @@ bool PS2Runtime::initialize(const char *title)
  #if defined(PLATFORM_VITA)
          InitWindow(HOST_WINDOW_WIDTH, HOST_WINDOW_HEIGHT, title); // raylib vita does not support audio
  #else
@@ -19454,7 +19568,7 @@ index 45cb9d2..67530fd 100644
          if (m_debugUiInitCallback)
          {
              m_debugUiInitCallback(*this, m_debugUiUserData);
-@@ -971,9 +1362,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+@@ -971,9 +1371,8 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
      }
      {
          std::lock_guard<std::mutex> lock(m_asyncCallbackStackMutex);
@@ -19466,7 +19580,7 @@ index 45cb9d2..67530fd 100644
      }
  
      LoadedModule module;
-@@ -1013,6 +1403,17 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
+@@ -1013,6 +1412,17 @@ bool PS2Runtime::loadELF(const std::string &elfPath)
      return true;
  }
  
@@ -19484,7 +19598,7 @@ index 45cb9d2..67530fd 100644
  const PS2Runtime::IoPaths &PS2Runtime::getIoPaths()
  {
      return runtimeIoPaths();
-@@ -1316,6 +1717,16 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
+@@ -1316,6 +1726,16 @@ void PS2Runtime::reportMissingFunction(uint8_t *rdram,
              << " policy=" << static_cast<uint32_t>(policy)
              << " trace=" << formatDispatchHistory()
              << std::dec;
@@ -19501,7 +19615,7 @@ index 45cb9d2..67530fd 100644
  
          static std::mutex s_missingFunctionLogMutex;
          {
-@@ -1396,14 +1807,32 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
+@@ -1396,14 +1816,32 @@ bool PS2Runtime::dispatchGuestBranch(uint8_t *rdram,
  
      RecompiledFunction targetFn = lookupFunction(targetPc);
      const uint32_t entryPc = ctx->pc;
@@ -19536,7 +19650,7 @@ index 45cb9d2..67530fd 100644
      {
          ctx->pc = fallthroughPc;
      }
-@@ -1945,12 +2374,96 @@ uint32_t PS2Runtime::guestRealloc(uint32_t guestAddr, uint32_t newSize, uint32_t
+@@ -1945,12 +2383,96 @@ uint32_t PS2Runtime::guestRealloc(uint32_t guestAddr, uint32_t newSize, uint32_t
      return newAddr;
  }
  
@@ -19633,7 +19747,7 @@ index 45cb9d2..67530fd 100644
  
      std::lock_guard<std::mutex> lock(m_guestHeapMutex);
      ensureGuestHeapInitializedLocked();
-@@ -2039,10 +2552,36 @@ uint16_t PS2Runtime::Load16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
+@@ -2039,10 +2561,36 @@ uint16_t PS2Runtime::Load16(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
      }
  }
  
@@ -19670,7 +19784,7 @@ index 45cb9d2..67530fd 100644
          return m_memory.read32(vaddr);
      }
      catch (const std::exception &)
-@@ -2056,6 +2595,8 @@ uint64_t PS2Runtime::Load64(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
+@@ -2056,6 +2604,8 @@ uint64_t PS2Runtime::Load64(uint8_t *rdram, R5900Context *ctx, uint32_t vaddr)
  {
      try
      {
@@ -19679,7 +19793,7 @@ index 45cb9d2..67530fd 100644
          return m_memory.read64(vaddr);
      }
      catch (const std::exception &)
-@@ -2187,6 +2728,14 @@ void PS2Runtime::requestStop()
+@@ -2187,6 +2737,14 @@ void PS2Runtime::requestStop()
      {
          m_eeScheduler->requestStop();
      }
@@ -19694,7 +19808,7 @@ index 45cb9d2..67530fd 100644
  }
  
  bool PS2Runtime::isStopRequested() const
-@@ -2339,8 +2888,12 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
+@@ -2339,8 +2897,12 @@ void PS2Runtime::HandleIntegerOverflow(R5900Context *ctx)
      raiseCop0Exception(ctx, EXCEPTION_INTEGER_OVERFLOW);
  }
  
@@ -19707,7 +19821,7 @@ index 45cb9d2..67530fd 100644
      m_stopRequested.store(false, std::memory_order_relaxed);
      ps2_stubs::resetSifState();
      resetIop();
-@@ -2361,12 +2914,34 @@ void PS2Runtime::run()
+@@ -2361,12 +2923,34 @@ void PS2Runtime::run()
      Image blank = GenImageColor(FB_WIDTH, FB_HEIGHT, BLANK);
      Texture2D frameTex = LoadTextureFromImage(blank);
      UnloadImage(blank);
@@ -19742,7 +19856,7 @@ index 45cb9d2..67530fd 100644
          try
          {
              m_eeScheduler->reset(m_memory.getRDRAM(), m_cpuContext);
-@@ -2422,23 +2997,74 @@ void PS2Runtime::run()
+@@ -2422,23 +3006,74 @@ void PS2Runtime::run()
          });
          uint32_t presentWidth = FB_WIDTH;
          uint32_t presentHeight = DEFAULT_DISPLAY_HEIGHT;
@@ -19825,7 +19939,7 @@ index 45cb9d2..67530fd 100644
          DrawTexturePro(frameTex, srcRect, dstRect, Vector2{0.0f, 0.0f}, 0.0f, WHITE);
          if (m_debugUiInitialized && m_debugUiDrawCallback)
          {
-@@ -2446,6 +3072,33 @@ void PS2Runtime::run()
+@@ -2446,6 +3081,33 @@ void PS2Runtime::run()
          }
          EndDrawing();
  
@@ -19859,7 +19973,7 @@ index 45cb9d2..67530fd 100644
          if (WindowShouldClose())
          {
              RUNTIME_LOG("[run] window close requested, breaking out of loop");
-@@ -2459,12 +3112,22 @@ void PS2Runtime::run()
+@@ -2459,12 +3121,22 @@ void PS2Runtime::run()
      {
          gameThread.join();
      }
