@@ -20,20 +20,24 @@ Vendetta (PlayStation 2, USA, **SLUS-20639**) as an `.iso` or `.chd`, and everyt
 
 <img src="images/game-match.jpg" alt="Briggs against Spider in The Face Club, widescreen at 16x" width="100%">
 
-## PS2 vs PC
+## Features
 
-| | PS2 | PC |
-| --- | --- | --- |
-| **Resolution** | 640 × 448 | up to 16× (supersampled), scaled to your screen with AMD FSR |
-| **Aspect ratio** | 4:3 | 16:9 in matches, 4:3 menus and movies |
-| **HUD, text and menus** | native resolution | the same scale as the 3D (Sharp 2D, optional) |
-| **Models in 3- and 4-fighter matches** | Low Poly | High Poly (optional) |
-| **Players** | 4 with a multitap | 4 controllers, plus the keyboard |
-| **Vibration** | DualShock 2 | Xbox-style controllers |
-| **Camera** | Def Jam Vendetta's | Def Jam Vendetta's, WWF No Mercy style or Wrestle Kingdom 2 style |
-| **Graphics** | the PS2's graphics chip | Vulkan on your graphics card |
-| **Display** | TV | window, borderless or fullscreen |
-| **Saves** | memory card | memory card files on your PC |
+**Picture**
+- Up to 16× resolution, scaled to your screen with AMD FSR
+- Widescreen matches at 16:9 with more of the arena (menus and movies stay 4:3)
+- Sharp 2D: the HUD, text and menus as sharp as the 3D
+- High Poly in every match (the PS2 used lower detail models with 3 or 4 fighters)
+- Vulkan on your graphics card, in a window, borderless or fullscreen
+
+**Playing**
+- Up to 4 players on controllers, plus the keyboard as any player
+- Vibration on Xbox-style controllers
+- Camera styles: the game's own, WWF No Mercy or Wrestle Kingdom 2
+- Unlock everything, without touching your save
+
+**Easy to use**
+- A settings program that sets everything up from your disc and updates itself
+- Your saves stay as memory card files on your PC
 
 ## Screenshots
 
@@ -96,19 +100,23 @@ kept.
 
 <table>
 <tr>
-<td width="33%"><img src="images/settings-display.png" alt="Display"></td>
-<td width="33%"><img src="images/settings-graphics.png" alt="Graphics"></td>
-<td width="33%"><img src="images/settings-controls.png" alt="Controls"></td>
+<td width="50%"><img src="images/settings-display.png" alt="Display"></td>
+<td width="50%"><img src="images/settings-graphics.png" alt="Graphics"></td>
+</tr>
+<tr>
+<td><img src="images/settings-controls.png" alt="Controls"></td>
+<td><img src="images/settings-gameplay.png" alt="Gameplay"></td>
 </tr>
 </table>
 
 - **Display:** window, borderless or fullscreen, which screen, fullscreen resolution and refresh rate, VSync, and
   widescreen, 4:3 or stretched.
 - **Graphics:** graphics card or CPU, scale 1× to 16×, Sharp 2D, FSR, smooth or blocky scaling with sharpening,
-  High Poly in every match, and the camera style.
+  and High Poly in every match.
 - **Sound:** volume and the arena reverb.
 - **Controls:** up to 4 players, each player's controller and vibration, which player the keyboard plays as, and what
   every button does.
+- **Gameplay:** the camera style in matches, and Unlock everything.
 - **About:** the version, your game folder and save data in one click, and what it's made with.
 
 ## Controls
@@ -135,9 +143,15 @@ Controls page.
 - **Running slowly?** 16× (the default) needs a fairly strong graphics card: try 8× on the Graphics page.
 - **The very first start** is slow for about a minute while the graphics card prepares its shaders.
 - **Vibration** can also be turned off in the game's own pause menu.
-- **Camera styles:** Def Jam Vendetta's own camera, WWF No Mercy style or Wrestle Kingdom 2 style
-  (the ring seen from a corner, like a diamond). With Wrestle Kingdom 2's view the D-pad and left stick are turned to
-  match it, so up still moves up the screen.
+- **Camera styles** (on the Gameplay page):
+  - **Def Jam Vendetta:** the game's own camera, the default.
+  - **WWF No Mercy style:** looking down on the ring from the side, without swinging round the fighters.
+  - **Wrestle Kingdom 2 style:** the ring seen from a corner, like a diamond. The D-pad and left stick are turned to
+    match it, so up still moves up the screen.
+  - Intros, entrances and finishers keep the game's own camera in every style.
+- **Unlock everything** (on the Gameplay page, off by default): every wrestler, attire, arena and gallery picture for
+  every player, with or without a save. Your save is never changed, and anything you unlock while playing is still
+  saved, so turning it off puts you back where your save is.
 - **Your settings** are in `files\settings.toml`. Def Jam Vendetta Recompiled Settings writes it, and you can edit it by hand.
 - **Mods** are not supported yet, but are currently being worked on.
 
@@ -182,6 +196,7 @@ The game reads `settings.toml` from its folder. A switch set before `run.bat` wi
 | `VENDETTA_KEYBOARD=1..4/0` | the keyboard's player (`keyboard`, 0 = nobody) |
 | `VENDETTA_SPU_INTERP=linear` | the sound chip's voices interpolated linearly instead of the PS2's Gaussian |
 | `VENDETTA_CAMERA=vendetta/nomercy/wk2` | the camera style (`camera`) |
+| `VENDETTA_UNLOCKALL=1/0` | unlock everything (`unlock_all`) |
 | `VENDETTA_PRESENT=opengl` | the older OpenGL window instead of the Vulkan one |
 
 F1 shows the debug panel. In the repository: `config\` (the recompiler's inputs: the function map from Ghidra, Sony

@@ -23,6 +23,7 @@ public partial class SettingsViewModel : ObservableObject
         nameof(ShapeIndex), nameof(RendererIndex), nameof(ScaleIndex), nameof(FilterIndex), nameof(Sharpening),
         nameof(Volume), nameof(Reverb), nameof(Multitap), nameof(Vibration1), nameof(Vibration2), nameof(Vibration3),
         nameof(Vibration4), nameof(HighPoly), nameof(Sharp2D), nameof(KeyboardIndex), nameof(CheckUpdates), nameof(CameraIndex),
+        nameof(UnlockAll),
     };
 
     private readonly GameFolder _folder;
@@ -96,13 +97,15 @@ public partial class SettingsViewModel : ObservableObject
         (Vibration1 || Vibration2 || Vibration3 || Vibration4 ? "on" : "off");
 
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(IsDisplayTab), nameof(IsGraphicsTab), nameof(IsSoundTab), nameof(IsControlsTab))]
+    [NotifyPropertyChangedFor(nameof(IsDisplayTab), nameof(IsGraphicsTab), nameof(IsSoundTab), nameof(IsControlsTab),
+        nameof(IsGameplayTab))]
     private int _tabIndex;
 
     public bool IsDisplayTab => TabIndex == 0;
     public bool IsGraphicsTab => TabIndex == 1;
     public bool IsSoundTab => TabIndex == 2;
     public bool IsControlsTab => TabIndex == 3;
+    public bool IsGameplayTab => TabIndex == 4;
 
     // Display
     [ObservableProperty] private int _modeIndex;
@@ -129,6 +132,8 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private double _volume;
     [ObservableProperty] private bool _reverb;
     // Controls
+    // Gameplay
+    [ObservableProperty] private bool _unlockAll;
     [ObservableProperty] private bool _multitap;
     [ObservableProperty] private int _keyboardIndex;   // 0-3 = players 1-4, 4 = nobody
     [ObservableProperty] private bool _vibration1;
@@ -299,6 +304,7 @@ public partial class SettingsViewModel : ObservableObject
             Vibration3 = s.Vibration[2];
             Vibration4 = s.Vibration[3];
             KeyboardIndex = s.Keyboard is >= 1 and <= 4 ? s.Keyboard - 1 : 4;
+            UnlockAll = s.UnlockAll;
             CheckUpdates = s.CheckUpdates;
         }
         finally
@@ -385,6 +391,7 @@ public partial class SettingsViewModel : ObservableObject
         Multitap = Multitap,
         Vibration = new[] { Vibration1, Vibration2, Vibration3, Vibration4 },
         Keyboard = KeyboardIndex is >= 0 and <= 3 ? KeyboardIndex + 1 : 0,
+        UnlockAll = UnlockAll,
         CheckUpdates = CheckUpdates,
     };
 

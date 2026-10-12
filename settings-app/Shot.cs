@@ -57,6 +57,7 @@ internal static class Shot
         s.ShapeIndex = 1;
         s.Multitap = false;
         s.Vibration3 = false;
+        s.UnlockAll = true;
         Console.WriteLine($"status: {s.Status}");
         Console.WriteLine($"summary: {s.SummaryWindow} | {s.SummaryPicture} | {s.SummaryPlayers}");
         Console.WriteLine("--- settings.toml now:");

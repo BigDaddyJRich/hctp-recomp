@@ -80,7 +80,7 @@ public partial class MainViewModel : ObservableObject
         foreach (var name in new[]
                  {
                      nameof(IsPlay), nameof(IsSettings), nameof(IsAbout), nameof(IsDisplay), nameof(IsGraphics),
-                     nameof(IsSound), nameof(IsControls), nameof(ShowOpenFolder),
+                     nameof(IsSound), nameof(IsControls), nameof(IsGameplay), nameof(ShowOpenFolder),
                  })
             OnPropertyChanged(name);
         OnStatusChanged();
@@ -117,6 +117,7 @@ public partial class MainViewModel : ObservableObject
     public bool IsGraphics => IsSettings && Settings.TabIndex == 1;
     public bool IsSound => IsSettings && Settings.TabIndex == 2;
     public bool IsControls => IsSettings && Settings.TabIndex == 3;
+    public bool IsGameplay => IsSettings && Settings.TabIndex == 4;
     /// <summary>The header's grey button: Open game folder, or on the settings pages Reset to defaults.</summary>
     public bool ShowOpenFolder => !IsSettings;
 
@@ -195,6 +196,7 @@ public partial class MainViewModel : ObservableObject
     [RelayCommand] private void ShowGraphics() => ShowSettingsTab(1);
     [RelayCommand] private void ShowSound() => ShowSettingsTab(2);
     [RelayCommand] private void ShowControls() => ShowSettingsTab(3);
+    [RelayCommand] private void ShowGameplay() => ShowSettingsTab(4);
     [RelayCommand] private void ShowAbout() => PageIndex = 2;
 
     private void ShowSettingsTab(int tab)
@@ -234,7 +236,7 @@ public partial class MainViewModel : ObservableObject
     /// <summary>When the window has opened: an update left halfway, or a check for a new one.</summary>
     public Task OnOpenedAsync() => _readOnly ? Task.CompletedTask : Updates.StartAsync(InSetup); // not for pictures
 
-    /// <summary>For pictures of the pages (--shot): play, display, graphics, sound, controls, about, setup1, setup2,
+    /// <summary>For pictures of the pages (--shot): play, display, graphics, sound, controls, gameplay, about, setup1, setup2,
     /// setupdone.</summary>
     public void ShowPage(string page)
     {
@@ -253,6 +255,7 @@ public partial class MainViewModel : ObservableObject
             case "graphics": ShowSettingsTab(1); break;
             case "sound": ShowSettingsTab(2); break;
             case "controls": ShowSettingsTab(3); break;
+            case "gameplay": ShowSettingsTab(4); break;
             default: PageIndex = 0; break;
         }
     }

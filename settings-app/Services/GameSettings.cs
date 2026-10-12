@@ -34,6 +34,8 @@ public sealed class GameSettings
     public bool Multitap = true;            // up to 4 players (a multitap in port 2)
     public bool[] Vibration = { true, true, true, true }; // per player
     public int Keyboard = 0;                // the player the keyboard plays as: 1-4, 0 = nobody (the default)
+    // [gameplay]
+    public bool UnlockAll;                  // every wrestler, attire, arena and picture, the save unchanged
     // [updates] (this program's own: the game skips the section)
     public bool CheckUpdates = true;        // ask GitHub for a newer version when this program opens
 
@@ -75,7 +77,11 @@ public sealed class GameSettings
         "vibration_2 = true\n" +
         "vibration_3 = true\n" +
         "vibration_4 = true\n" +
-        "keyboard = 0             # which player the keyboard plays as (with their controller): 1-4, 0 = nobody\n";
+        "keyboard = 0             # which player the keyboard plays as (with their controller): 1-4, 0 = nobody\n" +
+        "\n" +
+        "[gameplay]\n" +
+        "unlock_all = false       # every wrestler, attire, arena and picture for every player, with or without a save.\n" +
+        "                         # The save itself is not changed (false = what the save has unlocked)\n";
 
     public static GameSettings Load(string path)
     {
@@ -115,6 +121,7 @@ public sealed class GameSettings
                 case "controls.vibration_3": s.Vibration[2] = Bool(value, s.Vibration[2]); break;
                 case "controls.vibration_4": s.Vibration[3] = Bool(value, s.Vibration[3]); break;
                 case "controls.keyboard": s.Keyboard = Int(value, s.Keyboard, 0, 4); break;
+                case "gameplay.unlock_all": s.UnlockAll = Bool(value, s.UnlockAll); break;
                 case "updates.check_on_open": s.CheckUpdates = Bool(value, s.CheckUpdates); break;
             }
         }
@@ -153,6 +160,7 @@ public sealed class GameSettings
             ("controls", "vibration_3", Vibration[2] ? "true" : "false"),
             ("controls", "vibration_4", Vibration[3] ? "true" : "false"),
             ("controls", "keyboard", Keyboard.ToString(CultureInfo.InvariantCulture)),
+            ("gameplay", "unlock_all", UnlockAll ? "true" : "false"),
             ("updates", "check_on_open", CheckUpdates ? "true" : "false"),
         };
         foreach (var (section, key, value) in values)

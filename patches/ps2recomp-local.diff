@@ -16201,10 +16201,10 @@ index 0000000..8bb1d56
 +}
 diff --git a/ps2xRuntime/src/lib/ps2_host_settings.cpp b/ps2xRuntime/src/lib/ps2_host_settings.cpp
 new file mode 100644
-index 0000000..6ac44a6
+index 0000000..93881ad
 --- /dev/null
 +++ b/ps2xRuntime/src/lib/ps2_host_settings.cpp
-@@ -0,0 +1,494 @@
+@@ -0,0 +1,502 @@
 +#include "runtime/ps2_host_settings.h"
 +
 +#include <algorithm>
@@ -16271,7 +16271,11 @@ index 0000000..6ac44a6
 +            "vibration_2 = true\n"
 +            "vibration_3 = true\n"
 +            "vibration_4 = true\n"
-+            "keyboard = 0             # which player the keyboard plays as (with their controller): 1-4, 0 = nobody\n";
++            "keyboard = 0             # which player the keyboard plays as (with their controller): 1-4, 0 = nobody\n"
++            "\n"
++            "[gameplay]\n"
++            "unlock_all = false       # every wrestler, attire, arena and picture for every player, with or without a save.\n"
++            "                         # The save itself is not changed (false = what the save has unlocked)\n";
 +
 +        std::string trim(const std::string &text)
 +        {
@@ -16515,6 +16519,10 @@ index 0000000..6ac44a6
 +            int keyboard = 0;
 +            reader.integer("controls.keyboard", keyboard, 0, 4);
 +            fillSwitch("VENDETTA_KEYBOARD", std::to_string(keyboard));
++            // unlock everything (vendetta_unlocks.cpp, VENDETTA_UNLOCKALL): off by default, also when the line is missing
++            bool unlockAll = false;
++            reader.boolean("gameplay.unlock_all", unlockAll);
++            fillSwitch("VENDETTA_UNLOCKALL", unlockAll ? "1" : "0");
 +
 +            // the ones the runtime already reads as switches
 +            if (const int renderer = reader.choice("graphics.renderer", {"gpu", "cpu"}); renderer >= 0)

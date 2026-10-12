@@ -57,6 +57,7 @@
                     <Button Classes="nav sub" Classes.active="{Binding IsGraphics}" Content="Graphics" Command="{Binding ShowGraphicsCommand}" />
                     <Button Classes="nav sub" Classes.active="{Binding IsSound}" Content="Sound" Command="{Binding ShowSoundCommand}" />
                     <Button Classes="nav sub" Classes.active="{Binding IsControls}" Content="Controls" Command="{Binding ShowControlsCommand}" />
+                    <Button Classes="nav sub" Classes.active="{Binding IsGameplay}" Content="Gameplay" Command="{Binding ShowGameplayCommand}" />
                     <Button Classes="nav" Classes.active="{Binding IsAbout}" Content="About" Command="{Binding ShowAboutCommand}"
                             Margin="0,10,0,0" />
                 </StackPanel>
