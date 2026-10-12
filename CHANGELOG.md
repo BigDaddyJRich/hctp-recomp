@@ -5,6 +5,26 @@ The newest version is at the top.
 
 ---
 
+## 0.1.3
+
+### Fixed
+- **Fullscreen no longer drops you back to the desktop.** Some programs, like Microsoft Copilot, jump to the front when
+  the screen changes its refresh rate, which sent the game to the background and made Alt-Tab bounce straight back
+  out. The game now stays fullscreen when another program does that, and only minimises when you switch away
+  yourself (Alt-Tab, the Windows key or a click elsewhere).
+- Pressing **PLAY** in the settings program brings the game to the front reliably.
+
+### Better
+- **New installs use your screen's own refresh rate** in fullscreen, so the screen doesn't switch at all. You can still
+  pick "Smoothest" or a fixed rate under Display. If you installed an earlier version, your setting stays as it is.
+
+### Good to know
+- To update, press **Update** when the game asks as it starts, or on the settings program's Play page. Your saves and
+  settings stay as they are.
+- After the update Windows may show "Windows protected your PC" again (the program isn't signed yet): click
+  **More info**, then **Run anyway**.
+- Mod support is actively being worked on and will come in a future update.
+
 ## 0.1.2
 
 ### Better
