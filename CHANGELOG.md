@@ -5,6 +5,31 @@ The newest version is at the top.
 
 ---
 
+## 0.2.0
+
+### New
+- **Quit on the main menu.** The main menu has a new item at the end, with the game's own EXIT picture. Press Cross
+  on it and the game asks "Quit the game?". Cross closes the game, Triangle goes back.
+- **Refresh rate "Automatic", the new default for new installs.** It keeps your screen's own rate when that already
+  suits the game (60, 120 or 240 Hz, or a TV's 59.94), so nothing switches. Otherwise it picks the smoothest rate your
+  screen has. It's worked out every time the game starts, so a new monitor or TV is handled too. If you installed an
+  earlier version, you can choose it under Display.
+
+### Better
+- **The first setup copes when the build stops.** If the build stops partway, often because the PC ran short of
+  memory or an antivirus held a file, it now tries again by itself, more slowly, and carries on from where it stopped.
+- **Clearer errors.** If the setup or an update can't finish, it says which step stopped, shows the build's own error
+  lines and gives advice for the common causes. You can copy the text, and the setup log now keeps every try, so
+  problems are easy to report.
+- The update notice on the Play page lists a new version's main points one per line.
+
+### Good to know
+- To update, press **Update** when the game asks as it starts, or on the settings program's Play page. Your saves and
+  settings stay as they are.
+- After the update Windows may show "Windows protected your PC" again (the program isn't signed yet): click
+  **More info**, then **Run anyway**.
+- Mod support is actively being worked on and will come in a future update.
+
 ## 0.1.3
 
 ### Fixed
