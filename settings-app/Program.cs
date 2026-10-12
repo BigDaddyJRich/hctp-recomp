@@ -27,6 +27,14 @@ internal static class Program
             Environment.ExitCode = Shot.SelfTestUpdate().GetAwaiter().GetResult();
             return;
         }
+        // Dev: an update's rebuild output replayed through the update page: --selftest-progress <update-build.log>
+        if (args.Length >= 2 && args[0] == "--selftest-progress")
+        {
+            var updates = new ViewModels.UpdateViewModel(Services.GameFolder.Find(), () => false, () => { });
+            foreach (var shown in updates.ReplayRebuild(File.ReadLines(args[1])))
+                Console.WriteLine(shown);
+            return;
+        }
         // Dev: the saving checked on a scratch folder (VENDETTA_ROOT): --selftest [play]
         if (args.Length >= 1 && args[0] == "--selftest")
         {

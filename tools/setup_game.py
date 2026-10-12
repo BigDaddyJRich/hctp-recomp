@@ -205,13 +205,25 @@ def step_recompiler(env, data):
     return exe
 
 
+def sync_progress(start, end):
+    """sync_generated.py's "Checking which files changed: N of T" lines, as progress within the step."""
+    def parse(line):
+        m = re.match(r'Checking which files changed: ([\d,]+) of ([\d,]+)', line)
+        if m:
+            done, total = (int(g.replace(',', '')) for g in m.groups())
+            progress(start + (end - start) * done / max(1, total))
+    return parse
+
+
 def step_recompile(recompiler, data):
     step(4, STEPS[3])
     env = dict(os.environ, VENDETTA_DATA=data)
     logs = os.path.join(data, 'logs')
     os.makedirs(logs, exist_ok=True)
+    # where the time goes (an update, 2026-10-12): the recompiler ~0.5 min, the file comparison ~6 min
     run([sys.executable, os.path.join(SRC, 'tools', 'make_config.py')], env=env, cwd=SRC)
-    progress(0.05)
+    progress(0.02)
+    say("Turning the game's code into C++")
     log = os.path.join(logs, 'recomp.log')
     say(f'> {recompiler} config/vendetta.toml (its output: {log})')
     with open(log, 'w', encoding='utf-8', errors='replace') as out:
@@ -219,10 +231,11 @@ def step_recompile(recompiler, data):
                               stdout=out, stderr=subprocess.STDOUT).returncode
     if code != 0:
         raise SetupError(f'the recompiler failed (exit code {code}); see {log}')
-    progress(0.75)
+    progress(0.15)
     run([sys.executable, os.path.join(SRC, 'tools', 'vu1_recomp.py')], env=env, cwd=SRC)
-    progress(0.85)
-    run([sys.executable, os.path.join(SRC, 'tools', 'sync_generated.py')], env=env, cwd=SRC)
+    progress(0.18)
+    run([sys.executable, os.path.join(SRC, 'tools', 'sync_generated.py')], env=env, cwd=SRC,
+        parse=sync_progress(0.18, 1.0))
     progress(1.0)
 
 

@@ -10,7 +10,11 @@ include = os.path.join(root, 'PS2Recomp', 'ps2xRuntime', 'include')
 HEADERS = {'ps2_recompiled_functions.h', 'ps2_recompiled_stubs.h'}
 changed = added = 0
 names = set(os.listdir(gen))
-for n in names:
+# reading ~25,000 files takes minutes: say how far it is (the setup turns these lines into progress)
+total = len(names)
+for i, n in enumerate(sorted(names), 1):
+    if i % 1000 == 0 or i == total:
+        print(f'Checking which files changed: {i:,} of {total:,}', flush=True)
     dst = os.path.join(include if n in HEADERS else runner, n)
     src = os.path.join(gen, n)
     if os.path.exists(dst):

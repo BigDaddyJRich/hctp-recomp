@@ -30,7 +30,15 @@ public partial class UpdateViewModel : ObservableObject
 
     // the setup's 6 steps (tools\setup_game.py) within "Rebuilding the game": the disc is already read, the tools are
     // there, so the recompiler, the recompile and above all the game's build take the time
-    private static readonly double[] SetupWeights = { 0.01, 0.04, 0.10, 0.20, 0.63, 0.02 };
+    // weights from a real update (0.1.0 to 0.1.1, 2026-10-12): the steps before ~0.5 min, turning the code into C++ and
+    // checking which files changed ~6.5 min, the build ~1 min (longer when more changed)
+    private static readonly double[] SetupWeights = { 0.01, 0.02, 0.04, 0.60, 0.31, 0.02 };
+    private static readonly string[] SetupParts =
+    {
+        "reading your disc", "the build tools", "the recompiler", "turning the game's code into C++ and checking what changed",
+        "building the game", "finishing",
+    };
+    private readonly Stopwatch _setupClock = new(); // since the rebuild's current part began
 
     public UpdateViewModel(GameFolder folder, Func<bool> checkOnOpen, Action quit)
     {
@@ -341,6 +349,7 @@ public partial class UpdateViewModel : ObservableObject
         Stage = 1;
         _setupStep = -1;
         _setupProgress = 0;
+        Steps[3].Note = "a few minutes";
         LastLine = "Rebuilding the game with the new version…";
         if (GameFolder.IsGameRunning())
         {
@@ -409,6 +418,10 @@ public partial class UpdateViewModel : ObservableObject
             {
                 _setupStep = n - 1;
                 _setupProgress = 0;
+                _setupClock.Restart();
+                LastLine = "";
+                if (_setupStep >= 0 && _setupStep < SetupParts.Length)
+                    Steps[3].Note = $"{n} of {SetupParts.Length}: {SetupParts[_setupStep]}";
                 RebuildProgress();
             }
             return;
@@ -422,9 +435,8 @@ public partial class UpdateViewModel : ObservableObject
             }
             return;
         }
-        if (line == "[done]" || line.Trim().Length == 0)
-            return;
-        LastLine = line.Length > 160 ? line[..160] + "…" : line;
+        if (SetupOutput.Friendly(line) is { } shown)
+            LastLine = shown;
     }
 
     private void RebuildProgress()
@@ -537,14 +549,9 @@ public partial class UpdateViewModel : ObservableObject
         for (int i = 0; i < _current && i < Steps.Count; i++)
             before += Steps[i].Weight;
         Percent = Math.Clamp(before + Steps[Math.Clamp(_current, 0, Steps.Count - 1)].Weight * Math.Clamp(within, 0, 1), 0, 1);
-        var elapsed = _clock.Elapsed;
-        if (Percent > 0.2 && Percent < 1)
-        {
-            var minutes = Math.Max(1, (int)Math.Round(elapsed.TotalMinutes * (1 - Percent) / Percent));
-            TimeLine = $"About {minutes} minute{(minutes == 1 ? "" : "s")} left";
-        }
-        else if (Percent < 1)
-            TimeLine = elapsed.TotalSeconds < 60 ? "" : $"{(int)elapsed.TotalMinutes} min so far";
+        // a time left only while the game itself is built (its own pace), else how long the update has been running
+        if (Percent < 1)
+            TimeLine = SetupTime.Line(_clock.Elapsed, _current == 3 && _setupStep == 4, _setupProgress, _setupClock.Elapsed);
     }
 
     private void FillNotes(string notes)
@@ -586,6 +593,26 @@ public partial class UpdateViewModel : ObservableObject
     private static string Clean(string text) => text.Replace("**", "").Replace("`", "").Trim();
 
     /// <summary>For pictures of the pages (--shot): a sample release and each page.</summary>
+    /// <summary>Dev only (--selftest-progress): a rebuild's output fed through as if it ran, each change of what the
+    /// page shows printed.</summary>
+    public IEnumerable<string> ReplayRebuild(IEnumerable<string> lines)
+    {
+        _clock.Restart();
+        Mode = "working";
+        SetStep(3);
+        Stage = 1;
+        _setupStep = -1;
+        Steps[3].Note = "a few minutes";
+        var last = "";
+        foreach (var line in lines)
+        {
+            OnSetupLine(line);
+            var shown = $"{Math.Round(Percent * 100),3}% | {Steps[3].Note} | {LastLine} | {TimeLine}";
+            if (shown != last)
+                yield return last = shown;
+        }
+    }
+
     public void ShowSample(string page)
     {
         var sample = new Release(new Version(0, 1, 1), "v0.1.1",

@@ -19,7 +19,7 @@ public partial class SetupStep : ObservableObject
     }
 
     public string Label { get; }
-    public string Note { get; }    // about how long it takes
+    [ObservableProperty] private string _note;   // about how long it takes (or, while it runs, what it is doing)
     public double Weight { get; }  // its share of the whole
     [ObservableProperty] private string _state = "next"; // next | now | done
     public string Mark => State switch { "done" => "✓", "now" => "●", _ => "○" };
@@ -35,7 +35,52 @@ public partial class SetupStep : ObservableObject
     }
 }
 
-/// <summary>The first-run setup: 1 choose your disc, 2 build the game (tools\setup_game.py), 3 your settings.</summary>
+/// <summary>The setup's output (tools\setup_game.py), shown in plain words under the progress bar: null = keep the
+/// line already shown.</summary>
+public static class SetupOutput
+{
+    private static readonly System.Text.RegularExpressions.Regex Ninja = new(@"^\[(\d+)/(\d+)\]");
+    private static readonly System.Text.RegularExpressions.Regex Sectors = new(@"^(\d+)/(\d+) sectors$");
+
+    /// <summary>Only lines written for people: errors come as [error] lines and are shown on their own, so the build's
+    /// other output (paths, CMake's checks and warnings, listings) stays in the log.</summary>
+    public static string? Friendly(string line)
+    {
+        line = line.Trim();
+        if (line.StartsWith("-- "))
+            return "Getting the build ready";
+        if (Ninja.Match(line) is { Success: true } m && m.Groups[1].Value != "0")
+            return $"Building: part {m.Groups[1].Value} of {m.Groups[2].Value}";
+        if (line.StartsWith("Checking which files changed:"))
+            return line + " files";
+        if (line == "Turning the game's code into C++" || line.StartsWith("Microsoft's C++ build tools are missing"))
+            return line;
+        if (line == "the disc is already prepared")
+            return "Your disc was already read";
+        if (Sectors.Match(line) is { Success: true } d && long.TryParse(d.Groups[2].Value, out var all) && all > 0)
+            return $"Reading your disc: {100 * long.Parse(d.Groups[1].Value) / all}%";
+        return null;
+    }
+}
+
+/// <summary>The time line under the progress bar. A time left only while the game is built, from that step's own pace
+/// (it is most of a first setup and has real progress); before that the steps' lengths vary too much to guess, so
+/// how long it has been running.</summary>
+public static class SetupTime
+{
+    public static string Line(TimeSpan elapsed, bool building, double buildProgress, TimeSpan buildElapsed)
+    {
+        if (building && buildProgress >= 0.25 && buildElapsed.TotalSeconds >= 30)
+        {
+            var left = buildElapsed.TotalSeconds * (1 - buildProgress) / buildProgress;
+            var minutes = Math.Max(1, (int)Math.Round(left / 60));
+            return $"About {minutes} minute{(minutes == 1 ? "" : "s")} left";
+        }
+        var so = (int)elapsed.TotalMinutes;
+        return so < 1 ? "Under a minute so far" : $"{so} min so far";
+    }
+}
+
 public partial class SetupViewModel : ObservableObject
 {
     private readonly GameFolder _folder;
@@ -43,6 +88,7 @@ public partial class SetupViewModel : ObservableObject
     private Process? _process;
     private bool _cancelled;
     private readonly Stopwatch _clock = new();
+    private readonly Stopwatch _stepClock = new(); // since the current step began (the build's pace)
     private StreamWriter? _log;
 
     public SetupViewModel(GameFolder folder, Action finished)
@@ -247,6 +293,8 @@ public partial class SetupViewModel : ObservableObject
                     Steps[i].State = i < n - 1 ? "done" : (i == n - 1 ? "now" : "next");
                 _step = n - 1;
                 _stepProgress = 0;
+                _stepClock.Restart();
+                LastLine = "";
                 UpdatePercent();
             }
             return;
@@ -265,10 +313,8 @@ public partial class SetupViewModel : ObservableObject
             Fail(line[8..]);
             return;
         }
-        if (line == "[done]")
-            return;
-        if (line.Trim().Length > 0)
-            LastLine = line.Length > 160 ? line[..160] + "…" : line;
+        if (SetupOutput.Friendly(line) is { } shown)
+            LastLine = shown;
     }
 
     private void UpdatePercent()
@@ -278,15 +324,8 @@ public partial class SetupViewModel : ObservableObject
             before += Steps[i].Weight;
         var total = before + (_step >= 0 && _step < Steps.Count ? Steps[_step].Weight * _stepProgress : 0);
         Percent = Math.Clamp(total, 0, 1);
-        var elapsed = _clock.Elapsed;
-        if (Percent > 0.08 && Percent < 1)
-        {
-            var left = TimeSpan.FromSeconds(elapsed.TotalSeconds * (1 - Percent) / Percent);
-            var minutes = Math.Max(1, (int)Math.Round(left.TotalMinutes));
-            TimeLine = $"About {minutes} minute{(minutes == 1 ? "" : "s")} left";
-        }
-        else if (Percent < 1)
-            TimeLine = $"{(int)elapsed.TotalMinutes} min so far";
+        if (Percent < 1)
+            TimeLine = SetupTime.Line(_clock.Elapsed, _step == 4, _stepProgress, _stepClock.Elapsed);
     }
 
     private void OnExit(int code)
