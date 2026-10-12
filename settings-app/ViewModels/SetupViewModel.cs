@@ -47,6 +47,8 @@ public static class SetupOutput
     public static string? Friendly(string line)
     {
         line = line.Trim();
+        if (line.StartsWith("[retry] "))
+            return "The build stopped. Trying again, more slowly";
         if (line.StartsWith("-- "))
             return "Getting the build ready";
         if (Ninja.Match(line) is { Success: true } m && m.Groups[1].Value != "0")
@@ -61,6 +63,11 @@ public static class SetupOutput
             return $"Reading your disc: {100 * long.Parse(d.Groups[1].Value) / all}%";
         return null;
     }
+
+    /// <summary>The error, then the tool's own error lines (the [detail] lines before it): what a player's screenshot
+    /// of the error needs to show.</summary>
+    public static string WithDetails(string error, IReadOnlyList<string> details) =>
+        details.Count == 0 ? error : error + "\n\nWhat the build said:\n" + string.Join("\n", details);
 }
 
 /// <summary>The time line under the progress bar. A time left only while the game is built, from that step's own pace
@@ -235,7 +242,8 @@ public partial class SetupViewModel : ObservableObject
         LastLine = "";
         _cancelled = false;
         Directory.CreateDirectory(_folder.LogsPath);
-        _log = new StreamWriter(LogPath, append: false) { AutoFlush = true };
+        _log = GameFolder.OpenRunLog(LogPath);
+        _details.Clear();
         _clock.Restart();
         try
         {
@@ -308,14 +316,21 @@ public partial class SetupViewModel : ObservableObject
             }
             return;
         }
+        if (line.StartsWith("[detail] "))
+        {
+            _details.Add(line[9..]);
+            return;
+        }
         if (line.StartsWith("[error] "))
         {
-            Fail(line[8..]);
+            Fail(SetupOutput.WithDetails(line[8..], _details));
             return;
         }
         if (SetupOutput.Friendly(line) is { } shown)
             LastLine = shown;
     }
+
+    private readonly List<string> _details = new(); // the tool's own error lines, shown under the error
 
     private void UpdatePercent()
     {
@@ -401,4 +416,20 @@ public partial class SetupViewModel : ObservableObject
         TimeLine = done ? "Done in 17 minutes" : "About 7 minutes left";
         LastLine = done ? "" : "[512/799] Building CXX object ps2xRuntime/…";
     }
+
+    /// <summary>For pictures (--shot setupfailed): a build that ran out of memory.</summary>
+    public void ShowSampleError()
+    {
+        ShowSample(0.4, false);
+        Fail(SetupOutput.WithDetails(SampleError, SampleDetails));
+    }
+
+    public const string SampleError = "Building the game: cmake.exe failed (exit code 1). Your PC ran out of memory while " +
+                                      "building. Close other programs (browsers, games) and try again.";
+    public static readonly string[] SampleDetails =
+    {
+        "FAILED: ps2xRuntime/CMakeFiles/ps2EntryRunner.dir/src/runner/out_00412.cpp.obj",
+        @"C:\Games\Def Jam Vendetta Recompiled\files\source\PS2Recomp\ps2xRuntime\src\runner\out_00412.cpp(18211): fatal error C1060: compiler is out of heap space",
+        "ninja: build stopped: subcommand failed.",
+    };
 }

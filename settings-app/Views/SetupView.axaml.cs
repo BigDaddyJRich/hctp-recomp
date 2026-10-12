@@ -16,6 +16,24 @@ public partial class SetupView : UserControl
     }
 
     private SetupViewModel? Model => DataContext as SetupViewModel;
+    private SetupViewModel? _watched;
+
+    // when the setup stops, the error (at the bottom of the page) is scrolled into view
+    protected override void OnDataContextChanged(EventArgs e)
+    {
+        base.OnDataContextChanged(e);
+        if (_watched != null)
+            _watched.PropertyChanged -= OnModelChanged;
+        _watched = Model;
+        if (_watched != null)
+            _watched.PropertyChanged += OnModelChanged;
+    }
+
+    private void OnModelChanged(object? sender, System.ComponentModel.PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(SetupViewModel.HasError) && Model?.HasError == true)
+            Avalonia.Threading.Dispatcher.UIThread.Post(() => BuildScroll.ScrollToEnd(), Avalonia.Threading.DispatcherPriority.Background);
+    }
 
     private async void OnBrowse(object? sender, RoutedEventArgs e)
     {

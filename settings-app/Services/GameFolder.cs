@@ -88,6 +88,18 @@ public sealed class GameFolder
     public ProcessStartInfo SetupStart(string? disc) =>
         disc == null ? PythonStart(SetupScript, "--data", Data) : PythonStart(SetupScript, "--data", Data, "--disc", disc);
 
+    /// <summary>A build's log, every attempt kept one after another under a line with its date (a failed try is still
+    /// there when the next one works). Past 20 MB it starts afresh.</summary>
+    public static StreamWriter OpenRunLog(string path)
+    {
+        var fresh = !File.Exists(path) || new FileInfo(path).Length > 20_000_000;
+        var log = new StreamWriter(path, append: !fresh) { AutoFlush = true };
+        if (!fresh)
+            log.WriteLine();
+        log.WriteLine($"===== {DateTime.Now:yyyy-MM-dd HH:mm:ss}, version {Updater.CurrentText} =====");
+        return log;
+    }
+
     private ProcessStartInfo PythonStart(string script, params string[] args)
     {
         var start = new ProcessStartInfo(PythonExe)

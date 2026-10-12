@@ -114,7 +114,7 @@
                 <StackPanel>
                     <TextBlock Classes="cap" Text="WHAT WENT WRONG" />
                     <Border Classes="capline" Margin="0,8,0,10" />
-                    <TextBlock FontSize="13.5" TextWrapping="Wrap" Text="{Binding FailReason}" />
+                    <SelectableTextBlock FontSize="13.5" TextWrapping="Wrap" Text="{Binding FailReason}" />
                     <TextBlock Classes="hint" Margin="0,6,0,0" Text="{Binding FailAdvice}" />
                 </StackPanel>
                 <StackPanel Orientation="Horizontal" Spacing="8">

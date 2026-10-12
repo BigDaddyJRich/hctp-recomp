@@ -6,8 +6,10 @@
 #
 # What it prints for a program to follow (each on its own line, besides everything the tools print):
 #   [step] <n> <of> <title>    [progress] <0-1 within the step>    [done]    [error] <what went wrong>
+#   [detail] <a line of the tool's own error, shown under the [error] line; they come just before it>
 # The libraries PS2Recomp's CMake would clone with git come with a release (source/deps/<name>), so no git is needed.
 import argparse
+import collections
 import ctypes
 import os
 import re
@@ -15,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.request
 
 SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -33,7 +36,12 @@ def say(text):
     print(text, flush=True)
 
 
+current_step = 0
+
+
 def step(n, title):
+    global current_step
+    current_step = n
     say(f'[step] {n} {len(STEPS)} {title}')
 
 
@@ -42,7 +50,27 @@ def progress(fraction):
 
 
 class SetupError(Exception):
-    pass
+    def __init__(self, message, details=()):
+        super().__init__(message)
+        self.details = list(details)  # the tool's own error lines
+
+
+# the lines of a failed tool's output worth showing a player (the compiler's, the linker's, CMake's, Ninja's errors)
+ERROR_LINE = re.compile(r'\berror\b|\bfatal\b|^FAILED:|CMake Error|cannot open|out of (heap|memory)|Permission denied',
+                        re.IGNORECASE)
+# what a few well known errors mean, in plain words
+KNOWN_ERRORS = [
+    (re.compile(r'C1060|C1002|C3859|out of (heap|memory)|not enough (memory|space)|insufficient memory', re.IGNORECASE),
+     'Your PC ran out of memory while building. Close other programs (browsers, games) and try again.'),
+    (re.compile(r'LNK1104|LNK1201|Permission denied|being used by another process', re.IGNORECASE),
+     "Another program held one of the build's files, often an antivirus. Try again."),
+]
+
+
+def error_details(lines, keep=6, width=240):
+    """The last few error lines of a tool's output (or its last lines, when none look like errors)."""
+    picked = [line for line in lines if ERROR_LINE.search(line)] or list(lines)
+    return [line.strip()[:width] for line in picked[-keep:] if line.strip()]
 
 
 def run(cmd, env=None, cwd=None, parse=None, log_name=None):
@@ -55,14 +83,16 @@ def run(cmd, env=None, cwd=None, parse=None, log_name=None):
             cmd = [found] + cmd[1:]
     proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
                             text=True, encoding='utf-8', errors='replace', bufsize=1)
+    last = collections.deque(maxlen=400)
     for line in proc.stdout:
         line = line.rstrip()
         print(line, flush=True)
+        last.append(line)
         if parse:
             parse(line)
     if proc.wait() != 0:
         raise SetupError(f'{os.path.basename(cmd[0])} failed (exit code {proc.returncode})'
-                         + (f'; see {log_name}' if log_name else ''))
+                         + (f'; see {log_name}' if log_name else ''), error_details(last))
 
 
 # --- 1. the build tools ---------------------------------------------------------------------------------------------
@@ -170,25 +200,48 @@ def deps_args():
 
 
 def build_jobs():
-    """Parallel compiles: the cores, but about one per 3 GB of memory (the game's big files need ~2 GB each)."""
+    """Parallel compiles: the cores, but about one per 3 GB of memory and one per 2 GB of commit free right now (the
+    game's big files need ~2 GB each, and a browser or a game left open leaves less than the PC has). Commit (memory +
+    page file) is what runs out when the compiler stops with "out of heap space" (C1060); short of physical memory it
+    only pages."""
     class Status(ctypes.Structure):
         _fields_ = [('length', ctypes.c_ulong), ('load', ctypes.c_ulong), ('total', ctypes.c_ulonglong),
                     ('free', ctypes.c_ulonglong), ('pagetotal', ctypes.c_ulonglong), ('pagefree', ctypes.c_ulonglong),
                     ('virtualtotal', ctypes.c_ulonglong), ('virtualfree', ctypes.c_ulonglong), ('extended', ctypes.c_ulonglong)]
     status = Status()
     status.length = ctypes.sizeof(Status)
-    gb = 8
+    total_gb, free_gb = 8, 8
     if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-        gb = status.total // (1 << 30)
-    return max(1, min(os.cpu_count() or 2, int(gb // 3)))
+        total_gb, free_gb = status.total / (1 << 30), status.pagefree / (1 << 30)
+    jobs = max(1, min(os.cpu_count() or 2, int(total_gb // 3), int(free_gb // 2)))
+    say(f'{jobs} compiles at a time ({total_gb:.0f} GB of memory, {free_gb:.0f} GB of commit free)')
+    return jobs
 
 
-def ninja_progress(start, end):
+def build_with_retry(build_dir, env, start, end):
+    """cmake --build, with progress from start to end within the step. When it fails it is tried once more with one
+    or two compiles at a time: Ninja carries on from where it stopped, and with little running at once a PC short on
+    memory gets through, as does a file an antivirus held for a moment. A real error fails again quickly."""
+    at = [start]
+
     def parse(line):
         m = re.match(r'\[(\d+)/(\d+)\]', line)
-        if m:
-            progress(start + (end - start) * int(m.group(1)) / max(1, int(m.group(2))))
-    return parse
+        if m:  # Ninja counts what is left: the second try continues the bar from where the first one stopped
+            at[0] = max(at[0], first + (end - first) * int(m.group(1)) / max(1, int(m.group(2))))
+            progress(at[0])
+
+    jobs = build_jobs()
+    first = start
+    try:
+        run(['cmake', '--build', build_dir, '--', f'-j{jobs}'], env=env, parse=parse)
+    except SetupError as error:
+        retry_jobs = 1 if jobs <= 2 else 2
+        say(f'[retry] The build stopped ({error}). Trying again with {retry_jobs} at a time')
+        for line in error.details:
+            say(f'  {line}')
+        time.sleep(5)
+        first = at[0]
+        run(['cmake', '--build', build_dir, '--', f'-j{retry_jobs}'], env=env, parse=parse)
 
 
 def step_recompiler(env, data):
@@ -197,7 +250,7 @@ def step_recompiler(env, data):
     run(['cmake', '-S', PS2RECOMP, '-B', build, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release', '-DPS2X_BUILD_RUNTIME=OFF',
          '-DPS2X_BUILD_TEST=OFF', '-DPS2X_BUILD_STUDIO=OFF', '-DPS2X_BUILD_ANALYZER=OFF'] + deps_args(), env=env)
     progress(0.1)
-    run(['cmake', '--build', build, '--', f'-j{build_jobs()}'], env=env, parse=ninja_progress(0.1, 1.0))
+    build_with_retry(build, env, 0.1, 1.0)
     exe = os.path.join(build, 'ps2xRecomp', 'ps2_recomp.exe')
     if not os.path.isfile(exe):
         raise SetupError('the recompiler was not built')
@@ -252,7 +305,7 @@ def step_game(env, data):
          # double-click the game: it finds game/SLUS_206.39 beside itself (main.cpp)
          '-DPS2X_DEFAULT_BOOT_ELF=game/SLUS_206.39'] + deps_args(), env=env)
     progress(0.03)
-    run(['cmake', '--build', build, '--', f'-j{build_jobs()}'], env=env, parse=ninja_progress(0.03, 1.0))
+    build_with_retry(build, env, 0.03, 1.0)
     progress(1.0)
     return os.path.join(build, 'ps2xRuntime')
 
@@ -287,7 +340,16 @@ def main():
         out_dir = step_game(env, data)
         step_finish(out_dir, data)
     except SetupError as error:
-        say(f'[error] {error}')
+        # the step it stopped in, the tool's own error lines, and what they mean when it is a known one
+        where = f'{STEPS[current_step - 1]}: ' if 1 <= current_step <= len(STEPS) else ''
+        message = where + str(error)
+        for pattern, meaning in KNOWN_ERRORS:
+            if any(pattern.search(line) for line in error.details):
+                message += '. ' + meaning
+                break
+        for line in error.details:
+            say(f'[detail] {line}')
+        say(f'[error] {message}')
         return 1
     except Exception as error:  # anything unexpected: still a clear last line
         say(f'[error] {type(error).__name__}: {error}')

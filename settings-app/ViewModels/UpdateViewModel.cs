@@ -394,13 +394,16 @@ public partial class UpdateViewModel : ObservableObject
             return;
         }
         var process = _rebuild;
-        var log = new StreamWriter(Path.Combine(_folder.LogsPath, "update-build.log"), append: false) { AutoFlush = true };
+        var log = GameFolder.OpenRunLog(Path.Combine(_folder.LogsPath, "update-build.log"));
         string? error = null;
+        var details = new List<string>();
         void Line(string line) => Dispatcher.UIThread.Post(() =>
         {
             log.WriteLine(line);
-            if (line.StartsWith("[error] "))
-                error = line[8..];
+            if (line.StartsWith("[detail] "))
+                details.Add(line[9..]);
+            else if (line.StartsWith("[error] "))
+                error = SetupOutput.WithDetails(line[8..], details);
             else
                 OnSetupLine(line);
         });
@@ -676,6 +679,9 @@ public partial class UpdateViewModel : ObservableObject
                     s.State = "done";
                 Percent = 1;
                 Mode = "done";
+                break;
+            case "buildfailed":
+                ShowFailed("build", SetupOutput.WithDetails(SetupViewModel.SampleError, SetupViewModel.SampleDetails), CurrentVersion);
                 break;
             case "failed":
                 ShowFailed("download", "The download stopped: no connection to the internet.", CurrentVersion);

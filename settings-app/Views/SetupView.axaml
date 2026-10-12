@@ -123,48 +123,50 @@
                 <Button Grid.Column="2" Classes="accent" Content="Continue: your settings" Command="{Binding ContinueCommand}"
                         IsEnabled="{Binding Done}" IsVisible="{Binding !HasError}" />
             </Grid>
-            <StackPanel Spacing="20">
-                <StackPanel Spacing="8">
-                    <Grid ColumnDefinitions="*,Auto">
-                        <TextBlock Text="{Binding PercentText}" FontWeight="SemiBold" FontSize="13.5" />
-                        <TextBlock Grid.Column="1" Classes="muted" FontSize="13.5" Text="{Binding TimeLine}" />
-                    </Grid>
-                    <ProgressBar Minimum="0" Maximum="1" Value="{Binding Percent}" Height="8" CornerRadius="4"
-                                 Classes.done="{Binding Done}" />
-                </StackPanel>
-
-                <StackPanel>
-                    <TextBlock Classes="cap" Text="STEPS" />
-                    <Border Classes="capline" />
-                    <ItemsControl ItemsSource="{Binding Steps}">
-                        <ItemsControl.ItemTemplate>
-                            <DataTemplate x:DataType="vm:SetupStep">
-                                <Border Classes="steprow" Classes.now="{Binding IsNow}" Height="38" Padding="10,0" Margin="-10,0">
-                                    <Grid ColumnDefinitions="18,*,Auto" ColumnSpacing="12" VerticalAlignment="Center">
-                                        <TextBlock FontWeight="Bold" Text="{Binding Mark}"
-                                                   Classes.good="{Binding IsDone}" Classes.warn="{Binding IsNow}"
-                                                   Classes.muted="{Binding IsNext}" />
-                                        <TextBlock Grid.Column="1" Text="{Binding Label}" Classes.strong="{Binding IsNow}"
-                                                   Classes.muted="{Binding IsNext}" />
-                                        <TextBlock Grid.Column="2" Classes="hint" Text="{Binding Note}" />
-                                    </Grid>
-                                </Border>
-                            </DataTemplate>
-                        </ItemsControl.ItemTemplate>
-                    </ItemsControl>
-                    <TextBlock Classes="mono muted" FontSize="12" Margin="0,10,0,0" TextTrimming="CharacterEllipsis"
-                               Text="{Binding LastLine}" IsVisible="{Binding !Done}" />
-                </StackPanel>
-
-                <Border Background="{StaticResource VBadBg}" BorderBrush="{StaticResource VBadLine}" BorderThickness="1"
-                        CornerRadius="8" Padding="16,12" IsVisible="{Binding HasError}">
-                    <StackPanel Spacing="6">
-                        <TextBlock Text="What went wrong" FontWeight="SemiBold" Classes="bad" />
-                        <TextBlock FontSize="13" Foreground="{StaticResource VBadText}" TextWrapping="Wrap" Text="{Binding Error}" />
-                        <TextBlock Classes="hint" TextWrapping="Wrap" Text="{Binding LogPath, StringFormat='Everything it printed: {0}'}" />
+            <ScrollViewer x:Name="BuildScroll" HorizontalScrollBarVisibility="Disabled">
+                <StackPanel Spacing="20">
+                    <StackPanel Spacing="8">
+                        <Grid ColumnDefinitions="*,Auto">
+                            <TextBlock Text="{Binding PercentText}" FontWeight="SemiBold" FontSize="13.5" />
+                            <TextBlock Grid.Column="1" Classes="muted" FontSize="13.5" Text="{Binding TimeLine}" />
+                        </Grid>
+                        <ProgressBar Minimum="0" Maximum="1" Value="{Binding Percent}" Height="8" CornerRadius="4"
+                                     Classes.done="{Binding Done}" />
                     </StackPanel>
-                </Border>
-            </StackPanel>
+
+                    <StackPanel>
+                        <TextBlock Classes="cap" Text="STEPS" />
+                        <Border Classes="capline" />
+                        <ItemsControl ItemsSource="{Binding Steps}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="vm:SetupStep">
+                                    <Border Classes="steprow" Classes.now="{Binding IsNow}" Height="38" Padding="10,0" Margin="-10,0">
+                                        <Grid ColumnDefinitions="18,*,Auto" ColumnSpacing="12" VerticalAlignment="Center">
+                                            <TextBlock FontWeight="Bold" Text="{Binding Mark}"
+                                                       Classes.good="{Binding IsDone}" Classes.warn="{Binding IsNow}"
+                                                       Classes.muted="{Binding IsNext}" />
+                                            <TextBlock Grid.Column="1" Text="{Binding Label}" Classes.strong="{Binding IsNow}"
+                                                       Classes.muted="{Binding IsNext}" />
+                                            <TextBlock Grid.Column="2" Classes="hint" Text="{Binding Note}" />
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <TextBlock Classes="mono muted" FontSize="12" Margin="0,10,0,0" TextTrimming="CharacterEllipsis"
+                                   Text="{Binding LastLine}" IsVisible="{Binding Building}" />
+                    </StackPanel>
+
+                    <Border Background="{StaticResource VBadBg}" BorderBrush="{StaticResource VBadLine}" BorderThickness="1"
+                            CornerRadius="8" Padding="16,12" IsVisible="{Binding HasError}">
+                        <StackPanel Spacing="6">
+                            <TextBlock Text="What went wrong" FontWeight="SemiBold" Classes="bad" />
+                            <SelectableTextBlock FontSize="13" Foreground="{StaticResource VBadText}" TextWrapping="Wrap" Text="{Binding Error}" />
+                            <TextBlock Classes="hint" TextWrapping="Wrap" Text="{Binding LogPath, StringFormat='Everything it printed: {0}'}" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+            </ScrollViewer>
         </DockPanel>
     </Panel>
 </UserControl>

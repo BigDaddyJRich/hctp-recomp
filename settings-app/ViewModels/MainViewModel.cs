@@ -250,6 +250,8 @@ public partial class MainViewModel : ObservableObject
             case "update-working": Updates.ShowSample("working"); return;
             case "update-done": Updates.ShowSample("done"); return;
             case "update-failed": Updates.ShowSample("failed"); return;
+            case "update-buildfailed": Updates.ShowSample("buildfailed"); return;
+            case "setupfailed": InSetup = true; Setup.ShowSampleError(); return;
             case "about": PageIndex = 2; break;
             case "display": ShowSettingsTab(0); break;
             case "graphics": ShowSettingsTab(1); break;
