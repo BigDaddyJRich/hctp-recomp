@@ -5,6 +5,21 @@ The newest version is at the top.
 
 ---
 
+## 0.1.2
+
+### Better
+- **Clearer progress while the game is rebuilt,** in updates and in the first setup. The bar keeps moving through the
+  longest part, the line under it says what is happening in plain words (for example "Checking which files changed:
+  13,000 of 25,467 files"), and a time left is only shown when it can be worked out. No more "1 min left" while it
+  is still busy for several minutes.
+
+### Good to know
+- To update, press **Update** when the game asks as it starts, or on the settings program's Play page. Your saves and
+  settings stay as they are.
+- After the update Windows may show "Windows protected your PC" again (the program isn't signed yet): click
+  **More info**, then **Run anyway**.
+- Mod support is actively being worked on and will come in a future update.
+
 ## 0.1.1
 
 ### Fixed
