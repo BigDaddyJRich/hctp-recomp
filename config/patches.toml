@@ -1,0 +1,38 @@
+# Instruction patches, applied by the recompiler before translation (tools/make_config.py appends this file to
+# config/vendetta.toml). Each one replaces one instruction word of the game's code at an address; the value is the
+# new instruction. Keep each group with the runtime code that depends on it.
+
+[patches]
+instructions = [
+  # The main menu FUN_00155eb8 gets an 8th item, Quit (overrides/vendetta_menu.cpp fills the tables it reads from
+  # the store's fixed area at 0x02000000 and handles the item).
+  { address = "0x00156008", value = "0x28620007" }, # slti $v0, $v1, 7: right moves up to item 7 (was 6)
+  { address = "0x00156440", value = "0x3c01428c" }, # lui $at, 0x428C: icons 70 apart (was 80)
+  { address = "0x00156448", value = "0x3c01420c" }, # lui $at, 0x420C: the first icon at x 35 (was 40)
+  { address = "0x00156450", value = "0x3c050200" }, # lui $a1, 0x0200      the icon ids: 0x02000060 (was 0x0023AF20)
+  { address = "0x00156454", value = "0x24a30060" }, # addiu $v1, $a1, 0x60
+  { address = "0x001564b0", value = "0x24020008" }, # addiu $v0, $zero, 8: 8 icons (was 7)
+  { address = "0x001564c0", value = "0x3c070200" }, # lui $a3, 0x0200      the title ids: 0x02000080 (was 0x0023AF40)
+  { address = "0x001564cc", value = "0x24e30080" }, # addiu $v1, $a3, 0x80
+  { address = "0x00156578", value = "0x3c020200" }, # lui $v0, 0x0200      the texts: 0x02000000 (was 0x0023AEC8)
+  { address = "0x0015657c", value = "0x24570000" }, # addiu $s7, $v0, 0
+  # the help box (held square, and the Quit question): its lines from 0x020000C0 (was 0x0027D4F8), their count
+  # from 0x020000D8 (was the constant 3), its title from 0x020000E0 (was 0x00295850)
+  { address = "0x0015670c", value = "0x3c030200" }, # lui $v1, 0x0200 (a delay slot)
+  { address = "0x00156718", value = "0x246800c0" }, # addiu $t0, $v1, 0xC0
+  { address = "0x0015671c", value = "0xdd040000" }, # ld $a0, 0($t0)
+  { address = "0x00156720", value = "0xdd050008" }, # ld $a1, 8($t0)
+  { address = "0x00156724", value = "0xdd070010" }, # ld $a3, 16($t0)
+  { address = "0x00156728", value = "0x8d090018" }, # lw $t1, 24($t0): the count
+  { address = "0x0015672c", value = "0xffa40070" }, # sd $a0, 0x70($sp)
+  { address = "0x00156730", value = "0xffa50078" }, # sd $a1, 0x78($sp)
+  { address = "0x00156734", value = "0xffa70080" }, # sd $a3, 0x80($sp)
+  { address = "0x00156738", value = "0x00000000" }, # nop
+  { address = "0x0015673c", value = "0x00000000" }, # nop
+  { address = "0x00156740", value = "0x00000000" }, # nop
+  { address = "0x00156744", value = "0x00000000" }, # nop
+  { address = "0x00156748", value = "0x00000000" }, # nop
+  { address = "0x0015674c", value = "0x3c020200" }, # lui $v0, 0x0200
+  { address = "0x00156758", value = "0x244200e0" }, # addiu $v0, $v0, 0xE0
+  { address = "0x0015678c", value = "0xafa90064" }, # sw $t1, 0x64($sp): the count (was $s5, 3)
+]

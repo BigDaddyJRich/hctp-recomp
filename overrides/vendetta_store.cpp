@@ -17,7 +17,7 @@ namespace vendetta_store
         constexpr uint32_t kCommitStep = 1u << 20;        // commit in 1 MB steps
 
         PS2Memory *g_memory = nullptr;
-        uint32_t g_bootTop = kStart;                      // the boot area grows up from kStart
+        uint32_t g_bootTop = kStart + kFixedSize;         // the boot area grows up after the fixed area
         uint32_t g_committed = kStart;                    // [kStart, g_committed) is usable
         std::map<std::string, uint64_t> g_used;           // bytes by user (padding included)
 
@@ -67,14 +67,36 @@ namespace vendetta_store
         return static_cast<uint32_t>(start);
     }
 
+    uint32_t fixed(uint32_t offset, uint32_t size, const char *user)
+    {
+        if (!g_memory || offset + size > kFixedSize)
+        {
+            std::cerr << "[store] " << user << ": the fixed area has no 0x" << std::hex << offset << "+" << size << std::dec
+                      << std::endl;
+            return 0u;
+        }
+        if (g_committed < kStart + kFixedSize)
+        {
+            const uint32_t to = kStart + kCommitStep; // the fixed area lies in the first commit step
+            if (!g_memory->commitRam(g_committed, to - g_committed))
+            {
+                std::cerr << "[store] " << user << ": the PC refused the fixed area's memory" << std::endl;
+                return 0u;
+            }
+            g_committed = to;
+        }
+        g_used[std::string(user) + " (fixed)"] += size;
+        return kFixedArea + offset;
+    }
+
     uint8_t *host(uint32_t guestAddress) { return g_memory->getRDRAM() + (guestAddress & PS2_RAM_MASK); }
 
     void report()
     {
         if (g_used.empty())
             return;
-        std::cerr << "[store] boot area 0x" << std::hex << kStart << "-0x" << g_bootTop << std::dec << ": "
-                  << kilobytes(g_bootTop - kStart) << " (";
+        std::cerr << "[store] fixed area + boot area 0x" << std::hex << kStart << "-0x" << g_bootTop << std::dec << ": "
+                  << kilobytes(g_bootTop - kStart - kFixedSize) << " placed (";
         bool first = true;
         for (const auto &[user, bytes] : g_used)
         {

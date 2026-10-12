@@ -4,7 +4,7 @@
 #   config/vendetta.toml          = config/vendetta.ghidra.toml (Ghidra's export) with this PC's paths and its `stubs`
 #                                   = config/manual_stubs.txt (found by hand; wins) + Ghidra's + the analyzer's
 #                                   (config/analyzer.toml), one per address, minus manual_stubs.txt's "-name@addr"
-#                                   lines (left to the game's own code)
+#                                   lines (left to the game's own code), + config/patches.toml (instruction patches)
 # usage: python tools/make_config.py
 import os
 import re
@@ -43,6 +43,10 @@ def main():
              'ghidra_output': f'{root}/config/vendetta_functions.csv'}
     for key, value in paths.items():
         toml = re.sub(rf'^{key} = .*$', f'{key} = "{value}"', toml, count=1, flags=re.M)
+    # instruction patches (config/patches.toml): appended as the [patches] table
+    patches = os.path.join(CFG, 'patches.toml')
+    if os.path.exists(patches):
+        toml = toml.rstrip('\n') + '\n\n' + open(patches).read()
     with open(os.path.join(CFG, 'vendetta.toml'), 'w', newline='\n') as f:
         f.write(toml)
     print(f'make_config: {len(manual)} manual, {len(unbound)} unbound + {len(stubs_of(ghidra))} ghidra + {len(stubs_of(analyzer))} analyzer '

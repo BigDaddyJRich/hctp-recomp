@@ -29,6 +29,7 @@ void installVendettaWidescreen(PS2Runtime &runtime); // vendetta_widescreen.cpp:
 void installVendettaHighPoly(PS2Runtime &runtime);   // vendetta_highpoly.cpp: High Poly in every match (VENDETTA_HIGHPOLY)
 void installVendettaCamera(PS2Runtime &runtime);     // vendetta_camera.cpp: the fight camera's styles (VENDETTA_CAMERA)
 void installVendettaUnlocks(PS2Runtime &runtime);    // vendetta_unlocks.cpp: unlock everything, the save unchanged (VENDETTA_UNLOCKALL)
+void installVendettaMenu(PS2Runtime &runtime);       // vendetta_menu.cpp: the main menu's Quit item (with config/patches.toml)
 
 namespace
 {
@@ -561,6 +562,7 @@ namespace
         installVendettaHighPoly(runtime);
         installVendettaCamera(runtime);
         installVendettaUnlocks(runtime);
+        installVendettaMenu(runtime);
         PS2Runtime::IoPaths paths = PS2Runtime::getIoPaths();
         const std::filesystem::path image = paths.elfDirectory.parent_path() / "disc" / "SLUS-20639.iso";
         if (!std::filesystem::exists(image))

@@ -34,6 +34,14 @@ namespace vendetta_store
     // the report. Returns the guest address (>= 0x02000000), or 0 with a message when the store is full.
     uint32_t allocate(Area area, uint32_t size, const char *user, uint32_t alignment = 16, uint32_t phase = 0);
 
+    // The fixed area: the store's first 64 KB (0x02000000-0x0200FFFF), for data the game's code finds at an address
+    // patched into it before translation (config: [patches]), so the address can't move. Each user keeps to its own
+    // offsets, listed here: 0x0000-0x01FF the main menu's tables and texts (vendetta_menu.cpp). Returns the guest address of
+    // `offset`, its memory committed, or 0.
+    constexpr uint32_t kFixedArea = 0x02000000u;
+    constexpr uint32_t kFixedSize = 0x10000u;
+    uint32_t fixed(uint32_t offset, uint32_t size, const char *user);
+
     // Host pointer for a guest address the store handed out.
     uint8_t *host(uint32_t guestAddress);
 
