@@ -21,9 +21,11 @@ No game files come with this download.
   as sharp as the 3D (Sharp 2D).
 - **High Poly in every match:** full-detail wrestlers and arenas in 3- and 4-fighter matches too.
 - **Camera styles:** Def Jam Vendetta's own camera, WWF No Mercy style or Wrestle Kingdom 2 style (the ring seen from a
-  corner, with the controls turned to match). Choose it under Graphics.
+  corner, with the controls turned to match). Choose it under Gameplay.
+- **Unlock everything:** every wrestler, attire, arena and gallery picture for every player, with or without a save.
+  Your save is never changed, and what you unlock while playing is still saved. Off by default, under Gameplay.
 - **Vulkan:** the PS2's graphics are redrawn on your graphics card with Vulkan, and the picture is shown with Vulkan too.
-- **Def Jam Vendetta Recompiled Settings:** display, graphics, sound and controls in one place, with PLAY.
+- **Def Jam Vendetta Recompiled Settings:** display, graphics, sound, controls and gameplay in one place, with PLAY.
 
 ### Good to know
 - You need: Windows 10 or 11 (64-bit), a graphics card with Vulkan 1.3, about 8 GB of free space, and your own
