@@ -92,9 +92,9 @@
                         <Border Classes="row" BorderThickness="0">
                             <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
                                 <StackPanel VerticalAlignment="Center" Spacing="2">
-                                    <TextBlock Classes="label" Text="Shortcuts to the game" />
-                                    <TextBlock Classes="hint"
-                                               Text="On your desktop and in this folder: &quot;Def Jam Vendetta Recompiled&quot; starts the game straight away." />
+                                    <TextBlock Classes="label" Text="Shortcuts on your desktop" />
+                                    <TextBlock Classes="hint" TextWrapping="Wrap"
+                                               Text="&quot;Def Jam Vendetta Recompiled&quot; starts the game straight away, &quot;Def Jam Vendetta Recompiled Settings&quot; opens this program. This folder always gets the game's shortcut." />
                                 </StackPanel>
                                 <ToggleSwitch Grid.Column="1" OnContent="" OffContent="" VerticalAlignment="Center"
                                               IsChecked="{Binding MakeShortcuts}" />
@@ -116,8 +116,8 @@
                     <Button Classes="outline" Content="Back" Command="{Binding BackCommand}" />
                     <Button Classes="outline" Content="Open the log" Command="{Binding OpenLogCommand}" />
                 </StackPanel>
-                <TextBlock Grid.Column="0" Grid.ColumnSpan="2" Classes="good" FontSize="13" VerticalAlignment="Center"
-                           Text="{Binding LastLine}" IsVisible="{Binding Done}" />
+                <TextBlock Grid.Column="0" Grid.ColumnSpan="2" Classes="warn" FontSize="13" VerticalAlignment="Center"
+                           TextWrapping="Wrap" Text="{Binding ShortcutProblem}" IsVisible="{Binding HasShortcutProblem}" />
                 <Button Grid.Column="2" Classes="accent" Content="Try again" Command="{Binding TryAgainCommand}"
                         IsVisible="{Binding HasError}" />
                 <Button Grid.Column="2" Classes="accent" Content="Continue: your settings" Command="{Binding ContinueCommand}"

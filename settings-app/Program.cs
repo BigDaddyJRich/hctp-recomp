@@ -14,10 +14,11 @@ internal static class Program
             Shot.Render(args[1], args[2], args.Length >= 5 ? int.Parse(args[3]) : 1120, args.Length >= 5 ? int.Parse(args[4]) : 700);
             return;
         }
-        // Dev: the desktop shortcuts, made in another folder: --selftest-shortcuts <folder>
+        // Dev: the shortcuts, the desktop ones made in another folder: --selftest-shortcuts <folder> [nodesktop]
         if (args.Length >= 2 && args[0] == "--selftest-shortcuts")
         {
-            Console.WriteLine(Services.GameFolder.Find().CreateShortcuts(args[1]) ?? "made");
+            var desktop = !(args.Length >= 3 && args[2] == "nodesktop");
+            Console.WriteLine(Services.GameFolder.Find().CreateShortcuts(desktop, args[1]) ?? "made");
             return;
         }
         // Dev: an update without the window (VENDETTA_ROOT = a test install, VENDETTA_UPDATE_URL = a test server)

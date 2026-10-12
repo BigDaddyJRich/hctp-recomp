@@ -55,7 +55,8 @@ To play:
   3. Choose your disc: an .iso or .chd of the USA disc (SLUS-20639).
   4. Press "Next: build the game". If Microsoft's free C++ build tools aren't on this PC, they are installed first:
      allow Windows' prompt once. The first build takes about 20-30 minutes (it needs the internet once).
-  5. Choose your settings, then PLAY. Shortcuts to the game and to Settings go on your desktop.
+  5. Choose your settings, then PLAY. "Def Jam Vendetta Recompiled" in this folder starts the game. Shortcuts to the
+     game and to Settings go on your desktop too, unless you switched that off.
 
 If Windows says "Windows protected your PC" when you open Def Jam Vendetta Recompiled Settings.exe:
   The program isn't signed with a paid certificate yet, so Windows doesn't recognise it. To open it anyway:

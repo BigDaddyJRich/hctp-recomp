@@ -108,21 +108,29 @@ public sealed class GameFolder
         return start;
     }
 
-    /// <summary>Shortcuts, with the logo (this program's icon): on the desktop the game and this program; in a player's
-    /// install folder the game too, beside this program (the game itself lives in <c>files\</c>).</summary>
-    public string? CreateShortcuts(string? folder = null)
+    /// <summary>Shortcuts, with the logo (this program's icon). Always: in a player's install folder the game's, beside
+    /// this program (the game itself lives in <c>files\</c>). With <paramref name="desktop"/>: on the desktop (or
+    /// <paramref name="folder"/>) the game's and this program's. Returns what went wrong, or null.</summary>
+    public string? CreateShortcuts(bool desktop, string? folder = null)
     {
+        var settings = Environment.ProcessPath ?? Path.Combine(Root, "Def Jam Vendetta Recompiled Settings.exe");
         try
         {
-            var desktop = folder ?? Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
-            var settings = Environment.ProcessPath ?? Path.Combine(Root, "Def Jam Vendetta Recompiled Settings.exe");
+            if (GameExe is { } exe && Data != Root)
+                Shortcut(Path.Combine(Root, "Def Jam Vendetta Recompiled.lnk"), exe, Data, settings);
+        }
+        catch (Exception ex)
+        {
+            return $"Couldn't make the game's shortcut in this folder: {ex.Message}";
+        }
+        if (!desktop)
+            return null;
+        try
+        {
+            var where = folder ?? Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
             if (GameExe is { } exe)
-            {
-                Shortcut(Path.Combine(desktop, "Def Jam Vendetta Recompiled.lnk"), exe, Data, settings);
-                if (Data != Root)
-                    Shortcut(Path.Combine(Root, "Def Jam Vendetta Recompiled.lnk"), exe, Data, settings);
-            }
-            Shortcut(Path.Combine(desktop, "Def Jam Vendetta Recompiled Settings.lnk"), settings, Root, settings);
+                Shortcut(Path.Combine(where, "Def Jam Vendetta Recompiled.lnk"), exe, Data, settings);
+            Shortcut(Path.Combine(where, "Def Jam Vendetta Recompiled Settings.lnk"), settings, Root, settings);
             return null;
         }
         catch (Exception ex)

@@ -80,8 +80,9 @@ about 8 GB of free space · the internet once · your own Def Jam Vendetta disc 
 4. Pick your disc file, or drop it onto the window. It's checked to be the right disc.
 5. Press **Next: build the game**. Microsoft's free C++ build tools are installed first if your PC doesn't have them
    (allow Windows' prompt once). The build takes **20 to 30 minutes, once**, and you can keep using your PC.
-6. Choose your settings and press **PLAY**. Two shortcuts go on your desktop: **Def Jam Vendetta Recompiled** starts
-   the game straight away, and **Def Jam Vendetta Recompiled Settings** opens the settings.
+6. Choose your settings and press **PLAY**. The install folder gets a **Def Jam Vendetta Recompiled** shortcut that
+   starts the game straight away. Two shortcuts go on your desktop too, unless you switched that off: the game, and
+   **Def Jam Vendetta Recompiled Settings** for the settings.
 
 </td>
 <td width="50%" valign="top">

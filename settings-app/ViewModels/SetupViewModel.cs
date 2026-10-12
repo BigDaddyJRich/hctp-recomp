@@ -157,6 +157,13 @@ public partial class SetupViewModel : ObservableObject
 
     public bool Building => !Done && Error.Length == 0;
     public bool HasError => Error.Length > 0;
+
+    /// <summary>A shortcut that couldn't be made (the game is built and plays all the same).</summary>
+    [ObservableProperty]
+    [NotifyPropertyChangedFor(nameof(HasShortcutProblem))]
+    private string _shortcutProblem = "";
+
+    public bool HasShortcutProblem => ShortcutProblem.Length > 0;
     public string PercentText => $"{Math.Round(Percent * 100)}%";
     public double BarWidth => Percent; // 0-1, the view scales it
     public string Title => Done ? "The game is built" : HasError ? "The setup stopped" : "Building the game from your disc";
@@ -298,10 +305,8 @@ public partial class SetupViewModel : ObservableObject
         foreach (var s in Steps)
             s.State = "done";
         Percent = 1;
-        if (MakeShortcuts && _folder.CreateShortcuts() is { } problem)
-            LastLine = problem;
-        else if (MakeShortcuts)
-            LastLine = "Shortcuts to the game are on your desktop and in this folder.";
+        // the game's shortcut in the install folder always, the desktop ones if asked for
+        ShortcutProblem = _folder.CreateShortcuts(MakeShortcuts) ?? "";
         TimeLine = $"Done in {Math.Max(1, (int)Math.Round(_clock.Elapsed.TotalMinutes))} minutes";
         Done = true;
     }
@@ -355,6 +360,6 @@ public partial class SetupViewModel : ObservableObject
         Percent = percent;
         Done = done;
         TimeLine = done ? "Done in 17 minutes" : "About 7 minutes left";
-        LastLine = done ? "Shortcuts to the game are on your desktop and in this folder." : "[512/799] Building CXX object ps2xRuntime/…";
+        LastLine = done ? "" : "[512/799] Building CXX object ps2xRuntime/…";
     }
 }
