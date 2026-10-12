@@ -2650,10 +2650,10 @@ index 509fd07..71243e7 100644
  
      std::string CodeGenerator::translateVU_VMTIR(const Instruction &inst)
 diff --git a/ps2xRuntime/CMakeLists.txt b/ps2xRuntime/CMakeLists.txt
-index 589d768..b0c08b9 100644
+index 589d768..ee7371f 100644
 --- a/ps2xRuntime/CMakeLists.txt
 +++ b/ps2xRuntime/CMakeLists.txt
-@@ -383,12 +383,19 @@ add_library(ps2_runtime STATIC
+@@ -383,12 +383,20 @@ add_library(ps2_runtime STATIC
      src/lib/gs/ps2_gs_memory.cpp
      src/lib/gs/gs_frontend.cpp
      src/lib/gs/gs_cpu_backend.cpp
@@ -2669,11 +2669,12 @@ index 589d768..b0c08b9 100644
      src/lib/ps2_vfs.cpp
      src/lib/ps2_runtime.cpp
 +    src/lib/ps2_host_settings.cpp
++    src/lib/ps2_host_update.cpp
 +    src/lib/ps2_chain.cpp
      src/lib/ps2_vif1_interpreter.cpp
      src/lib/vu/ps2_vu1_core.cpp
      src/lib/vu/ps2_vu1_upper.cpp
-@@ -396,6 +403,27 @@ add_library(ps2_runtime STATIC
+@@ -396,6 +404,27 @@ add_library(ps2_runtime STATIC
      src/lib/games_database.cpp
  )
  
@@ -2701,7 +2702,7 @@ index 589d768..b0c08b9 100644
  if(PS2X_ENABLE_RUNTIME_LOGS)
      target_compile_definitions(ps2_runtime PUBLIC
          PS2_RUNTIME_LOGS=1
-@@ -429,6 +457,12 @@ target_compile_definitions(ps2_runtime PRIVATE
+@@ -429,6 +458,12 @@ target_compile_definitions(ps2_runtime PRIVATE
      PS2X_HAS_FFMPEG=$<BOOL:${PS2X_ENABLE_FFMPEG}>
  )
  
@@ -2714,7 +2715,7 @@ index 589d768..b0c08b9 100644
  file(GLOB_RECURSE KERNEL_SRC_FILES CONFIGURE_DEPENDS
      "${CMAKE_CURRENT_SOURCE_DIR}/src/lib/Kernel/*.cpp"
  )
-@@ -462,6 +496,17 @@ else()
+@@ -462,6 +497,17 @@ else()
      )
  endif()
  
@@ -2732,12 +2733,13 @@ index 589d768..b0c08b9 100644
  if(PS2X_ENABLE_RUNNER_UNITY_BUILD)
      set_target_properties(ps2EntryRunner PROPERTIES
          UNITY_BUILD ON
-@@ -507,6 +552,17 @@ target_include_directories(ps2_runtime PUBLIC
+@@ -507,6 +553,18 @@ target_include_directories(ps2_runtime PUBLIC
  )
  
  target_link_libraries(ps2_runtime PUBLIC ps2_host_backend ffmpeg ps2_iop)
 +if(WIN32)
 +    target_link_libraries(ps2_runtime PRIVATE xinput) # the pads' motors on the PC's controllers (ps2_pad_rumble)
++    target_link_libraries(ps2_runtime PRIVATE winhttp) # the update check at start (ps2_host_update)
 +endif()
 +
 +# The window's exact fullscreen mode (resolution and refresh rate) through GLFW, which raylib builds in on desktops
@@ -2750,7 +2752,7 @@ index 589d768..b0c08b9 100644
  target_link_libraries(ps2EntryRunner
      PRIVATE
      ps2_runtime
-@@ -518,6 +574,18 @@ if(PS2X_ENABLE_DEBUG_UI AND NOT PS2X_IS_VITA AND NOT PS2X_IS_ANDROID)
+@@ -518,6 +576,18 @@ if(PS2X_ENABLE_DEBUG_UI AND NOT PS2X_IS_VITA AND NOT PS2X_IS_ANDROID)
      )
      target_link_libraries(ps2EntryRunner PRIVATE rlImGui imgui)
      target_compile_definitions(ps2EntryRunner PRIVATE PS2X_ENABLE_DEBUG_UI=1)
@@ -4486,6 +4488,39 @@ index 0000000..434f2a5
 +    const Settings &get();
 +
 +    const char *windowModeName(WindowMode mode);
++}
+diff --git a/ps2xRuntime/include/runtime/ps2_host_update.h b/ps2xRuntime/include/runtime/ps2_host_update.h
+new file mode 100644
+index 0000000..f98e608
+--- /dev/null
++++ b/ps2xRuntime/include/runtime/ps2_host_update.h
+@@ -0,0 +1,27 @@
++#pragma once
++
++#include <string>
++
++// An update check when the game starts, before its window opens (Windows). A game build names its GitHub repository and
++// the program that installs updates (its launcher); the installed version comes from release-manifest.txt beside the
++// game program, so a developer's build (no manifest) never checks. When a newer release is out, a popup offers Update
++// (start the launcher with --update and end) or Play.
++namespace ps2_host_update
++{
++    struct Config
++    {
++        std::string repo;     // "owner/name" on GitHub
++        std::string zipName;  // the release's download: a release without it doesn't count
++        std::string launcher; // the program that updates, in the folder above the game program's
++        std::string title;    // the popup's title, and the name before the version in release-manifest.txt
++    };
++
++    // Called by a game build's code before main runs (a static initialiser). Returns true.
++    bool configure(const Config &config);
++
++    // After the settings are read, before the window. VENDETTA_UPDATE_CHECK=0 (settings.toml [updates] check_on_open =
++    // false): no check. VENDETTA_UPDATE_URL: ask another address that answers as GitHub does (tests). Asking GitHub
++    // gives up after 2 seconds; the popup waits for the player. Returns false when the player chose Update: the game
++    // should end.
++    bool checkAtStart();
 +}
 diff --git a/ps2xRuntime/include/runtime/ps2_memory.h b/ps2xRuntime/include/runtime/ps2_memory.h
 index ea86a9c..95396d6 100644
@@ -16201,10 +16236,10 @@ index 0000000..8bb1d56
 +}
 diff --git a/ps2xRuntime/src/lib/ps2_host_settings.cpp b/ps2xRuntime/src/lib/ps2_host_settings.cpp
 new file mode 100644
-index 0000000..93881ad
+index 0000000..18c9424
 --- /dev/null
 +++ b/ps2xRuntime/src/lib/ps2_host_settings.cpp
-@@ -0,0 +1,502 @@
+@@ -0,0 +1,510 @@
 +#include "runtime/ps2_host_settings.h"
 +
 +#include <algorithm>
@@ -16275,7 +16310,10 @@ index 0000000..93881ad
 +            "\n"
 +            "[gameplay]\n"
 +            "unlock_all = false       # every wrestler, attire, arena and picture for every player, with or without a save.\n"
-+            "                         # The save itself is not changed (false = what the save has unlocked)\n";
++            "                         # The save itself is not changed (false = what the save has unlocked)\n"
++            "\n"
++            "[updates]\n"
++            "check_on_open = true     # check for a new version when the game or the settings program starts\n";
 +
 +        std::string trim(const std::string &text)
 +        {
@@ -16457,7 +16495,7 @@ index 0000000..93881ad
 +                for (const auto &[key, value] : m_values)
 +                {
 +                    if (key.rfind("updates.", 0) == 0)
-+                        continue; // [updates]: the settings program's own (whether it checks for a new version)
++                        continue; // [updates]: the settings program may keep more of its own there
 +                    std::cerr << "[settings] " << m_file.string() << ": " << key << " is not a setting (ignored)" << std::endl;
 +                }
 +            }
@@ -16523,6 +16561,11 @@ index 0000000..93881ad
 +            bool unlockAll = false;
 +            reader.boolean("gameplay.unlock_all", unlockAll);
 +            fillSwitch("VENDETTA_UNLOCKALL", unlockAll ? "1" : "0");
++            // the update check when the game starts (ps2_host_update.cpp, VENDETTA_UPDATE_CHECK): the same switch as
++            // the settings program's own check, on by default, also when the line is missing
++            bool checkUpdates = true;
++            reader.boolean("updates.check_on_open", checkUpdates);
++            fillSwitch("VENDETTA_UPDATE_CHECK", checkUpdates ? "1" : "0");
 +
 +            // the ones the runtime already reads as switches
 +            if (const int renderer = reader.choice("graphics.renderer", {"gpu", "cpu"}); renderer >= 0)
@@ -16706,6 +16749,344 @@ index 0000000..93881ad
 +            return "window";
 +        }
 +    }
++}
+diff --git a/ps2xRuntime/src/lib/ps2_host_update.cpp b/ps2xRuntime/src/lib/ps2_host_update.cpp
+new file mode 100644
+index 0000000..ed29a2e
+--- /dev/null
++++ b/ps2xRuntime/src/lib/ps2_host_update.cpp
+@@ -0,0 +1,332 @@
++#include "runtime/ps2_host_update.h"
++
++#include <iostream>
++
++#if defined(_WIN32)
++#ifndef NOMINMAX
++#define NOMINMAX
++#endif
++#ifndef WIN32_LEAN_AND_MEAN
++#define WIN32_LEAN_AND_MEAN
++#endif
++#include <windows.h>
++#include <winhttp.h>
++
++#include <array>
++#include <chrono>
++#include <condition_variable>
++#include <cstdio>
++#include <cstdlib>
++#include <filesystem>
++#include <fstream>
++#include <memory>
++#include <mutex>
++#include <sstream>
++#include <thread>
++#endif
++
++namespace ps2_host_update
++{
++    namespace
++    {
++        Config &config()
++        {
++            static Config value;
++            return value;
++        }
++    }
++
++    bool configure(const Config &value)
++    {
++        config() = value;
++        return true;
++    }
++
++#if !defined(_WIN32)
++    bool checkAtStart() { return true; }
++#else
++    namespace
++    {
++        constexpr auto kAskFor = std::chrono::milliseconds(2000); // how long GitHub has to answer
++        constexpr DWORD kNetworkTimeout = 2000;                    // each WinHTTP step, so a late request ends soon
++        const char *kAskedFile = "update-asked.txt";              // the newest version the player chose Play for
++
++        using Version = std::array<int, 3>;
++
++        bool parseVersion(std::string text, Version &out)
++        {
++            while (!text.empty() && (text.front() == 'v' || text.front() == 'V'))
++                text.erase(text.begin());
++            int a = 0, b = 0, c = 0;
++            const int n = std::sscanf(text.c_str(), "%d.%d.%d", &a, &b, &c);
++            if (n < 2)
++                return false;
++            out = {a, b, n == 3 ? c : 0};
++            return true;
++        }
++
++        std::string versionText(const Version &v)
++        {
++            return std::to_string(v[0]) + "." + std::to_string(v[1]) + "." + std::to_string(v[2]);
++        }
++
++        std::wstring wide(const std::string &text)
++        {
++            if (text.empty())
++                return {};
++            const int n = MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), nullptr, 0);
++            std::wstring out(static_cast<size_t>(n), L'\0');
++            MultiByteToWideChar(CP_UTF8, 0, text.data(), static_cast<int>(text.size()), out.data(), n);
++            return out;
++        }
++
++        std::filesystem::path programFolder()
++        {
++            std::wstring path(32768, L'\0');
++            const DWORD n = GetModuleFileNameW(nullptr, path.data(), static_cast<DWORD>(path.size()));
++            path.resize(n);
++            return std::filesystem::path(path).parent_path();
++        }
++
++        // release-manifest.txt's first line: "# <title> X.Y.Z"
++        bool installedVersion(const std::filesystem::path &folder, Version &out)
++        {
++            std::ifstream file(folder / "release-manifest.txt");
++            std::string line;
++            if (!file || !std::getline(file, line))
++                return false;
++            const std::string start = "# " + config().title + " ";
++            if (line.rfind(start, 0) != 0)
++                return false;
++            return parseVersion(line.substr(start.size()), out);
++        }
++
++        // The answer to one GET: the status code and the body (0 = no answer).
++        struct Answer
++        {
++            std::mutex mutex;
++            std::condition_variable ready;
++            bool done = false;
++            DWORD status = 0;
++            std::string body;
++            std::string error;
++        };
++
++        void fetch(const std::wstring &url, const std::wstring &agent, std::shared_ptr<Answer> answer)
++        {
++            DWORD status = 0;
++            std::string body;
++            std::string error;
++            URL_COMPONENTS parts{};
++            parts.dwStructSize = sizeof(parts);
++            wchar_t host[256] = {};
++            wchar_t path[2048] = {};
++            parts.lpszHostName = host;
++            parts.dwHostNameLength = 256;
++            parts.lpszUrlPath = path;
++            parts.dwUrlPathLength = 2048;
++            HINTERNET session = nullptr, connection = nullptr, request = nullptr;
++            if (!WinHttpCrackUrl(url.c_str(), 0, 0, &parts))
++                error = "the address can't be read";
++            else if (!(session = WinHttpOpen(agent.c_str(), WINHTTP_ACCESS_TYPE_AUTOMATIC_PROXY, WINHTTP_NO_PROXY_NAME,
++                                             WINHTTP_NO_PROXY_BYPASS, 0)))
++                error = "WinHttpOpen failed";
++            else
++            {
++                WinHttpSetTimeouts(session, kNetworkTimeout, kNetworkTimeout, kNetworkTimeout, kNetworkTimeout);
++                const bool secure = parts.nScheme == INTERNET_SCHEME_HTTPS;
++                connection = WinHttpConnect(session, host, parts.nPort, 0);
++                if (connection)
++                    request = WinHttpOpenRequest(connection, L"GET", path, nullptr, WINHTTP_NO_REFERER,
++                                                 WINHTTP_DEFAULT_ACCEPT_TYPES, secure ? WINHTTP_FLAG_SECURE : 0);
++                if (!request)
++                    error = "no connection";
++                else if (!WinHttpSendRequest(request, L"Accept: application/vnd.github+json\r\n", static_cast<DWORD>(-1),
++                                             WINHTTP_NO_REQUEST_DATA, 0, 0, 0) ||
++                         !WinHttpReceiveResponse(request, nullptr))
++                    error = "no answer (error " + std::to_string(GetLastError()) + ")";
++                else
++                {
++                    DWORD size = sizeof(status);
++                    WinHttpQueryHeaders(request, WINHTTP_QUERY_STATUS_CODE | WINHTTP_QUERY_FLAG_NUMBER,
++                                        WINHTTP_HEADER_NAME_BY_INDEX, &status, &size, WINHTTP_NO_HEADER_INDEX);
++                    for (;;)
++                    {
++                        DWORD available = 0;
++                        if (!WinHttpQueryDataAvailable(request, &available) || available == 0)
++                            break;
++                        std::string chunk(available, '\0');
++                        DWORD read = 0;
++                        if (!WinHttpReadData(request, chunk.data(), available, &read) || read == 0)
++                            break;
++                        body.append(chunk.data(), read);
++                        if (body.size() > (1u << 20))
++                            break; // a release's answer is a few kB
++                    }
++                }
++            }
++            if (request)
++                WinHttpCloseHandle(request);
++            if (connection)
++                WinHttpCloseHandle(connection);
++            if (session)
++                WinHttpCloseHandle(session);
++            std::lock_guard<std::mutex> lock(answer->mutex);
++            answer->status = status;
++            answer->body = std::move(body);
++            answer->error = std::move(error);
++            answer->done = true;
++            answer->ready.notify_all();
++        }
++
++        // "key": "value" in GitHub's JSON (the first one)
++        std::string jsonText(const std::string &json, const std::string &key)
++        {
++            const std::string quoted = "\"" + key + "\"";
++            size_t at = json.find(quoted);
++            if (at == std::string::npos)
++                return {};
++            at = json.find(':', at + quoted.size());
++            if (at == std::string::npos)
++                return {};
++            at = json.find('"', at);
++            if (at == std::string::npos)
++                return {};
++            const size_t end = json.find('"', at + 1);
++            return end == std::string::npos ? std::string() : json.substr(at + 1, end - at - 1);
++        }
++
++        // The popup's two buttons say Update and Play (a message box's Yes and No, renamed as it opens).
++        HHOOK g_hook = nullptr;
++
++        LRESULT CALLBACK renameButtons(int code, WPARAM wparam, LPARAM lparam)
++        {
++            if (code == HCBT_ACTIVATE)
++            {
++                const HWND box = reinterpret_cast<HWND>(wparam);
++                SetDlgItemTextW(box, IDYES, L"Update");
++                SetDlgItemTextW(box, IDNO, L"Play");
++                UnhookWindowsHookEx(g_hook);
++                g_hook = nullptr;
++                return 0;
++            }
++            return CallNextHookEx(g_hook, code, wparam, lparam);
++        }
++
++        bool askUpdate(const std::string &latest, const std::string &installed)
++        {
++            const std::wstring text =
++                L"Version " + wide(latest) + L" is available. You have version " + wide(installed) +
++                L".\n\nUpdate opens the settings program, where you can see what's new and update in a few minutes. "
++                L"Your saves and settings stay as they are.\n\nPlay starts the game now. You won't be asked about "
++                L"version " + wide(latest) + L" again.";
++            g_hook = SetWindowsHookExW(WH_CBT, renameButtons, nullptr, GetCurrentThreadId());
++            const int choice = MessageBoxW(nullptr, text.c_str(), wide(config().title).c_str(),
++                                           MB_YESNO | MB_ICONINFORMATION | MB_DEFBUTTON1 | MB_SETFOREGROUND | MB_TOPMOST);
++            if (g_hook)
++            {
++                UnhookWindowsHookEx(g_hook);
++                g_hook = nullptr;
++            }
++            return choice == IDYES;
++        }
++
++        bool startLauncher(const std::filesystem::path &program)
++        {
++            std::wstring command = L"\"" + program.wstring() + L"\" --update";
++            STARTUPINFOW startup{};
++            startup.cb = sizeof(startup);
++            PROCESS_INFORMATION process{};
++            // the player just pressed Update here: the settings program may come to the front (Windows only lets a
++            // program take the foreground when the one in front allows it)
++            AllowSetForegroundWindow(ASFW_ANY);
++            if (!CreateProcessW(program.c_str(), command.data(), nullptr, nullptr, FALSE, 0, nullptr,
++                                program.parent_path().c_str(), &startup, &process))
++                return false;
++            CloseHandle(process.hThread);
++            CloseHandle(process.hProcess);
++            return true;
++        }
++    }
++
++    bool checkAtStart()
++    {
++        const Config &cfg = config();
++        if (cfg.repo.empty())
++            return true;
++        if (const char *check = std::getenv("VENDETTA_UPDATE_CHECK"); check && check[0] == '0')
++        {
++            std::cerr << "[update] checking for updates is off (settings: check_on_open)" << std::endl;
++            return true;
++        }
++        const std::filesystem::path folder = programFolder();
++        Version installed{};
++        if (!installedVersion(folder, installed))
++            return true; // not a player's install (no release-manifest.txt): a developer's build never checks
++
++        std::string url = "https://api.github.com/repos/" + cfg.repo + "/releases/latest";
++        if (const char *test = std::getenv("VENDETTA_UPDATE_URL"); test && *test)
++            url = test;
++        auto answer = std::make_shared<Answer>();
++        const auto started = std::chrono::steady_clock::now();
++        std::thread(fetch, wide(url), wide("DefJamVendettaRecompiled/" + versionText(installed)), answer).detach();
++        {
++            std::unique_lock<std::mutex> lock(answer->mutex);
++            if (!answer->ready.wait_for(lock, kAskFor, [&] { return answer->done; }))
++            {
++                std::cerr << "[update] no answer from GitHub within 2 s: playing" << std::endl;
++                return true;
++            }
++        }
++        const auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - started).count();
++        if (!answer->error.empty())
++        {
++            std::cerr << "[update] couldn't check (" << answer->error << ", " << ms << " ms): playing" << std::endl;
++            return true;
++        }
++        if (answer->status != 200)
++        {
++            // 404: no release yet, or a private repository
++            std::cerr << "[update] no release to offer (GitHub answered " << answer->status << ", " << ms << " ms)" << std::endl;
++            return true;
++        }
++        Version latest{};
++        const std::string tag = jsonText(answer->body, "tag_name");
++        if (!parseVersion(tag, latest) || answer->body.find("\"" + cfg.zipName + "\"") == std::string::npos)
++        {
++            std::cerr << "[update] the newest release (" << (tag.empty() ? "no tag" : tag) << ") has no "
++                      << cfg.zipName << " to offer" << std::endl;
++            return true;
++        }
++        const std::string latestText = versionText(latest), installedText = versionText(installed);
++        if (latest <= installed)
++        {
++            std::cerr << "[update] up to date: " << installedText << " (" << ms << " ms)" << std::endl;
++            return true;
++        }
++        std::string asked;
++        std::getline(std::ifstream(folder / kAskedFile), asked);
++        if (asked == latestText)
++        {
++            std::cerr << "[update] " << latestText << " is out; the player chose Play for it before: not asking again"
++                      << std::endl;
++            return true;
++        }
++        std::cerr << "[update] " << latestText << " is out (installed " << installedText << "): asking" << std::endl;
++        if (!askUpdate(latestText, installedText))
++        {
++            std::ofstream(folder / kAskedFile) << latestText << "\n";
++            std::cerr << "[update] the player chose Play" << std::endl;
++            return true;
++        }
++        const std::filesystem::path launcher = folder.parent_path() / std::filesystem::path(wide(cfg.launcher));
++        if (!startLauncher(launcher))
++        {
++            std::cerr << "[update] couldn't start " << launcher.string() << ": playing" << std::endl;
++            return true;
++        }
++        std::cerr << "[update] the player chose Update: " << cfg.launcher << " --update started, the game ends" << std::endl;
++        return false;
++    }
++#endif
 +}
 diff --git a/ps2xRuntime/src/lib/ps2_iop_host.cpp b/ps2xRuntime/src/lib/ps2_iop_host.cpp
 index 8d46e03..a1a4eda 100644
@@ -21419,16 +21800,17 @@ index 6974254..6fe0609 100644
 +    return true;
 +}
 diff --git a/ps2xRuntime/src/main.cpp b/ps2xRuntime/src/main.cpp
-index 563bcbd..2570204 100644
+index 563bcbd..29120fb 100644
 --- a/ps2xRuntime/src/main.cpp
 +++ b/ps2xRuntime/src/main.cpp
-@@ -1,4 +1,5 @@
+@@ -1,4 +1,6 @@
  #include "ps2_runtime.h"
 +#include "runtime/ps2_host_settings.h"
++#include "runtime/ps2_host_update.h"
  #include "games_database.h"
  #if defined(PS2X_ENABLE_DEBUG_UI) && !defined(PLATFORM_VITA)
  #include "ps2_debug_panel.h"
-@@ -14,6 +15,7 @@
+@@ -14,6 +16,7 @@
  #include <exception>
  #include <algorithm>
  #include <cstdlib>
@@ -21436,7 +21818,7 @@ index 563bcbd..2570204 100644
  
  #if defined(__ANDROID__)
  #include <android/log.h>
-@@ -157,19 +159,53 @@ namespace
+@@ -157,19 +160,60 @@ namespace
          {
              return configuredPath;
          }
@@ -21488,6 +21870,13 @@ index 563bcbd..2570204 100644
      setupTerminateLogger();
 +    // before anything reads a VENDETTA_* switch: the settings fill in the ones the environment doesn't set
 +    ps2_host_settings::load(argc > 0 ? argv[0] : nullptr);
++    // a newer release: Update (the launcher takes over, the game ends) or Play; before the window opens
++    if (!ps2_host_update::checkAtStart())
++    {
++        std::cout.flush();
++        std::cerr.flush();
++        std::_Exit(0);
++    }
  
      try
      {

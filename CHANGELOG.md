@@ -35,5 +35,7 @@ No game files come with this download.
 - 16× (the default) needs a fairly strong graphics card. If the game runs slowly, set Scale to 8× under Graphics.
 - The keyboard plays as nobody by default: choose a player under Controls.
 - Mods are not supported yet, but are currently being worked on.
+- When a new version comes out, the game asks when it starts: **Update** opens the settings program on what's new,
+  **Play** starts the game and doesn't ask about that version again. Turn it off under About.
 - After each update Windows may show "Windows protected your PC" again (the program isn't signed yet): **More info** →
   **Run anyway**.

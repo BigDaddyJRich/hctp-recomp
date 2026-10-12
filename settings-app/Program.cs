@@ -32,6 +32,8 @@ internal static class Program
             Shot.SelfTest(args.Length >= 2 && args[1] == "play");
             return;
         }
+        // --update: started by the game's update popup (the new version's notes open at once)
+        ViewModels.UpdateViewModel.OpenOnUpdate = args.Contains("--update");
         BuildAvaloniaApp().StartWithClassicDesktopLifetime(args);
     }
 

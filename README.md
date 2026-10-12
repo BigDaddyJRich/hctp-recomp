@@ -97,7 +97,8 @@ about 8 GB of free space · the internet once · your own Def Jam Vendetta disc 
 
 **Updating:** Def Jam Vendetta Recompiled Settings checks for a new version when it opens and offers it on its Play page. It
 downloads the new version, swaps in only what changed and rebuilds the game in a few minutes. Your settings and saves are
-kept.
+kept. Starting the game itself checks too: when a new version is out, a popup asks **Update** or **Play**, once per new
+version. Turn both checks off under About › Check for updates automatically.
 
 ## Def Jam Vendetta Recompiled Settings
 

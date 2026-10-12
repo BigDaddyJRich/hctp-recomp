@@ -149,6 +149,9 @@ public partial class UpdateViewModel : ObservableObject
 
     // ============================================================================================================
 
+    /// <summary>Started by the game's update popup (--update): check at once and open on what's new.</summary>
+    public static bool OpenOnUpdate { get; set; }
+
     /// <summary>When the window opens: an update left halfway is undone (or its rebuild carried on); otherwise, if
     /// asked to, GitHub is asked for a newer version.</summary>
     public async Task StartAsync(bool inSetup)
@@ -159,6 +162,14 @@ public partial class UpdateViewModel : ObservableObject
         if (journal != null)
         {
             Resume(journal);
+            return;
+        }
+        if (!inSetup && CanUpdate && OpenOnUpdate)
+        {
+            // the player pressed Update in the game's popup: straight to the new version's notes and its Update button
+            await CheckAsync(quiet: false);
+            if (Available != null && Available.Version > Updater.Current)
+                ShowNotes();
             return;
         }
         if (!inSetup && CanUpdate && _checkOnOpen())

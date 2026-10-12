@@ -50,9 +50,9 @@
                 <Border Classes="row">
                     <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
                         <StackPanel VerticalAlignment="Center" Spacing="2">
-                            <TextBlock Classes="label" Text="Check when this program opens" />
-                            <TextBlock Classes="hint"
-                                       Text="Asks GitHub for the newest version. Nothing else is sent, and nothing installs until you press Update." />
+                            <TextBlock Classes="label" Text="Check for updates automatically" />
+                            <TextBlock Classes="hint" TextWrapping="Wrap"
+                                       Text="When this program or the game starts, asks GitHub for the newest version. Nothing else is sent, and nothing installs until you press Update." />
                         </StackPanel>
                         <ToggleSwitch Grid.Column="1" OnContent="" OffContent="" VerticalAlignment="Center"
                                       IsChecked="{Binding Settings.CheckUpdates}" />

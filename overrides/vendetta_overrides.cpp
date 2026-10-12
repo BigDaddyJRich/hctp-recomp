@@ -7,6 +7,7 @@
 #include "runtime/ee_scheduler.h"
 #include "runtime/gs/ps2_gs_memory.h"
 #include "runtime/ps2_host_profile.h"
+#include "runtime/ps2_host_update.h"
 
 #include <algorithm>
 #include <filesystem>
@@ -572,5 +573,11 @@ namespace
         std::cout << "[vendetta] disc image: " << image.string() << std::endl;
     }
 }
+
+// The update check when the game starts (ps2_host_update.cpp): this game's releases on GitHub, and the settings program
+// that installs them (in the install folder, above the files folder that holds the game program). Set before main runs.
+static const bool g_updatesConfigured = ps2_host_update::configure({
+    "jcsix694/def-jam-vendetta-recomp", "Def-Jam-Vendetta-Recompiled-Windows.zip",
+    "Def Jam Vendetta Recompiled Settings.exe", "Def Jam Vendetta Recompiled"});
 
 PS2_REGISTER_GAME_OVERRIDE("Def Jam Vendetta (USA)", "SLUS_206.39", 0x100008u, 0u, applyVendetta)

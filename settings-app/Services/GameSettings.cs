@@ -36,8 +36,8 @@ public sealed class GameSettings
     public int Keyboard = 0;                // the player the keyboard plays as: 1-4, 0 = nobody (the default)
     // [gameplay]
     public bool UnlockAll;                  // every wrestler, attire, arena and picture, the save unchanged
-    // [updates] (this program's own: the game skips the section)
-    public bool CheckUpdates = true;        // ask GitHub for a newer version when this program opens
+    // [updates] (this program and the game)
+    public bool CheckUpdates = true;        // ask GitHub for a newer version when this program or the game starts
 
     /// <summary>The same file the game writes when there is none.</summary>
     public const string DefaultFile =
@@ -81,7 +81,10 @@ public sealed class GameSettings
         "\n" +
         "[gameplay]\n" +
         "unlock_all = false       # every wrestler, attire, arena and picture for every player, with or without a save.\n" +
-        "                         # The save itself is not changed (false = what the save has unlocked)\n";
+        "                         # The save itself is not changed (false = what the save has unlocked)\n" +
+        "\n" +
+        "[updates]\n" +
+        "check_on_open = true     # check for a new version when the game or the settings program starts\n";
 
     public static GameSettings Load(string path)
     {
