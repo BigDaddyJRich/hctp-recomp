@@ -59,7 +59,8 @@ public partial class UpdateViewModel : ObservableObject
     public ObservableCollection<NoteLine> NoteLines { get; } = new();
 
     public string CurrentVersion => Updater.CurrentText;
-    public bool CanUpdate => Updater.CanUpdate(_folder);
+    public bool CanUpdate => _sample || Updater.CanUpdate(_folder);
+    private bool _sample; // the pictures of the pages (--shot) show what an install would
 
     // --- the page shown: none (the normal pages), notes (what's new), working, done, failed ---
     [ObservableProperty]
@@ -76,7 +77,7 @@ public partial class UpdateViewModel : ObservableObject
 
     // --- the notice on Play ---
     [ObservableProperty]
-    [NotifyPropertyChangedFor(nameof(ShowNotice), nameof(NewVersion), nameof(NoticeTitle), nameof(NoticeSummary),
+    [NotifyPropertyChangedFor(nameof(ShowNotice), nameof(NewVersion), nameof(NoticeTitle), nameof(NoticePoints), nameof(NoticeMore),
         nameof(NoticeSize), nameof(NavTitle), nameof(NotesTitle))]
     private Release? _available;
 
@@ -92,13 +93,35 @@ public partial class UpdateViewModel : ObservableObject
             ? $"About {Math.Round(r.ZipSize / 1e6).ToString(CultureInfo.InvariantCulture)} MB to download, then the game is rebuilt on your PC. Your saves and settings stay as they are."
             : "A download, then the game is rebuilt on your PC. Your saves and settings stay as they are.";
     /// <summary>The notes' first few points, on one line.</summary>
-    public string NoticeSummary
+    /// <summary>The notice's summary: the first 3 points that are news (not "Good to know"), each as its first sentence,
+    /// one per line; the whole notes are under "What's new".</summary>
+    public IReadOnlyList<string> NoticePoints => NewsPoints().Take(3).Select(FirstSentence).ToList();
+
+    public string NoticeMore
     {
         get
         {
-            var points = ParseNotes(Available?.Notes ?? "").Where(n => n.IsBullet).Take(3).Select(n => n.Text).ToList();
-            return points.Count == 0 ? "See what's new." : string.Join(" · ", points);
+            var more = NewsPoints().Count() - 3;
+            return Available == null ? "" : more > 0 ? $"and {more} more under What's new" : NoticePoints.Count == 0 ? "See what's new." : "";
         }
+    }
+
+    private IEnumerable<string> NewsPoints()
+    {
+        var section = "";
+        foreach (var line in ParseNotes(Available?.Notes ?? ""))
+        {
+            if (line.IsHeading)
+                section = line.Text;
+            else if (line.IsBullet && !section.Equals("Good to know", StringComparison.OrdinalIgnoreCase))
+                yield return line.Text;
+        }
+    }
+
+    private static string FirstSentence(string text)
+    {
+        var end = text.IndexOf(". ", StringComparison.Ordinal);
+        return end > 0 ? text[..(end + 1)] : text;
     }
 
     // --- the update's own page list (in the page list's place) ---
@@ -615,12 +638,20 @@ public partial class UpdateViewModel : ObservableObject
 
     public void ShowSample(string page)
     {
+        _sample = true;
         var sample = new Release(new Version(0, 1, 1), "v0.1.1",
             "## 0.1.1\n\n### Fixed\n- [Example] The fullscreen start goes straight to black.\n- [Example] The hit sounds play as on the PS2.\n\n" +
             "### Good to know\n- [Example] The update rebuilds the game on your PC in a few minutes.",
             Updater.ReleasesUrl, "", 88_300_000, null);
+        // VENDETTA_SAMPLE_NOTES=<file>: a real release's notes in the pictures
+        if (Environment.GetEnvironmentVariable("VENDETTA_SAMPLE_NOTES") is { Length: > 0 } notesFile && File.Exists(notesFile))
+        {
+            var notes = File.ReadAllText(notesFile);
+            var heading = System.Text.RegularExpressions.Regex.Match(notes, @"^## (\d+\.\d+\.\d+)", System.Text.RegularExpressions.RegexOptions.Multiline);
+            sample = sample with { Notes = notes, Version = heading.Success ? Version.Parse(heading.Groups[1].Value) : sample.Version };
+        }
         Available = sample;
-        _toVersion = "0.1.1";
+        _toVersion = sample.Version.ToString(3);
         FillNotes(sample.Notes);
         switch (page)
         {

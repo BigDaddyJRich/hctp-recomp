@@ -13,7 +13,17 @@
                 <Grid ColumnDefinitions="*,Auto" ColumnSpacing="18">
                     <StackPanel Spacing="6">
                         <TextBlock Text="{Binding Updates.NoticeTitle}" FontSize="15" FontWeight="SemiBold" Foreground="#ffffff" />
-                        <TextBlock Text="{Binding Updates.NoticeSummary}" FontSize="13" Foreground="{StaticResource VText2}" TextWrapping="Wrap" />
+                        <ItemsControl ItemsSource="{Binding Updates.NoticePoints}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate x:DataType="x:String">
+                                    <Grid ColumnDefinitions="16,*" Margin="0,1">
+                                        <TextBlock Classes="muted" FontSize="13" Text="•" />
+                                        <TextBlock Grid.Column="1" FontSize="13" Foreground="{StaticResource VText2}" TextWrapping="Wrap" Text="{Binding}" />
+                                    </Grid>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                        <TextBlock Classes="hint" Text="{Binding Updates.NoticeMore}" IsVisible="{Binding Updates.NoticeMore, Converter={x:Static StringConverters.IsNotNullOrEmpty}}" />
                         <TextBlock Classes="hint" Text="{Binding Updates.NoticeSize}" />
                     </StackPanel>
                     <StackPanel Grid.Column="1" Spacing="8" MinWidth="170">
