@@ -5,6 +5,19 @@ The newest version is at the top.
 
 ---
 
+## 0.1.1
+
+### Fixed
+- **Widescreen:** crowd members at the sides of the picture no longer vanish and pop back in. The whole crowd is now
+  drawn across the full wide picture.
+
+### Good to know
+- To update, press **Update** when the game asks as it starts, or on the settings program's Play page. Your saves and
+  settings stay as they are.
+- After the update Windows may show "Windows protected your PC" again (the program isn't signed yet): click
+  **More info**, then **Run anyway**.
+- Mod support is actively being worked on and will come in a future update.
+
 ## 0.1.0: the first release
 
 Def Jam Vendetta (PlayStation 2, USA, SLUS-20639) as a native Windows program, built on your PC from your own disc.
