@@ -142,7 +142,8 @@ namespace
         g_origGetFontCell(rdram, ctx, runtime);
         static std::set<uint64_t> seen;
         const uint64_t key = (static_cast<uint64_t>(ra) << 32) | (self << 8) ^ (c1 << 8) | c2;
-        if (seen.size() < 600 && seen.insert(key).second)
+        static const auto cellT0 = std::chrono::steady_clock::now();
+        if (std::chrono::duration<double>(std::chrono::steady_clock::now() - cellT0).count() > 400.0 && seen.size() < 600 && seen.insert(key).second)
         {
             uint32_t cell = 0, w = 0, h = 0, cf[4] = {};
             std::memcpy(&cell, rdram + pCell, 4);
@@ -151,6 +152,24 @@ namespace
             cell &= 0x1FFFFFFu;
             if (cell)
                 std::memcpy(cf, rdram + cell, 16);
+            static std::set<uint32_t> objSeen;
+            if (objSeen.insert(self).second)
+            {
+                uint64_t t100 = 0, t140 = 0, t148 = 0;
+                std::memcpy(&t100, rdram + self + 0x100u, 8);
+                std::memcpy(&t140, rdram + self + 0x140u, 8);
+                std::memcpy(&t148, rdram + self + 0x148u, 8);
+                auto desc = [](uint64_t t, char *out, size_t n) {
+                    std::snprintf(out, n, "tbp=0x%x tbw=%u psm=0x%x tw=%u th=%u cbp=0x%x", (unsigned)(t & 0x3FFF),
+                                  (unsigned)((t >> 14) & 0x3F), (unsigned)((t >> 20) & 0x3F), (unsigned)((t >> 26) & 0xF),
+                                  (unsigned)((t >> 30) & 0xF), (unsigned)((t >> 37) & 0x3FFF));
+                };
+                char a[96], b[96], c3[96];
+                desc(t100, a, sizeof(a));
+                desc(t140, b, sizeof(b));
+                desc(t148, c3, sizeof(c3));
+                std::fprintf(stderr, "[fontobj] obj=0x%x +100 %s | +140 %s | +148 %s\n", self, a, b, c3);
+            }
             std::fprintf(stderr, "[fontcell] ra=0x%x obj=0x%x c=%02x '%c' %02x -> v0=0x%x cell=0x%x [%08x %08x %08x %08x] w=%d h=%d\n",
                          ra, self, c1, (c1 >= 0x20 && c1 < 0x7f) ? static_cast<char>(c1) : '.', c2, reg(2), cell, cf[0], cf[1],
                          cf[2], cf[3], static_cast<int>(w), static_cast<int>(h));
