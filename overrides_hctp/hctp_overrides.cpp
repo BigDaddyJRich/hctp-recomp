@@ -19,6 +19,11 @@
 #include <iostream>
 #include <thread>
 
+namespace ps2_stubs
+{
+    void setLibSdrNative(uint32_t clientData, uint32_t commandBuffer); // Kernel/Stubs/Audio.cpp
+}
+
 namespace
 {
     void startPcProfiler()
@@ -401,6 +406,13 @@ namespace
         installTraceHooks(runtime);
         startPcProfiler();
         runtime.replaceFunction(0x11d810u, cdLayerSearchFile);
+        // native libsdr: sceSdRemote as SIF RPC to the real sdrdrv IRX (sound effects); the game's client data at
+        // 0x48F240 and command buffer at 0x48F200 (from its sceSdRemoteInit / sceSdRemote). HCTP_SDR_STUB=1 = stand-in.
+        if (std::getenv("HCTP_SDR_STUB") == nullptr)
+        {
+            ps2_stubs::setLibSdrNative(0x48F240u, 0x48F200u);
+            std::cerr << "[hctp] libsdr: native (RPC to sdrdrv)" << std::endl;
+        }
         if (!(runtime.replaceFunction(0x124448u, libcMallocR) && runtime.replaceFunction(0x121ae0u, libcCallocR) &&
               runtime.replaceFunction(0x123570u, libcFreeR) && runtime.replaceFunction(0x126c20u, libcReallocR)))
             std::cerr << "[heap] libc _r allocator override FAILED" << std::endl;
