@@ -917,6 +917,9 @@ def main():
     if not os.path.exists(ELF):
         sys.exit(f'vu1_recomp: {ELF} not found (python tools\\prepare_disc.py "<your disc>" first)')
     ranges = os.environ.get('HCTP_VU1_RANGES')
+    if not ranges and os.path.basename(ELF).upper().startswith('SLUS_207.87'):
+        # HCTP: every VU1 MPG packet in the ELF (20 programs incl. the 9 overlays at VU 0x2a00), see hctp_vu1_ranges.txt
+        ranges = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'hctp_vu1_ranges.txt')).read().strip()
     if ranges:
         # HCTP (Metrowerks ELF, no .vutext): the VIF MPG packets sit inside the main section; take them by vaddr range
         # ("start:end,..."; HCTP SLUS_207.87 = 0x44c6e4:0x44eb70,0x4526a4:0x452d08 - 11 programs, found from VENDETTA_VULOG)
