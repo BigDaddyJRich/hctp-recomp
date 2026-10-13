@@ -8,5 +8,6 @@ set HCTP_PCPROF=1
 set VENDETTA_HOSTPROF=1
 set VENDETTA_SPULOG=1
 set VENDETTA_EE_CYCLE_PCT=100
+set VENDETTA_PADLOG=1
 set VENDETTA_PADSCRIPT=
 "F:\hctp-newbase\PS2Recomp\out\fast\ps2xRuntime\ps2EntryRunner.exe" SLUS_207.87 2> "F:\hctp-newbase\logs\x.err"

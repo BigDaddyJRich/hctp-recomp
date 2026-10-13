@@ -498,6 +498,10 @@ namespace
 
     void applyHctp(PS2Runtime &runtime)
     {
+        // CSR reads that test only FIELD (bit 13): yGsSyncV (vsync wait loop) and crisys_VSyncCallBack. Fenced, each
+        // waited for the whole chain worker (7 + 4 s per 260 s demo run). Same exemption as Vendetta's 0x1A16C0.
+        runtime.chain().allowUnfencedCsrRead(0x14c664u);
+        runtime.chain().allowUnfencedCsrRead(0x15881cu);
         if (std::getenv("HCTP_CRILOG"))
         {
             criHook<0>(runtime, 0x3b50c0u, "ADXF_ReadNw", true);
