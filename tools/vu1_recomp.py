@@ -602,7 +602,8 @@ def emit_lower(e, address, lower, upper):
             L.append(f's.vi[{vit}] = {(address + 16) // 8};')
         e.branch = ('always', target)
     elif op in (0x24, 0x25):                                            # JR / JALR
-        L.append(f'jumpTarget = (static_cast<uint32_t>(static_cast<uint16_t>({branch_vi(vis)})) * 8u) & 0x3FFFu;')
+        # JR / JALR read the current VI (no branch VI-delay backup; PCSX2 _vuJR / mVUanalyzeJump)
+        L.append(f'jumpTarget = (static_cast<uint32_t>(static_cast<uint16_t>({"0" if vis == 0 else f"s.vi[{vis}]"})) * 8u) & 0x3FFFu;')
         if op == 0x25 and vit:
             L.append(f's.vi[{vit}] = {(address + 16) // 8};')
         e.branch = ('jump',)
