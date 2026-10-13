@@ -69,6 +69,118 @@ namespace
     }
 
 
+    // TEMP diag (HCTP_FONTLOG=1): CFontDraw::ShowString 0x162a20 (this, const uchar *str, ...) - each distinct string
+    // (hex + text) with the font object's table pointer, for the garbled HUD / season dialogue text.
+    PS2Runtime::RecompiledFunction g_origShowString = nullptr;
+    void showStringLogged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        static std::set<std::string> seen;
+        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        const uint32_t str = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5])) & 0x1FFFFFFu;
+        if (seen.size() < 400 && str != 0u)
+        {
+            std::string raw;
+            for (uint32_t i = 0; i < 80u && rdram[str + i] != 0u; ++i)
+                raw.push_back(static_cast<char>(rdram[str + i]));
+            char key[16];
+            std::snprintf(key, sizeof(key), "%x:", self);
+            if (seen.insert(std::string(key) + raw).second)
+            {
+                uint32_t font = 0, count = 0, table = 0;
+                std::memcpy(&font, rdram + self + 0x154u, 4);
+                font &= 0x1FFFFFFu;
+                if (font)
+                {
+                    std::memcpy(&count, rdram + font + 0x14u, 4);
+                    std::memcpy(&table, rdram + font + 0x20u, 4);
+                }
+                std::string hex, text;
+                char b[8];
+                for (unsigned char c : raw)
+                {
+                    std::snprintf(b, sizeof(b), "%02x", c);
+                    hex += b;
+                    text.push_back(c >= 0x20 && c < 0x7f ? static_cast<char>(c) : '.');
+                }
+                if (font && table && count && count < 5000u)
+                {
+                    static std::set<uint32_t> dumped;
+                    if (dumped.insert(font).second)
+                    {
+                        std::cerr << "[fontlog] font 0x" << std::hex << font << " header:";
+                        for (uint32_t o = 0; o < 0x40u; o += 4)
+                        {
+                            uint32_t w;
+                            std::memcpy(&w, rdram + font + o, 4);
+                            std::cerr << " " << w;
+                        }
+                        std::cerr << " codes:";
+                        for (uint32_t i = 0; i < count && i < 120u; ++i)
+                        {
+                            uint16_t c;
+                            std::memcpy(&c, rdram + ((table + i * 2u) & 0x1FFFFFFu), 2);
+                            std::cerr << " " << c;
+                        }
+                        std::cerr << std::dec << std::endl;
+                    }
+                }
+                std::cerr << "[fontlog] obj=0x" << std::hex << self << " font=0x" << font << " n=" << std::dec << count
+                          << " tab=0x" << std::hex << table << " ra=0x" << static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]))
+                          << std::dec << " \"" << text << "\" " << hex << std::endl;
+            }
+        }
+        g_origShowString(rdram, ctx, runtime);
+    }
+
+    // TEMP diag (HCTP_FONTLOG=1): CFontDraw::GetFontCell 0x1625b0 (this, c1, c2, const uchar *&, FontCell *&, int &, int &)
+    PS2Runtime::RecompiledFunction g_origGetFontCell = nullptr;
+    void getFontCellLogged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        auto reg = [&](int r) { return static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[r])); };
+        const uint32_t self = reg(4) & 0x1FFFFFFu, c1 = reg(5) & 0xFFu, c2 = reg(6) & 0xFFu, ra = reg(31);
+        const uint32_t pCell = reg(8) & 0x1FFFFFFu, pW = reg(9) & 0x1FFFFFFu, pH = reg(10) & 0x1FFFFFFu;
+        g_origGetFontCell(rdram, ctx, runtime);
+        static std::set<uint64_t> seen;
+        const uint64_t key = (static_cast<uint64_t>(ra) << 32) | (self << 8) ^ (c1 << 8) | c2;
+        if (seen.size() < 600 && seen.insert(key).second)
+        {
+            uint32_t cell = 0, w = 0, h = 0, cf[4] = {};
+            std::memcpy(&cell, rdram + pCell, 4);
+            std::memcpy(&w, rdram + pW, 4);
+            std::memcpy(&h, rdram + pH, 4);
+            cell &= 0x1FFFFFFu;
+            if (cell)
+                std::memcpy(cf, rdram + cell, 16);
+            std::fprintf(stderr, "[fontcell] ra=0x%x obj=0x%x c=%02x '%c' %02x -> v0=0x%x cell=0x%x [%08x %08x %08x %08x] w=%d h=%d\n",
+                         ra, self, c1, (c1 >= 0x20 && c1 < 0x7f) ? static_cast<char>(c1) : '.', c2, reg(2), cell, cf[0], cf[1],
+                         cf[2], cf[3], static_cast<int>(w), static_cast<int>(h));
+        }
+    }
+
+    // TEMP diag (HCTP_FONTLOG=1): FontCtrlData*::SetTex0(u64 &tex0) - the TEX0 each font kind draws with
+    PS2Runtime::RecompiledFunction g_origSetTex0[4] = {};
+    const uint32_t kSetTex0Addr[4] = {0x194f60u, 0x3a5ba0u, 0x2d3550u, 0x233710u};
+    template <int I>
+    void setTex0Logged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        const uint32_t out = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5])) & 0x1FFFFFFu;
+        const uint32_t ra = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
+        g_origSetTex0[I](rdram, ctx, runtime);
+        uint64_t tex0 = 0;
+        std::memcpy(&tex0, rdram + out, 8);
+        static std::set<uint64_t> seen;
+        if (seen.size() < 200 && seen.insert(tex0 ^ (static_cast<uint64_t>(I) << 62)).second)
+        {
+            static const auto t0 = std::chrono::steady_clock::now();
+            std::fprintf(stderr, "[settex0] t=%.1f kind=%d (0x%x) obj=0x%x ra=0x%x tbp=0x%x tbw=%u psm=0x%x tw=%u th=%u cbp=0x%x\n",
+                         std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(), I, kSetTex0Addr[I], self, ra,
+                         static_cast<unsigned>(tex0 & 0x3FFF), static_cast<unsigned>((tex0 >> 14) & 0x3F),
+                         static_cast<unsigned>((tex0 >> 20) & 0x3F), static_cast<unsigned>((tex0 >> 26) & 0xF),
+                         static_cast<unsigned>((tex0 >> 30) & 0xF), static_cast<unsigned>((tex0 >> 37) & 0x3FFF));
+        }
+    }
+
     // TEMP diag (HCTP_SPRLOG=1): CSpriteDraw::ShowFast 0x15f450 object fields (positions 0x90-0xD4) for the ATTENTION
     // screen's missing plate/icon sprites.
     PS2Runtime::RecompiledFunction g_origShowFast = nullptr;
@@ -422,6 +534,24 @@ namespace
                             runtime.replaceFunction(0x23ddb0u, menuMovieCanUse) &&
                             runtime.replaceFunction(0x1b0ac0u, moviePlayerGetStat);
             std::cerr << "[hctp] movie skip hacks " << (ok ? "on" : "FAILED") << " (HCTP_MOVIES=1 = real movie code)" << std::endl;
+        }
+        if (std::getenv("HCTP_FONTLOG"))
+        {
+            g_origGetFontCell = runtime.lookupFunction(0x1625b0u);
+            if (g_origGetFontCell)
+                runtime.replaceFunction(0x1625b0u, getFontCellLogged);
+            {
+                PS2Runtime::RecompiledFunction fns[4] = {setTex0Logged<0>, setTex0Logged<1>, setTex0Logged<2>, setTex0Logged<3>};
+                for (int i = 0; i < 4; ++i)
+                {
+                    g_origSetTex0[i] = runtime.lookupFunction(kSetTex0Addr[i]);
+                    if (g_origSetTex0[i])
+                        runtime.replaceFunction(kSetTex0Addr[i], fns[i]);
+                }
+            }
+            g_origShowString = runtime.lookupFunction(0x162a20u);
+            if (g_origShowString)
+                runtime.replaceFunction(0x162a20u, showStringLogged);
         }
         if (std::getenv("HCTP_SPRLOG"))
         {
