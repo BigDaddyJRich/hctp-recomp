@@ -1,7 +1,8 @@
 [submodule "PS2Recomp"]
 	path = PS2Recomp
-	url = https://github.com/ran-j/PS2Recomp
+	url = https://github.com/BigDaddyJRich/PS2Recomp.git
 	ignore = dirty
+	branch = hctp
 [submodule "third_party/parallel-gs"]
 	path = third_party/parallel-gs
 	url = https://github.com/Arntzen-Software/parallel-gs
