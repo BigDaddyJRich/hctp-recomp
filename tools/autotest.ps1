@@ -34,7 +34,7 @@ $env:VENDETTA_SPULOG = '1'
 $env:VENDETTA_AUDIOLOG = '1'
 $env:VENDETTA_PADSCRIPT = $Pad
 $env:VENDETTA_AUDIODUMP = "$out\audio.pcm"
-foreach ($kv in $Extra) { $k, $v = $kv.Split('=', 2); Set-Item -Path "env:$k" -Value $v }
+foreach ($kv in ($Extra -join ",").Split(",", [StringSplitOptions]::RemoveEmptyEntries)) { $k, $v = $kv.Split('=', 2); Set-Item -Path "env:$k" -Value $v }
 
 $exe = 'F:\hctp-newbase\PS2Recomp\out\fast\ps2xRuntime\ps2EntryRunner.exe'
 $p = Start-Process -FilePath $exe -ArgumentList 'SLUS_207.87' -WorkingDirectory 'F:\HCTP MODS\Vanilla' `

@@ -1,3 +1,4 @@
+#include <utility>
 // WWE SmackDown! Here Comes the Pain (USA, SLUS-20787) - runtime overrides for this game build.
 // Copied into ps2xRuntime/src/runner/ by tools/sync_generated.py; edit this file in the repo's overrides_hctp/ folder.
 //
@@ -6,6 +7,9 @@
 #include "ps2_runtime.h"
 #include "game_overrides.h"
 #include "runtime/ps2_host_profile.h"
+#include "ps2_host_backend.h"
+#include <cmath>
+#include <mutex>
 
 #include <algorithm>
 #include <chrono>
@@ -264,10 +268,357 @@ namespace
         runtime->lookupFunction(0x137ef0u)(rdram, ctx, runtime); // TitleMovieSequence::GoNext
     }
 
+
+    // TEMP diag (HCTP_ADXTLOG=1): every ADXT start/stop/create call with a0..a3, ra and (Fname) the file name -
+    // which API music / SE use, for the native ADX player
+    struct AdxtHook { uint32_t addr; const char *name; PS2Runtime::RecompiledFunction orig; };
+    AdxtHook g_adxtHooks[] = {
+        {0x3bd778u, "Create", nullptr}, {0x3bdab8u, "Destroy", nullptr}, {0x3bf760u, "StartFname", nullptr},
+        {0x3b6918u, "StartFnameLp", nullptr}, {0x3bf668u, "StartAfs", nullptr}, {0x3bf800u, "StartMem", nullptr},
+        {0x3bf8f8u, "StartMemIdx", nullptr}, {0x3bdeb8u, "StartSj", nullptr}, {0x3b6838u, "StartSeamless", nullptr},
+        {0x3bdfe0u, "Stop", nullptr}, {0x3bdf40u, "StopWithoutLsc", nullptr}, {0x3b6710u, "EntryFname", nullptr},
+        {0x3b6770u, "EntryAfs", nullptr}, {0x3b68e8u, "SetSeamlessLp", nullptr}, {0x3be960u, "SetOutVol", nullptr}};
+
+    template <int I>
+    void adxtLogged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const AdxtHook &h = g_adxtHooks[I];
+        auto reg = [ctx](int r) { return static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[r])); };
+        char line[400];
+        int n = std::snprintf(line, sizeof(line), "[adxt] %s a0=%x a1=%x a2=%x a3=%x ra=%x", h.name, reg(4), reg(5), reg(6), reg(7), reg(31));
+        const uint32_t strArg = I == 2 || I == 3 || I == 11 ? reg(5) : 0u; // StartFname/Lp/EntryFname (adxt, fname)
+        if (strArg && strArg < 0x2000000u)
+            std::snprintf(line + n, sizeof(line) - n, " \"%.120s\"", reinterpret_cast<const char *>(rdram + strArg));
+        std::cerr << line << std::endl;
+        h.orig(rdram, ctx, runtime);
+        if (I == 0)
+            std::cerr << "[adxt] Create -> " << std::hex << reg(2) << std::dec << std::endl;
+    }
+
+    template <int... I>
+    void installAdxtLog(PS2Runtime &runtime, std::integer_sequence<int, I...>)
+    {
+        ((g_adxtHooks[I].orig = runtime.lookupFunction(g_adxtHooks[I].addr),
+          g_adxtHooks[I].orig && runtime.replaceFunction(g_adxtHooks[I].addr, adxtLogged<I>)), ...);
+    }
+
     void returnValue(R5900Context *ctx, int32_t value)
     {
         ctx->r[2] = _mm_set_epi64x(0, static_cast<int64_t>(value));
         ctx->pc = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
+    }
+
+    // ---- Native ADX music (HCTP_NATIVE_ADX=1) ----------------------------------------------------------------------
+    // ADXT_StartAfs(adxt, partition, file) for the BGM / CHEER / BG_ENV partitions is played on the host: the ADX file
+    // is read from the .afs, decoded here (CRI ADX v3/v4, unencrypted) and played on its own raylib stream. The ADXT
+    // handle stays stopped inside the game's library (no EE decode, no IOP rna/sj traffic); GetStat answers PLAYING /
+    // PLAYEND for it, Stop / Destroy end it, SetOutVol sets its volume. SE (StartMemIdx) and movies (StartSj) unchanged.
+    // Partition ids = the order of the .afs names in the ELF (0-4 BGM000-004, 10 PBP000, 11 CHEER, 12 BG_ENV).
+    const char *adxPartitionFile(uint32_t partition)
+    {
+        static const char *names[] = {"BGM/BGM000.afs", "BGM/BGM001.afs", "BGM/BGM002.afs", "BGM/BGM003.afs",
+                                      "BGM/BGM004.afs", nullptr, nullptr, nullptr, nullptr, nullptr,
+                                      "BGM/PBP000.afs", "BGM/CHEER.afs", "BGM/BG_ENV.afs"};
+        return partition < sizeof(names) / sizeof(names[0]) ? names[partition] : nullptr;
+    }
+
+    uint32_t be32(const uint8_t *p) { return (uint32_t(p[0]) << 24) | (uint32_t(p[1]) << 16) | (uint32_t(p[2]) << 8) | p[3]; }
+    uint16_t be16(const uint8_t *p) { return static_cast<uint16_t>((p[0] << 8) | p[1]); }
+
+    struct AdxPlayer
+    {
+        std::mutex m;
+        uint32_t adxt = 0u; // the game's handle (0 = free)
+        bool playing = false, ended = false;
+        std::vector<uint8_t> file;
+        uint32_t dataOff = 0u, channels = 0u, rate = 0u, total = 0u;
+        int32_t c1 = 0, c2 = 0;
+        bool loop = false;
+        uint32_t loopStart = 0u, loopEnd = 0u;
+        uint64_t pos = 0u;       // next sample index
+        uint32_t blkIndex = ~0u; // decoded frame (32 samples) in blk
+        int16_t blk[2][32] = {};
+        int32_t hist[2][2] = {};
+        int32_t loopHist[2][2] = {};
+        bool loopHistSaved = false;
+        float gain = 1.0f;
+        AudioStream stream{};
+        bool streamOpen = false;
+        uint32_t streamRate = 0u, streamChannels = 0u;
+    };
+    constexpr int kAdxPlayers = 4;
+    AdxPlayer g_adxPlayers[kAdxPlayers];
+    std::mutex g_adxAlloc;
+    bool g_nativeAdxLog = false;
+
+    void adxDecodeFrame(AdxPlayer &pl, uint32_t frame)
+    {
+        if (pl.loop && !pl.loopHistSaved && frame == pl.loopStart / 32u)
+        {
+            std::memcpy(pl.loopHist, pl.hist, sizeof(pl.hist));
+            pl.loopHistSaved = true;
+        }
+        for (uint32_t c = 0; c < pl.channels; ++c)
+        {
+            const size_t off = pl.dataOff + (size_t(frame) * pl.channels + c) * 18u;
+            int32_t h1 = pl.hist[c][0], h2 = pl.hist[c][1];
+            if (off + 18u > pl.file.size())
+            {
+                std::memset(pl.blk[c], 0, sizeof(pl.blk[c]));
+                continue;
+            }
+            const uint8_t *b = pl.file.data() + off;
+            const int32_t scale = (be16(b) & 0x1FFF) + 1;
+            for (int k = 0; k < 32; ++k)
+            {
+                const uint8_t byte = b[2 + k / 2];
+                int32_t nib = (k & 1) ? (byte & 0xF) : (byte >> 4);
+                if (nib & 8)
+                    nib -= 16;
+                int32_t smp = nib * scale + ((pl.c1 * h1 + pl.c2 * h2) >> 12);
+                smp = std::clamp(smp, -32768, 32767);
+                h2 = h1;
+                h1 = smp;
+                pl.blk[c][k] = static_cast<int16_t>(smp);
+            }
+            pl.hist[c][0] = h1;
+            pl.hist[c][1] = h2;
+        }
+        pl.blkIndex = frame;
+    }
+
+    void adxFill(AdxPlayer &pl, void *buffer, unsigned int frames)
+    {
+        std::lock_guard<std::mutex> lock(pl.m);
+        int16_t *out = static_cast<int16_t *>(buffer);
+        const uint32_t ch = pl.streamChannels ? pl.streamChannels : 2u;
+        for (unsigned int i = 0; i < frames; ++i)
+        {
+            if (pl.playing && !pl.ended && pl.channels != 0u && pl.loop && pl.loopEnd > pl.loopStart &&
+                pl.pos >= pl.loopEnd && pl.loopHistSaved)
+            {
+                // back to the loop start: re-decode its frame from the history saved when it was first decoded
+                pl.pos = pl.loopStart;
+                std::memcpy(pl.hist, pl.loopHist, sizeof(pl.hist));
+                adxDecodeFrame(pl, static_cast<uint32_t>(pl.pos / 32u));
+            }
+            if (pl.playing && !pl.ended && pl.pos >= pl.total)
+            {
+                pl.ended = true;
+                if (g_nativeAdxLog)
+                    std::fprintf(stderr, "[nadx] adxt=%x ended%c", pl.adxt, 10);
+            }
+            if (!pl.playing || pl.ended || pl.channels == 0u)
+            {
+                for (uint32_t c = 0; c < ch; ++c)
+                    out[i * ch + c] = 0;
+                continue;
+            }
+            const uint32_t frame = static_cast<uint32_t>(pl.pos / 32u);
+            if (frame != pl.blkIndex)
+                adxDecodeFrame(pl, frame);
+            const uint32_t k = static_cast<uint32_t>(pl.pos % 32u);
+            for (uint32_t c = 0; c < ch; ++c)
+            {
+                const int32_t v = static_cast<int32_t>(pl.blk[std::min(c, pl.channels - 1u)][k] * pl.gain);
+                out[i * ch + c] = static_cast<int16_t>(std::clamp(v, -32768, 32767));
+            }
+            ++pl.pos;
+        }
+    }
+
+    template <int I>
+    void adxStreamCallback(void *buffer, unsigned int frames) { adxFill(g_adxPlayers[I], buffer, frames); }
+    using AdxCb = void (*)(void *, unsigned int);
+    const AdxCb g_adxCallbacks[kAdxPlayers] = {adxStreamCallback<0>, adxStreamCallback<1>, adxStreamCallback<2>, adxStreamCallback<3>};
+
+    AdxPlayer *adxFind(uint32_t adxt)
+    {
+        for (auto &pl : g_adxPlayers)
+            if (pl.adxt == adxt && adxt != 0u)
+                return &pl;
+        return nullptr;
+    }
+
+    bool adxLoad(AdxPlayer &pl, uint32_t partition, uint32_t fid)
+    {
+        const char *path = adxPartitionFile(partition);
+        if (!path)
+            return false;
+        FILE *f = std::fopen(path, "rb");
+        if (!f)
+            return false;
+        uint8_t head[8];
+        uint32_t entry[2] = {};
+        bool ok = std::fread(head, 1, 8, f) == 8 && std::memcmp(head, "AFS", 3) == 0;
+        uint32_t count = 0u;
+        if (ok)
+            std::memcpy(&count, head + 4, 4);
+        ok = ok && fid < count && std::fseek(f, 8 + long(fid) * 8, SEEK_SET) == 0 && std::fread(entry, 4, 2, f) == 2;
+        std::vector<uint8_t> data;
+        if (ok && entry[1] > 0x40u && entry[1] < 0x10000000u)
+        {
+            data.resize(entry[1]);
+            ok = std::fseek(f, long(entry[0]), SEEK_SET) == 0 && std::fread(data.data(), 1, data.size(), f) == data.size();
+        }
+        else
+            ok = false;
+        std::fclose(f);
+        if (!ok || be16(data.data()) != 0x8000u || data[4] != 3u || data[5] != 18u || data[6] != 4u || data[0x13] >= 8u)
+        {
+            std::fprintf(stderr, "[nadx] cannot play %s file %u (not plain ADX)%c", path, fid, 10);
+            return false;
+        }
+        pl.file = std::move(data);
+        const uint8_t *d = pl.file.data();
+        pl.dataOff = be16(d + 2) + 4u;
+        pl.channels = std::clamp<uint32_t>(d[7], 1u, 2u);
+        pl.rate = be32(d + 8);
+        pl.total = be32(d + 12);
+        const double hp = be16(d + 16);
+        const double a = std::sqrt(2.0) - std::cos(2.0 * 3.14159265358979 * hp / pl.rate);
+        const double b = std::sqrt(2.0) - 1.0;
+        const double c = (a - std::sqrt((a + b) * (a - b))) / b;
+        pl.c1 = static_cast<int32_t>(c * 2.0 * 4096.0);
+        pl.c2 = static_cast<int32_t>(-(c * c) * 4096.0);
+        const uint32_t loopBase = d[0x12] == 4u ? 0x24u : (d[0x12] == 3u ? 0x18u : 0u);
+        pl.loop = loopBase && pl.dataOff >= loopBase + 0x14u && be32(d + loopBase) != 0u;
+        pl.loopStart = pl.loop ? be32(d + loopBase + 4u) : 0u;
+        pl.loopEnd = pl.loop ? std::min(be32(d + loopBase + 12u), pl.total) : 0u;
+        pl.pos = 0u;
+        pl.blkIndex = ~0u;
+        std::memset(pl.hist, 0, sizeof(pl.hist));
+        pl.loopHistSaved = false;
+        pl.ended = false;
+        pl.gain = 1.0f;
+        if (g_nativeAdxLog)
+            std::fprintf(stderr, "[nadx] load %s #%u: %u ch %u Hz %u samples loop=%d %u-%u%c", path, fid, pl.channels,
+                         pl.rate, pl.total, pl.loop ? 1 : 0, pl.loopStart, pl.loopEnd, 10);
+        return true;
+    }
+
+    PS2Runtime::RecompiledFunction g_origAdxtStartAfs, g_origAdxtGetStat, g_origAdxtStop, g_origAdxtDestroy, g_origAdxtSetOutVol;
+    uint32_t regU(R5900Context *ctx, int r) { return static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[r])); }
+
+    void adxStopNative(uint32_t adxt)
+    {
+        std::lock_guard<std::mutex> alloc(g_adxAlloc);
+        if (AdxPlayer *pl = adxFind(adxt))
+        {
+            std::lock_guard<std::mutex> lock(pl->m);
+            pl->playing = false;
+            pl->adxt = 0u;
+            pl->file.clear();
+            pl->file.shrink_to_fit();
+            if (g_nativeAdxLog)
+                std::fprintf(stderr, "[nadx] stop adxt=%x%c", adxt, 10);
+        }
+    }
+
+    void nativeStartAfs(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t adxt = regU(ctx, 4), partition = regU(ctx, 5), fid = regU(ctx, 6);
+        const uint32_t ra = regU(ctx, 31);
+        if (adxPartitionFile(partition))
+        {
+            adxStopNative(adxt);
+            // the library side must not keep playing an older stream on this handle
+            g_origAdxtStop(rdram, ctx, runtime);
+            ctx->r[4] = _mm_set_epi64x(0, static_cast<int64_t>(adxt));
+            ctx->r[31] = _mm_set_epi64x(0, static_cast<int64_t>(ra));
+            ctx->pc = ra;
+            std::lock_guard<std::mutex> alloc(g_adxAlloc);
+            for (int i = 0; i < kAdxPlayers; ++i)
+            {
+                AdxPlayer &pl = g_adxPlayers[i];
+                if (pl.adxt != 0u)
+                    continue;
+                std::lock_guard<std::mutex> lock(pl.m);
+                if (!adxLoad(pl, partition, fid))
+                    break;
+                if (!pl.streamOpen || pl.streamRate != pl.rate || pl.streamChannels != pl.channels)
+                {
+                    if (pl.streamOpen)
+                        UnloadAudioStream(pl.stream);
+                    pl.stream = LoadAudioStream(pl.rate, 16, pl.channels);
+                    SetAudioStreamCallback(pl.stream, g_adxCallbacks[i]);
+                    pl.streamRate = pl.rate;
+                    pl.streamChannels = pl.channels;
+                    pl.streamOpen = true;
+                    PlayAudioStream(pl.stream);
+                }
+                pl.adxt = adxt;
+                pl.playing = true;
+                if (g_nativeAdxLog)
+                    std::fprintf(stderr, "[nadx] StartAfs adxt=%x pt=%u fid=%u -> player %d%c", adxt, partition, fid, i, 10);
+                return;
+            }
+            std::fprintf(stderr, "[nadx] StartAfs adxt=%x pt=%u fid=%u: not played natively%c", adxt, partition, fid, 10);
+            ctx->r[5] = _mm_set_epi64x(0, static_cast<int64_t>(partition));
+            ctx->r[6] = _mm_set_epi64x(0, static_cast<int64_t>(fid));
+        }
+        g_origAdxtStartAfs(rdram, ctx, runtime);
+    }
+
+    void nativeGetStat(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        {
+            std::lock_guard<std::mutex> alloc(g_adxAlloc);
+            if (AdxPlayer *pl = adxFind(regU(ctx, 4)))
+            {
+                std::lock_guard<std::mutex> lock(pl->m);
+                returnValue(ctx, pl->ended ? 5 : 3); // ADXT_STAT_PLAYEND / PLAYING
+                return;
+            }
+        }
+        g_origAdxtGetStat(rdram, ctx, runtime);
+    }
+
+    void nativeStop(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        adxStopNative(regU(ctx, 4));
+        g_origAdxtStop(rdram, ctx, runtime);
+    }
+
+    void nativeDestroy(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        adxStopNative(regU(ctx, 4));
+        g_origAdxtDestroy(rdram, ctx, runtime);
+    }
+
+    void nativeSetOutVol(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        {
+            std::lock_guard<std::mutex> alloc(g_adxAlloc);
+            if (AdxPlayer *pl = adxFind(regU(ctx, 4)))
+            {
+                const int32_t vol = static_cast<int32_t>(regU(ctx, 5)); // 0.1 dB, 0 = full, -999 = silent
+                std::lock_guard<std::mutex> lock(pl->m);
+                pl->gain = vol <= -960 ? 0.0f : std::pow(10.0f, static_cast<float>(vol) / 200.0f);
+            }
+        }
+        g_origAdxtSetOutVol(rdram, ctx, runtime);
+    }
+
+    void installNativeAdx(PS2Runtime &runtime)
+    {
+        g_nativeAdxLog = std::getenv("HCTP_ADXTLOG") != nullptr;
+        g_origAdxtStartAfs = runtime.lookupFunction(0x3bf668u);
+        g_origAdxtGetStat = runtime.lookupFunction(0x3be0a0u);
+        g_origAdxtStop = runtime.lookupFunction(0x3bdfe0u);
+        g_origAdxtDestroy = runtime.lookupFunction(0x3bdab8u);
+        g_origAdxtSetOutVol = runtime.lookupFunction(0x3be960u);
+        if (!g_origAdxtStartAfs || !g_origAdxtGetStat || !g_origAdxtStop || !g_origAdxtDestroy || !g_origAdxtSetOutVol)
+        {
+            std::cerr << "[nadx] ADXT functions not found - native ADX off" << std::endl;
+            return;
+        }
+        runtime.replaceFunction(0x3bf668u, nativeStartAfs);
+        runtime.replaceFunction(0x3be0a0u, nativeGetStat);
+        runtime.replaceFunction(0x3bdfe0u, nativeStop);
+        runtime.replaceFunction(0x3bdab8u, nativeDestroy);
+        runtime.replaceFunction(0x3be960u, nativeSetOutVol);
+        std::cerr << "[nadx] native ADX music on" << std::endl;
     }
 
     void menuMovieCanUse(uint8_t *, R5900Context *ctx, PS2Runtime *) { returnValue(ctx, 1); }    // MenuMovie::CanUse 0x23ddb0
@@ -613,6 +964,10 @@ namespace
                 runtime.replaceFunction(0x149940u, setDataLogged);
             std::cerr << "[sprlog] hook " << (ok ? "installed" : "NOT installed") << " orig=" << (g_origShowFast != nullptr) << std::endl;
         }
+        if (const char *nadx = std::getenv("HCTP_NATIVE_ADX"); nadx && nadx[0] == '1')
+            installNativeAdx(runtime);
+        else if (std::getenv("HCTP_ADXTLOG"))
+            installAdxtLog(runtime, std::make_integer_sequence<int, 15>{});
         std::cerr << "[hctp] overrides applied" << std::endl;
     }
 }
