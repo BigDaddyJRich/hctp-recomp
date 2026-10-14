@@ -502,6 +502,31 @@ namespace
         // waited for the whole chain worker (7 + 4 s per 260 s demo run). Same exemption as Vendetta's 0x1A16C0.
         runtime.chain().allowUnfencedCsrRead(0x14c664u);
         runtime.chain().allowUnfencedCsrRead(0x15881cu);
+        // DIAG [adxmon] (HCTP_ADXMON=1): every 5 s the first 0x40 bytes of the 4 ADXT handles (0x425cc8 + i*0xc4;
+        // byte 0 = used, byte 1 = stat 0 stop 1 decinfo 2 prep 3 playing 4 end 5 error) - finds stuck music streams.
+        if (std::getenv("HCTP_ADXMON"))
+        {
+            uint8_t *const ram = runtime.memory().getRDRAM();
+            std::thread([ram] {
+                for (;;)
+                {
+                    std::this_thread::sleep_for(std::chrono::seconds(5));
+                    for (uint32_t i = 0; i < 4u; ++i)
+                    {
+                        const uint32_t h = 0x425cc8u + i * 0xc4u;
+                        char line[400];
+                        int n = std::snprintf(line, sizeof(line), "[adxmon] h%u 0x%x:", i, h);
+                        for (uint32_t o = 0; o < 0x40u && n < 380; o += 4)
+                        {
+                            uint32_t w;
+                            std::memcpy(&w, ram + h + o, 4);
+                            n += std::snprintf(line + n, sizeof(line) - n, " %08x", w);
+                        }
+                        std::fprintf(stderr, "%s%c", line, 10);
+                    }
+                }
+            }).detach();
+        }
         if (std::getenv("HCTP_CRILOG"))
         {
             criHook<0>(runtime, 0x3b50c0u, "ADXF_ReadNw", true);
