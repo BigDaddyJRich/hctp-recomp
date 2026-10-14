@@ -447,6 +447,9 @@ FAST_UPPER_ACC = {0x1C: ('mul', 'q'), 0x1E: ('mul', 'i'), 0x20: ('add', 'q'), 0x
                   0x2A: ('mul', 'lane'), 0x2C: ('sub', 'lane'), 0x2D: ('msub', 'lane')}
 
 
+THROUGHPUT = False   # HCTP_VU1_FAST variant: no vf/vi/acc stall/ready/settle bookkeeping, plain float MADD/MSUB
+
+
 def emit_upper(e, address, upper):
     op, dest, fs, ft, fd = upper & 0x3F, DEST(upper), FS(upper), FT(upper), FD(upper)
     kind = None
@@ -511,6 +514,8 @@ def emit_upper(e, address, upper):
         result = f'vu1v::operand(vu1v::{kind}(a, b))'
     elif kind in ('max', 'mini'):
         result = f'vu1v::{"max" if kind == "max" else "min"}(a, b)'
+    elif THROUGHPUT:
+        result = f'vu1v::operand(vu1v::{"add" if kind == "madd" else "sub"}(vu1v::operand(vu1v::load(s.acc)), vu1v::mul(a, b)))'
     else:
         result = (f'vu1v::fused<0x{mask:x}u, {"false" if kind == "madd" else "true"}>'
                   f'(vu1v::operand(vu1v::load(s.acc)), a, b)')
@@ -742,12 +747,12 @@ def pair_work(prog, p, exit_stmt):
     # stall test: any read lane not ready at cyc (= calculatePairReadyCycle(...) > cycle); the stall itself is the
     # interpreter's loop (Vu1Compiled::stall), which advances the cycle — reloaded after it
     late = []
-    for reg, lanes in p.stall_vf:
+    for reg, lanes in ([] if THROUGHPUT else p.stall_vf):
         late.append(f'vu1fast::lanesAfter<0x{components(lanes):x}u>(vfReady + {reg * 4}, cyc)')
     for r in range(1, 16):
-        if p.stall_vi & (1 << r):
+        if p.stall_vi & (1 << r) and not THROUGHPUT:
             late.append(f'static_cast<unsigned>(viReady[{r}] > cyc)')
-    if p.stall_acc:
+    if p.stall_acc and not THROUGHPUT:
         late.append(f'vu1fast::lanesAfter<0x{components(p.stall_acc):x}u>(accReady, cyc)')
     if p.lo.pipeline == FDIV or p.lo.wait_q:
         late.append('static_cast<unsigned>(fdiv.valid && fdiv.readyCycle > cyc)')
@@ -789,14 +794,14 @@ def pair_work(prog, p, exit_stmt):
     out.append('bkValid = false;')
     for reg, lanes, lat in ((p.mark_lower[0], p.mark_lower[1], p.mark_lower_lat),
                             (p.mark_upper[0], p.mark_upper[1], p.mark_upper_lat)):
-        if reg and lanes:
+        if reg and lanes and not THROUGHPUT:
             out.append(f'vu1fast::markReady<0x{components(lanes):x}u>(vfReady + {reg * 4}, cyc + {lat}u);')
     for r in range(1, 16):
-        if p.mark_vi & (1 << r):
+        if p.mark_vi & (1 << r) and not THROUGHPUT:
             out.append(f'viReady[{r}] = cyc + {p.mark_vi_lat}u;')
-    if p.mark_acc:
+    if p.mark_acc and not THROUGHPUT:
         out.append(f'vu1fast::markReady<0x{components(p.mark_acc):x}u>(accReady, cyc + 1u);')
-    if p.settle is not None:
+    if p.settle is not None and not THROUGHPUT:
         out.append(f'settle = std::max(settle, cyc + {p.settle}u);')
     if backup:
         out.append(f'bkValue = oldVi; bkReg = {p.lower_vi_write}; bkValid = true;')
@@ -937,6 +942,7 @@ def main():
              '#include <algorithm>',
              '#include <cmath>',
              '#include <cstdint>',
+             '#include <cstdlib>',
              '#include <cstring>',
              '',
              '#if defined(_MSC_VER)',
@@ -949,51 +955,60 @@ def main():
              '',
              'namespace',
              '{']
-    pieces = []
-    total_pairs = total_compiled = 0
-    for n, st in enumerate(sets):
-        prog = Program(n, st['vu'], st['code'])
-        fns = {}
-        start = st['vu']
-        end_all = st['vu'] + len(st['code'])
-        chunk = 0
-        while start < end_all:
-            end = min(start + CHUNK_PAIRS * 8, end_all)
-            name = f'vu1c_p{n}_c{chunk}'
-            code, inside = emit_chunk(prog, start, end, name)
-            lines += code + ['']
-            for a in inside:
-                fns[a] = name
-            start, chunk = end, chunk + 1
-        words = struct.unpack_from(f'<{len(st["code"]) // 4}I', st['code'])
-        lines.append(f'const uint32_t vu1c_p{n}_code[] = {{')
-        for k in range(0, len(words), 8):
-            lines.append('    ' + ', '.join(f'0x{w:08x}u' for w in words[k:k + 8]) + ',')
-        lines.append('};')
-        lines.append(f'const Vu1CompiledFn vu1c_p{n}_fns[] = {{')
-        addrs = sorted(prog.pairs)
-        for k in range(0, len(addrs), 8):
-            lines.append('    ' + ', '.join(fns.get(a, 'nullptr') for a in addrs[k:k + 8]) + ',')
-        lines.append('};')
-        lines.append(f'const Vu1PairShape vu1c_p{n}_shapes[] = {{')
-        for a in addrs:
-            lines.append('    ' + prog.pairs[a].shape() + ',')
-        lines.append('};')
-        lines.append('')
-        name = f'VU1 program {n} (.vutext 0x{st["source"] - 4:06x})'
-        pieces.append(f'{{0x{st["vu"]:04x}u, {len(addrs)}u, vu1c_p{n}_code, vu1c_p{n}_fns, vu1c_p{n}_shapes, "{name}"}}')
-        total_pairs += len(addrs)
-        total_compiled += len(fns)
-        generic = ', '.join(f'{k} x{v}' for k, v in sorted(prog.generic.items())) or 'none'
-        print(f'  program {n}: VU 0x{st["vu"]:04x}..0x{end_all:04x}, {len(addrs)} pairs, {len(fns)} compiled, '
-              f'left to the interpreter: {generic}')
-    lines.append('const Vu1CompiledPiece vu1c_pieces[] = {')
-    lines += ['    ' + p + ',' for p in pieces]
-    lines.append('};')
-    lines.append('')
+    global THROUGHPUT
+    for THROUGHPUT, sfx in ((False, ''), (True, '_t')):
+      pieces = []
+      total_pairs = total_compiled = 0
+      for n, st in enumerate(sets):
+          prog = Program(n, st['vu'], st['code'])
+          fns = {}
+          start = st['vu']
+          end_all = st['vu'] + len(st['code'])
+          chunk = 0
+          while start < end_all:
+              end = min(start + CHUNK_PAIRS * 8, end_all)
+              name = f'vu1c_p{n}_c{chunk}{sfx}'
+              code, inside = emit_chunk(prog, start, end, name)
+              lines += code + ['']
+              for a in inside:
+                  fns[a] = name
+              start, chunk = end, chunk + 1
+          words = struct.unpack_from(f'<{len(st["code"]) // 4}I', st['code'])
+          lines.append(f'const uint32_t vu1c_p{n}{sfx}_code[] = {{')
+          for k in range(0, len(words), 8):
+              lines.append('    ' + ', '.join(f'0x{w:08x}u' for w in words[k:k + 8]) + ',')
+          lines.append('};')
+          lines.append(f'const Vu1CompiledFn vu1c_p{n}{sfx}_fns[] = {{')
+          addrs = sorted(prog.pairs)
+          for k in range(0, len(addrs), 8):
+              lines.append('    ' + ', '.join(fns.get(a, 'nullptr') for a in addrs[k:k + 8]) + ',')
+          lines.append('};')
+          lines.append(f'const Vu1PairShape vu1c_p{n}{sfx}_shapes[] = {{')
+          for a in addrs:
+              lines.append('    ' + prog.pairs[a].shape() + ',')
+          lines.append('};')
+          lines.append('')
+          name = f'VU1 program {n} (.vutext 0x{st["source"] - 4:06x})'
+          pieces.append(f'{{0x{st["vu"]:04x}u, {len(addrs)}u, vu1c_p{n}{sfx}_code, vu1c_p{n}{sfx}_fns, vu1c_p{n}{sfx}_shapes, "{name}"}}')
+          total_pairs += len(addrs)
+          total_compiled += len(fns)
+          generic = ', '.join(f'{k} x{v}' for k, v in sorted(prog.generic.items())) or 'none'
+          print(f'  program {n}: VU 0x{st["vu"]:04x}..0x{end_all:04x}, {len(addrs)} pairs, {len(fns)} compiled, '
+                f'left to the interpreter: {generic}')
+      lines.append(f'const Vu1CompiledPiece vu1c_pieces{sfx}[] = {{')
+      lines += ['    ' + p + ',' for p in pieces]
+      lines.append('};')
+      lines.append('')
     lines.append('struct Vu1CompiledRegistrar')
     lines.append('{')
-    lines.append('    Vu1CompiledRegistrar() { vu1RegisterCompiledPieces(vu1c_pieces, sizeof(vu1c_pieces) / sizeof(vu1c_pieces[0])); }')
+    lines += ['    Vu1CompiledRegistrar()',
+              '    {',
+              '        const char *fast = std::getenv("HCTP_VU1_FAST"); // throughput variant: no stall/ready bookkeeping, plain MADD',
+              "        if (fast && fast[0] == '1')",
+              '            vu1RegisterCompiledPieces(vu1c_pieces_t, sizeof(vu1c_pieces_t) / sizeof(vu1c_pieces_t[0]));',
+              '        else',
+              '            vu1RegisterCompiledPieces(vu1c_pieces, sizeof(vu1c_pieces) / sizeof(vu1c_pieces[0]));',
+              '    }']
     lines.append('} vu1c_registrar;')
     lines.append('}')
     lines.append('')
