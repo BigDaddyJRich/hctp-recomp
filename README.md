@@ -21,15 +21,24 @@ Working:
 - Music, commentary/crowd audio, **menu and in-game sound effects** (native libsdr -> the game's real sdrdrv IRX)
 - Memory card: existing save data is detected and offered for loading (saving not fully tested yet)
 
-Known issues (being worked on):
-- Frame rate in entrances / matches: VU1 (vertex processing) is the bottleneck
-- In-ring only: wrestler gloss/specular pass missing and 3D crowd placed wrong with the fast VU1 model
-  (correct with `VENDETTA_VU1_FAST=0`, which is slow) — being bisected per VU1 program
-- Some objects vanish / stretched polygons near the camera; season dialogue font garbled
-- Movie (Sofdec) audio: right channel offset by 8192 samples (fix in testing)
+Fixed since the first release (Oct 13-14):
+- Garbled in-match HUD / season dialogue text (PSMT4HH/PSMT8H upload sizes)
+- Crowd piled in the ring, missing skin gloss, stray grey slabs (libvu0 stubs)
+- Runaway VU1 programs / garbage polygons (JR/JALR branch fix); all 20 VU1 programs now compiled
+- Exhibition match load softlock (IOP heap), whole-screen shimmy, 5-9 s in-match freezes, in-match hit sounds
+- Frame rate: demo match ~10 fps -> 32-44 (VU1 throughput mode, on by default; `HCTP_VU1_FAST=0` = exact)
+- Optional native music (`run_hctp_native_audio.bat`, `HCTP_NATIVE_ADX=1`): ADX streams decoded on the PC
 
-Plan: make the game correct and fast on paraLLEl-GS, then a **native renderer** (hook the game's draw calls and
-render wrestlers / arenas with Vulkan directly, following the BT3 and Ace Combat 5 recomps), then new features.
+Known issues (being worked on):
+- Frame rate: not yet a steady 60 in matches
+- Intro movie hangs at boot now and then (press START to skip the intro)
+- ADX music can stop after several minutes on the emulated IOP path (native music path being tested)
+- Right audio channel late / weak stereo separation; weak rumble
+- Shadows under the wrestlers show lines / visible triangles
+
+Plan: a **true native PC renderer** (Direct3D 11): the game's VU1 vertex programs translated to native code and
+drawn directly, instead of emulating the PS2's VU1 and GS. In progress on a separate branch (first model program
+already drawn natively and verified against the original); then native audio for all sounds.
 
 ## Layout
 
