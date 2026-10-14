@@ -1004,7 +1004,7 @@ def main():
     lines += ['    Vu1CompiledRegistrar()',
               '    {',
               '        const char *fast = std::getenv("HCTP_VU1_FAST"); // throughput variant: no stall/ready bookkeeping, plain MADD',
-              "        if (fast && fast[0] == '1')",
+              "        if (!(fast && fast[0] == '0')) // default on; HCTP_VU1_FAST=0 = the cycle-exact variant",
               '            vu1RegisterCompiledPieces(vu1c_pieces_t, sizeof(vu1c_pieces_t) / sizeof(vu1c_pieces_t[0]));',
               '        else',
               '            vu1RegisterCompiledPieces(vu1c_pieces, sizeof(vu1c_pieces) / sizeof(vu1c_pieces[0]));',
