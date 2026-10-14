@@ -14,5 +14,6 @@ set HCTP_RENDERER=d3d11
 set HCTP_NATIVE_P08=1
 set HCTP_NATIVE_ADX=1
 set HCTP_NATIVE_P01=1
-set HCTP_P01_HASH=adfb2a208b546483
+set HCTP_NATIVE_S1=15
+set HCTP_S1_ANYHASH=1
 "F:\hctp-newbase\PS2Recomp\out\native\ps2xRuntime\ps2EntryRunner.exe" SLUS_207.87 2> "F:\hctp-newbase\logs\x_native.err"
