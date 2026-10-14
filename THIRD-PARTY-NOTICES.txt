@@ -18,6 +18,10 @@ in files\source\deps\<name>\ in the release, or at the address given.
 
 Built into the game
 -------------------
+WWE Crush Hour PC (native-renderer build only): the native Windows host (PS2Recomp\ps2xRuntime\src\lib\host\win32_host.cpp)
+and the Direct3D 11 GS renderer (src\lib\gs\gs_d3d11_backend.cpp), adapted for HCTP. Copyright (C) 2026 KaikoClanworth1.
+GNU General Public License version 3. https://github.com/KaikoClanworth1/wwe-crush-hour-pc
+
 
 PS2Recomp (the PS2 static recompiler and its runtime)
   (c) ran-j and contributors - GNU GPL version 3 - https://github.com/ran-j/PS2Recomp
