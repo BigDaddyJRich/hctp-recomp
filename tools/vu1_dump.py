@@ -23,7 +23,8 @@ def lo_ops(l):
     imm15 = (l & 0x7FF) | ((l >> 10) & 0x7800)
     if op == 0x40:  # lower special: register forms
         return f'{dest(l)} t={R.VIT(l)}/vf{R.FT(l)} s={R.VIS(l)}/vf{R.FS(l)} d={R.VID(l)}'
-    return f'{dest(l)} it={R.VIT(l)} is={R.VIS(l)} imm11={R.IMM11(l)} imm15=0x{imm15:x}'
+    # vf fields are 5 bits (FT / FS); vi fields 4 bits - both shown: LQ / SQ use ft / fs as vf, the integer ops vi
+    return f'{dest(l)} vf_t={R.FT(l)} vf_s={R.FS(l)} it={R.VIT(l)} is={R.VIS(l)} imm11={R.IMM11(l)} imm15=0x{imm15:x}'
 
 for n, st in enumerate(sets):
     code = st['code']
