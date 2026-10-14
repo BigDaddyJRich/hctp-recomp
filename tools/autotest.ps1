@@ -7,7 +7,7 @@ param(
     [int]$Every = 5,
     [string]$Pad = "20:START,30:START",
     [string[]]$Extra = @(),
-    [string]$Exe = 'F:\hctp-newbase\PS2Recomp\outast\ps2xRuntime\ps2EntryRunner.exe'
+    [string]$Exe = 'F:\hctp-newbase\PS2Recomp\out\fast\ps2xRuntime\ps2EntryRunner.exe'
 )
 $ErrorActionPreference = 'Stop'
 $out = 'F:\hctp-newbase\logs\auto'
