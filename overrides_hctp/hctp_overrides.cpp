@@ -1004,6 +1004,17 @@ namespace
                 }
             }).detach();
         }
+        if (!std::getenv("HCTP_SHOW_YMEM"))
+        {
+            // RED BAR on the main menu: TopMenuSequence::TopDraw 0x138170 calls ymemDispMem(commonPage, 100) every
+            // frame - the developers' heap meter (Ghidra: one 1-line objRect per 256 KB of the common ymem page,
+            // 0x400000ff red = used, 0x40ff0000 blue = free, x 8..264, y 100 + 2 per row). On the PS2 it is not
+            // visible (reference playthrough); here its lower rows show under the wrestler panel as a red strip.
+            // Debug-only drawing whose return value TopDraw ignores: skipped (returns y like the original).
+            if (!runtime.replaceFunction(0x1412c0u, [](uint8_t *, R5900Context *ctx, PS2Runtime *)
+                                         { ctx->r[2] = _mm_cvtsi32_si128(_mm_cvtsi128_si32(ctx->r[5])); }))
+                std::cerr << "[ymem] ymemDispMem skip FAILED" << std::endl;
+        }
         if (std::getenv("HCTP_IKLOG"))
         {
             // TEMP diag (knee-down leg twitch): acosf (newlib, 0x11a5a8) inputs outside [-1, 1] and NaN results, with
