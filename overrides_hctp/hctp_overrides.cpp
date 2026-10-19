@@ -848,6 +848,35 @@ namespace
             std::cerr << "[crilog] hook FAILED " << name << std::endl;
     }
 
+    // TEMP diag HCTP_IKLOG=1: see the hook install. "[iklog] acosf x=.. -> .. ra=.." (first 200 odd calls), and every
+    // 600 calls a count line (calls, out of range, NaN results).
+    PS2Runtime::RecompiledFunction g_ikAcosOrig = nullptr;
+    uint64_t g_ikCalls = 0, g_ikOdd = 0, g_ikNan = 0;
+    void ikAcosLogged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const float x = ctx->f[12];
+        const uint32_t ra = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
+        g_ikAcosOrig(rdram, ctx, runtime);
+        const float y = ctx->f[0];
+        ++g_ikCalls;
+        const bool odd = !(x >= -1.0f && x <= 1.0f);
+        const bool nan = std::isnan(y);
+        g_ikOdd += odd;
+        g_ikNan += nan;
+        static uint32_t s_lines = 0;
+        if ((odd || nan) && s_lines < 200u)
+        {
+            ++s_lines;
+            uint32_t xb, yb;
+            std::memcpy(&xb, &x, 4);
+            std::memcpy(&yb, &y, 4);
+            std::fprintf(stderr, "[iklog] acosf x=%.9g (%08x) -> %.9g (%08x) ra=0x%06x%c", x, xb, y, yb, ra, 10);
+        }
+        if (g_ikCalls % 600u == 0u)
+            std::fprintf(stderr, "[iklog] calls=%llu out_of_range=%llu nan=%llu%c", static_cast<unsigned long long>(g_ikCalls),
+                         static_cast<unsigned long long>(g_ikOdd), static_cast<unsigned long long>(g_ikNan), 10);
+    }
+
     // TEMP diag (HCTP_TRACEFN="addr[:name],..."; up to 32): "[trfn] name #n a0 a1 a2 a3 ra -> v0 (ms)" for the first
     // 40 calls, then whenever (a0,a1,v0) changes (max 400 lines per function). v0 is wrong if the thread was
     // preempted inside the function (see CRILOG caveat) - trust entry args.
@@ -974,6 +1003,15 @@ namespace
                     }
                 }
             }).detach();
+        }
+        if (std::getenv("HCTP_IKLOG"))
+        {
+            // TEMP diag (knee-down leg twitch): acosf (newlib, 0x11a5a8) inputs outside [-1, 1] and NaN results, with
+            // the caller (CCharIK::ActionLink 0x1b8860..0x1b9650 = the two-bone leg / arm IK). Out-of-range input
+            // = the law-of-cosines ratio past +-1: (x-x)/(x-x) is NaN on the PC but +-max on the PS2 FPU.
+            g_ikAcosOrig = runtime.lookupFunction(0x11a5a8u);
+            if (!g_ikAcosOrig || !runtime.replaceFunction(0x11a5a8u, ikAcosLogged))
+                std::cerr << "[iklog] hook FAILED acosf" << std::endl;
         }
         if (std::getenv("HCTP_CRILOG"))
         {
