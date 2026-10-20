@@ -92,8 +92,13 @@ public class AdjmkQuery extends GhidraScript {
                 for (Function g : new TreeSet<>(Comparator.comparing(Function::getEntryPoint)) {{ addAll(f.getCalledFunctions(monitor)); }})
                     println("  calls      " + g.getName() + "  (" + g.getBody().getNumAddresses() + " bytes)");
             }
-            else if (q.startsWith("d:")) {
+            else if (q.startsWith("d:") || q.startsWith("D:")) {
+                // D:<addr> = create the function there first (raw binaries such as an IOP RAM dump have none)
                 Function f = getFunctionContaining(addr(q.substring(2)));
+                if (f == null && q.startsWith("D:")) {
+                    disassemble(addr(q.substring(2)));
+                    f = createFunction(addr(q.substring(2)), null);
+                }
                 if (f == null) { println("  (no function)"); continue; }
                 DecompInterface dec = new DecompInterface();
                 dec.openProgram(currentProgram);
