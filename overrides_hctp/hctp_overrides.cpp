@@ -9,6 +9,13 @@
 #include "game_overrides.h"
 #include "runtime/ps2_host_profile.h"
 #include "ps2_host_backend.h"
+// native movie player (PS2Recomp/ps2xRuntime/src/lib/hctp_native_movie.cpp)
+extern "C" bool hctpMovieOpen(int ch, const char *path, int fid, bool loop);
+extern "C" void hctpMovieStop(int ch);
+extern "C" void hctpMoviePause(int ch, bool pause);
+extern "C" int hctpMovieStatus(int ch);
+extern "C" bool hctpMovieFrame(int ch, uint8_t *rgba, int w, int h);
+#include <initializer_list>
 #include <cmath>
 #include <mutex>
 
@@ -894,25 +901,12 @@ namespace
         {
             uint32_t moveId = 0;
             std::memcpy(&moveId, rdram + chara + 0xA4u, 4);
-            // find the CChar field that holds the wrestler (roster id / cast code): log candidate offsets once per CChar
-            static std::set<uint32_t> s_probed;
-            if (s_probed.size() < 64 && s_probed.insert(chara).second)
-            {
-                uint16_t cast[4] = {};
-                for (uint32_t k = 0; k < 4u; ++k)
-                    std::memcpy(&cast[k], rdram + 0x4921CAu + k * 0x20u, 2);
-                std::string hits;
-                for (uint32_t off = 0; off < 0x1000u; off += 2)
-                {
-                    uint16_t v = 0;
-                    std::memcpy(&v, rdram + chara + off, 2);
-                    for (uint32_t k = 0; k < 4u; ++k)
-                        if (cast[k] < 25500u && (v == cast[k] || (v == cast[k] / 100u && v != 0u)))
-                            hits += " +" + std::to_string(off) + "=" + std::to_string(v);
-                }
-                std::fprintf(stderr, "[hctp-pbp] chara %08x probe (cast %u %u %u %u):%s%c", chara, cast[0], cast[1], cast[2], cast[3],
-                             hits.c_str(), 10);
-            }
+            // who did it: CChar+0x30 = the wrestler's cast code (roster id * 100 + attire; 10000+ = created), found by
+            // probing (Triple H 201, Undertaker 301, Brock 4401, referee 5100) -> owner-only move lines
+            uint16_t cast = 0;
+            std::memcpy(&cast, rdram + chara + 0x30u, 2);
+            if (cast < 25500u)
+                hctpCommentaryCharaRoster(chara, cast >= 10000u ? (cast - 10000u) / 100u + 0x56u : cast / 100u);
             hctpCommentaryMove(chara, moveId);
         }
         g_origGameSe(rdram, ctx, runtime);
@@ -1572,6 +1566,237 @@ namespace
         g_dtxOrigExec(rdram, ctx, runtime);
     }
 
+    // ---- NATIVE MOVIES (HCTP_MOVIES=native): CADX_CTRL's SFD channels play through the host FFmpeg player
+    // (hctp_native_movie.cpp) instead of Sofdec on the emulated EE/IPU/IOP. Channel info = s_SFDInfo 0x525140 +
+    // ch * 0x1ec: +0x8/+0xc channel width / height, +0x30 Sofdec handle, +0x34 the current frame's info (w +0x3c,
+    // h +0x40), +0x84 path3 GS address word, +0xb4 status, +0xb8 draw mode (1 = UsrLoadMvFrm), +0xbc/+0xc4 path3 /
+    // user packet buffers (MakePath3Tag), +0xcc the RGBA frame buffer, +0xd0/+0xd4 the frame callback and its argument,
+    // byte +0x1e8 "a frame was drawn". The frame goes up through the same calls LoadImage 0x159ff0 makes.
+    // Movie AFS partitions: 5-8 = MOVIE/NMV000-003.afs, 9 = MOVIE/LOGOS.afs; credits = movie/credits.sfd by name.
+    constexpr uint32_t kSfdInfo = 0x525140u, kSfdStride = 0x1ecu;
+    bool g_movieNative[4] = {};
+    PS2Runtime::RecompiledFunction g_mvOrigPlayAfs, g_mvOrigPlayName, g_mvOrigStop, g_mvOrigPause, g_mvOrigContinue,
+        g_mvOrigGetStat, g_mvOrigLoadImage;
+
+    uint32_t guestCall(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t addr, std::initializer_list<uint32_t> args)
+    {
+        const R5900Context saved = *ctx;
+        int r = 4;
+        for (uint32_t a : args)
+            ctx->r[r++] = _mm_set_epi64x(0, static_cast<int64_t>(static_cast<int32_t>(a)));
+        ctx->pc = addr;
+        runtime->lookupFunction(addr)(rdram, ctx, runtime);
+        const uint32_t ret = optArg(ctx, 2);
+        *ctx = saved;
+        return ret;
+    }
+    uint32_t sfdInfo(uint32_t ch) { return kSfdInfo + ch * kSfdStride; }
+    void makePath3Tag(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t ch)
+    {
+        const uint32_t info = sfdInfo(ch);
+        if (optR32(rdram, info + 0xd0u) == 0u) // as PlayByAFS: the path3 / user packets for this movie size
+            guestCall(rdram, ctx, runtime, 0x158b60u, {info, optR32(rdram, info + 8u), optR32(rdram, info + 0xcu)});
+    }
+    void movieStarted(uint8_t *rdram, uint32_t ch)
+    {
+        g_movieNative[ch] = true;
+        optW32(rdram, sfdInfo(ch) + 0xb4u, 2u);
+        *optP(rdram, sfdInfo(ch) + 0x1e8u) = 0u;
+    }
+    bool nativePlayAfs(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t ch, uint32_t part, uint32_t fid, uint32_t loop)
+    {
+        static const char *files[] = {"MOVIE/NMV000.AFS", "MOVIE/NMV001.AFS", "MOVIE/NMV002.AFS", "MOVIE/NMV003.AFS", "MOVIE/LOGOS.AFS"};
+        if (ch >= 4u || part < 5u || part > 9u)
+            return false;
+        hctpMovieStop(static_cast<int>(ch));
+        makePath3Tag(rdram, ctx, runtime, ch);
+        if (!hctpMovieOpen(static_cast<int>(ch), files[part - 5u], static_cast<int>(fid), loop != 0u))
+            return false;
+        movieStarted(rdram, ch);
+        std::fprintf(stderr, "[nmovie] PlayByAFS ch %u part %u fid %u loop %u%c", ch, part, fid, loop, 10);
+        return true;
+    }
+    void nativeStop(uint8_t *rdram, uint32_t ch)
+    {
+        hctpMovieStop(static_cast<int>(ch));
+        g_movieNative[ch] = false;
+        *optP(rdram, sfdInfo(ch) + 0x1e8u) = 0u;
+        optW32(rdram, sfdInfo(ch) + 0xb4u, 0u);
+    }
+    void mvPlayAfs(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // CADX_CTRL::PlayByAFS 0x159980
+    {
+        const uint32_t ch = optArg(ctx, 4);
+        if (nativePlayAfs(rdram, ctx, runtime, ch, optArg(ctx, 5), optArg(ctx, 6), optArg(ctx, 7)))
+        {
+            returnValue(ctx, 1);
+            return;
+        }
+        g_movieNative[ch & 3u] = false;
+        g_mvOrigPlayAfs(rdram, ctx, runtime);
+    }
+    // CMoviePlayer (this: +0 = the SFD channel) inlines its own copies of these: PlayByAfs 0x1b0c20, Stop 0x1b0c30,
+    // Pause 0x1b0f60, Continue 0x1b0f70
+    PS2Runtime::RecompiledFunction g_cmpOrigPlayAfs, g_cmpOrigStop, g_cmpOrigPause, g_cmpOrigContinue;
+    void cmpPlayAfs(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t ch = optR32(rdram, optArg(ctx, 4));
+        if (nativePlayAfs(rdram, ctx, runtime, ch, optArg(ctx, 5), optArg(ctx, 6), optArg(ctx, 7)))
+        {
+            returnValue(ctx, 1);
+            return;
+        }
+        g_movieNative[ch & 3u] = false;
+        g_cmpOrigPlayAfs(rdram, ctx, runtime);
+    }
+    void cmpStop(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t ch = optR32(rdram, optArg(ctx, 4)) & 3u;
+        if (g_movieNative[ch])
+            nativeStop(rdram, ch);
+        else
+            g_cmpOrigStop(rdram, ctx, runtime);
+    }
+    void cmpPause(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t ch = optR32(rdram, optArg(ctx, 4)) & 3u;
+        if (g_movieNative[ch])
+            hctpMoviePause(static_cast<int>(ch), true);
+        else
+            g_cmpOrigPause(rdram, ctx, runtime);
+    }
+    void cmpContinue(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t ch = optR32(rdram, optArg(ctx, 4)) & 3u;
+        if (g_movieNative[ch])
+            hctpMoviePause(static_cast<int>(ch), false);
+        else
+            g_cmpOrigContinue(rdram, ctx, runtime);
+    }
+    void mvPlayName(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // CADX_CTRL::PlayByName 0x1598b0
+    {
+        const uint32_t ch = optArg(ctx, 4), name = optArg(ctx, 5), loop = optArg(ctx, 6);
+        std::string path(reinterpret_cast<const char *>(optP(rdram, name)));
+        if (const size_t colon = path.find(':'); colon != std::string::npos)
+            path = path.substr(colon + 1);
+        if (const size_t semi = path.find(';'); semi != std::string::npos)
+            path.resize(semi);
+        while (!path.empty() && (path[0] == '\\' || path[0] == '/'))
+            path.erase(0, 1);
+        if (ch < 4u)
+        {
+            hctpMovieStop(static_cast<int>(ch));
+            makePath3Tag(rdram, ctx, runtime, ch);
+            if (hctpMovieOpen(static_cast<int>(ch), path.c_str(), -1, loop != 0u))
+            {
+                movieStarted(rdram, ch);
+                std::fprintf(stderr, "[nmovie] PlayByName ch %u %s loop %u%c", ch, path.c_str(), loop, 10);
+                returnValue(ctx, 1);
+                return;
+            }
+        }
+        g_movieNative[ch & 3u] = false;
+        g_mvOrigPlayName(rdram, ctx, runtime);
+    }
+    void mvStop(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // CADX_CTRL::Stop 0x159430
+    {
+        const uint32_t ch = optArg(ctx, 4) & 3u;
+        if (g_movieNative[ch])
+            nativeStop(rdram, ch);
+        else
+            g_mvOrigStop(rdram, ctx, runtime);
+    }
+    void mvPause(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // CADX_CTRL::Pause 0x159390
+    {
+        const uint32_t ch = optArg(ctx, 4) & 3u;
+        if (g_movieNative[ch])
+            hctpMoviePause(static_cast<int>(ch), true);
+        else
+            g_mvOrigPause(rdram, ctx, runtime);
+    }
+    void mvContinue(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // CADX_CTRL::Continue 0x1593e0
+    {
+        const uint32_t ch = optArg(ctx, 4) & 3u;
+        if (g_movieNative[ch])
+            hctpMoviePause(static_cast<int>(ch), false);
+        else
+            g_mvOrigContinue(rdram, ctx, runtime);
+    }
+    void mvGetStat(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // CADX_CTRL::GetStat 0x159fc0
+    {
+        const uint32_t ch = optArg(ctx, 4) & 3u;
+        if (g_movieNative[ch])
+        {
+            const int stat = hctpMovieStatus(static_cast<int>(ch));
+            optW32(rdram, sfdInfo(ch) + 0xb4u, static_cast<uint32_t>(stat));
+            returnValue(ctx, stat);
+            return;
+        }
+        g_mvOrigGetStat(rdram, ctx, runtime);
+    }
+    void mvLoadImage(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // CADX_CTRL::LoadImage 0x159ff0
+    {
+        const uint32_t ch = optArg(ctx, 4) & 3u, color = optArg(ctx, 5);
+        if (!g_movieNative[ch])
+        {
+            g_mvOrigLoadImage(rdram, ctx, runtime);
+            return;
+        }
+        const uint32_t info = sfdInfo(ch);
+        const uint32_t w = optR32(rdram, info + 8u), h = optR32(rdram, info + 0xcu), buf = optR32(rdram, info + 0xccu);
+        const uint32_t mode = optR32(rdram, info + 0xb8u), gsWord = optR32(rdram, info + 0x84u);
+        const uint32_t pkt = optR32(rdram, info + 0xbcu), usr = optR32(rdram, info + 0xc4u);
+        const bool fresh = w && h && buf && hctpMovieFrame(static_cast<int>(ch), optP(rdram, buf), static_cast<int>(w), static_cast<int>(h));
+        if (!fresh)
+        {
+            if (mode == 1u && *optP(rdram, info + 0x1e8u))
+                guestCall(rdram, ctx, runtime, 0x3666c0u, {usr}); // UsrDrawMv: keep showing the last frame
+            return;
+        }
+        if (static int logged[4] = {}; logged[ch]++ < 2)
+            std::fprintf(stderr, "[nmovie] LoadImage ch %u w %u h %u mode %u gs %x pkt %x usr %x cb %x buf %x info:%08x %08x %08x %08x%c", ch, w, h,
+                         mode, gsWord, pkt, usr, optR32(rdram, info + 0xd0u), buf, optR32(rdram, info + 0x10u),
+                         optR32(rdram, info + 0x14u), optR32(rdram, info + 0x80u), optR32(rdram, info + 0x88u), 10);
+        optW32(rdram, info + 0x3cu, w);
+        optW32(rdram, info + 0x40u, h);
+        if (const uint32_t cb = optR32(rdram, info + 0xd0u))
+            guestCall(rdram, ctx, runtime, cb, {optR32(rdram, info + 0xd4u), buf, w, h});
+        else if (mode == 1u)
+        {
+            guestCall(rdram, ctx, runtime, 0x3665f0u, {pkt, usr, buf, w, h, color, gsWord}); // UsrLoadMvFrm
+            guestCall(rdram, ctx, runtime, 0x3666c0u, {usr});                                 // UsrDrawMv
+            *optP(rdram, info + 0x1e8u) = 1u;
+        }
+        else if (gsWord && pkt)
+        {
+            *optP(rdram, info + 0x1e8u) = 1u;
+            guestCall(rdram, ctx, runtime, 0x159d70u, {buf, w, h, pkt, gsWord}); // LoadImagePath3
+            const uint32_t dmaCh = guestCall(rdram, ctx, runtime, 0x102df0u, {2u}); // sceDmaGetChan(GIF)
+            guestCall(rdram, ctx, runtime, 0x101770u, {0u, 0u});                  // sceGsSyncPath
+            guestCall(rdram, ctx, runtime, 0x103120u, {dmaCh, pkt});              // sceDmaSend
+        }
+    }
+    void installNativeMovies(PS2Runtime &runtime)
+    {
+        bool ok = true;
+        auto hook = [&](uint32_t addr, PS2Runtime::RecompiledFunction &orig, PS2Runtime::RecompiledFunction fn) {
+            orig = runtime.lookupFunction(addr);
+            ok = ok && orig && runtime.replaceFunction(addr, fn);
+        };
+        hook(0x159980u, g_mvOrigPlayAfs, mvPlayAfs);
+        hook(0x1598b0u, g_mvOrigPlayName, mvPlayName);
+        hook(0x159430u, g_mvOrigStop, mvStop);
+        hook(0x159390u, g_mvOrigPause, mvPause);
+        hook(0x1593e0u, g_mvOrigContinue, mvContinue);
+        hook(0x159fc0u, g_mvOrigGetStat, mvGetStat);
+        hook(0x159ff0u, g_mvOrigLoadImage, mvLoadImage);
+        hook(0x1b0c20u, g_cmpOrigPlayAfs, cmpPlayAfs);
+        hook(0x1b0c30u, g_cmpOrigStop, cmpStop);
+        hook(0x1b0f60u, g_cmpOrigPause, cmpPause);
+        hook(0x1b0f70u, g_cmpOrigContinue, cmpContinue);
+        std::cerr << "[nmovie] native movies (FFmpeg) " << (ok ? "on" : "FAILED") << std::endl;
+    }
+
+
     void installOptionRestore(PS2Runtime &runtime)
     {
         if (const char *v = std::getenv("HCTP_OPT_RESTORE"); v && v[0] == '0')
@@ -1722,7 +1947,10 @@ namespace
         if (!(runtime.replaceFunction(0x124448u, libcMallocR) && runtime.replaceFunction(0x121ae0u, libcCallocR) &&
               runtime.replaceFunction(0x123570u, libcFreeR) && runtime.replaceFunction(0x126c20u, libcReallocR)))
             std::cerr << "[heap] libc _r allocator override FAILED" << std::endl;
-        if (!std::getenv("HCTP_MOVIES") || std::string(std::getenv("HCTP_MOVIES")) == "0")
+        const std::string moviesMode = std::getenv("HCTP_MOVIES") ? std::getenv("HCTP_MOVIES") : "";
+        if (moviesMode == "native")
+            installNativeMovies(runtime);
+        else if (moviesMode.empty() || moviesMode == "0")
         {
             const bool ok = runtime.replaceFunction(0x1377c0u, titleMovieLoopEndActSkip) &&
                             runtime.replaceFunction(0x23ddb0u, menuMovieCanUse) &&
