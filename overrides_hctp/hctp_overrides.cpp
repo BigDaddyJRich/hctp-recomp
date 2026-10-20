@@ -848,6 +848,60 @@ namespace
             std::cerr << "[crilog] hook FAILED " << name << std::endl;
     }
 
+    // Native sound kit: the banks the game sends to the IOP (see the hook install), per bank id
+    struct SkBank
+    {
+        uint32_t spuAddr = 0;
+        std::vector<uint8_t> hd, bd, sq;
+    };
+    std::mutex g_skBankLock;
+    std::map<int, SkBank> g_skBanks;
+    PS2Runtime::RecompiledFunction g_skTransOrig = nullptr;
+    void skTransCaptured(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        auto reg = [ctx](int r) { return static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[r])); };
+        const int bank = static_cast<int>(reg(4));
+        const uint32_t info = reg(5);
+        auto w32 = [rdram](uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & 0x1FFFFFCu), 4); return v; };
+        auto grab = [rdram](uint32_t adr, uint32_t size)
+        {
+            std::vector<uint8_t> v;
+            adr &= 0x1FFFFFFu;
+            if (adr != 0u && size != 0u && size < 0x1000000u && adr + size <= 0x2000000u)
+                v.assign(rdram + adr, rdram + adr + size);
+            return v;
+        };
+        SkBank b;
+        b.bd = grab(w32(info + 0u), w32(info + 4u));
+        b.spuAddr = w32(info + 8u);
+        b.hd = grab(w32(info + 0xcu), w32(info + 0x10u));
+        b.sq = grab(w32(info + 0x14u), w32(info + 0x18u));
+        std::fprintf(stderr, "[skbank] bank %d HD %zu BD %zu (spu 0x%x) SQ %zu%c", bank, b.hd.size(), b.bd.size(), b.spuAddr,
+                     b.sq.size(), 10);
+        if (const char *dir = std::getenv("HCTP_SKDUMP"))
+        {
+            static std::map<std::string, bool> s_done;
+            for (auto [tag, data] : {std::pair<const char *, const std::vector<uint8_t> *>{"hd", &b.hd}, {"bd", &b.bd}, {"sq", &b.sq}})
+            {
+                char path[512];
+                std::snprintf(path, sizeof(path), "%s\\bank%02d_spu%05x.%s", dir, bank, b.spuAddr, tag);
+                if (data->empty() || s_done[path])
+                    continue;
+                s_done[path] = true;
+                if (FILE *f = std::fopen(path, "wb"))
+                {
+                    std::fwrite(data->data(), 1, data->size(), f);
+                    std::fclose(f);
+                }
+            }
+        }
+        {
+            std::lock_guard<std::mutex> lock(g_skBankLock);
+            g_skBanks[bank] = std::move(b);
+        }
+        g_skTransOrig(rdram, ctx, runtime);
+    }
+
     // TEMP diag HCTP_IKLOG=1: see the hook install. "[iklog] acosf x=.. -> .. ra=.." (first 200 odd calls), and every
     // 600 calls a count line (calls, out of range, NaN results).
     PS2Runtime::RecompiledFunction g_ikAcosOrig = nullptr;
@@ -1003,6 +1057,16 @@ namespace
                     }
                 }
             }).detach();
+        }
+        {
+            // NATIVE SOUND KIT step 1: capture every sound bank (HD header, BD samples, SQ sequences) as the game
+            // hands it to the IOP: CCslRpcService::TransToIop(bank, tagTransHDBDSQ*) 0x2e19c0, info = {BD adr, BD
+            // size, SPU adr, HD adr, HD size, SQ adr, SQ size} (Ghidra: CSkBankLoader::ReadEndProcess 0x2e2770).
+            // The host copies feed the native synth (hctp_sk_bank()); HCTP_SKDUMP=<dir> also writes them out once
+            // (local diag files - game data, never committed).
+            g_skTransOrig = runtime.lookupFunction(0x2e19c0u);
+            if (!g_skTransOrig || !runtime.replaceFunction(0x2e19c0u, skTransCaptured))
+                std::cerr << "[skbank] TransToIop hook FAILED" << std::endl;
         }
         if (!std::getenv("HCTP_SHOW_YMEM"))
         {
