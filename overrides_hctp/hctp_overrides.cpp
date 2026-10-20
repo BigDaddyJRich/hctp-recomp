@@ -27,6 +27,7 @@ extern "C" bool hctpMovieFrame(int ch, uint8_t *rgba, int w, int h);
 #include <vector>
 #include <cstdlib>
 #include <cstring>
+#include <cctype>
 #include <fstream>
 #include <cstdio>
 #include <iostream>
@@ -53,29 +54,33 @@ namespace
     struct CutWrestler
     {
         uint8_t id, type, stats[5];
+        uint8_t tmpl;    // stock CHSL record cloned for the select list (finisher text, flags, costume ids)
+        uint8_t attires; // attire slots with models (CH/CH2 keys XX00, XX10, XX20 ...)
+        const char *name;
     };
     constexpr CutWrestler kCutRoster[] = {
-        {0x0D, 0, {13, 12, 19, 15, 15}}, // Jeff Hardy
-        {0x11, 0, {15, 19, 12, 18, 16}}, // William Regal
-        {0x18, 0, {18, 13, 12, 14, 17}}, // Bradshaw
-        {0x20, 0, {0, 0, 0, 0, 0}},      // Hulk Hogan (keeps its stats)
-        {0x21, 0, {20, 13, 10, 13, 16}}, // Rosey (Jordan's recommended stats)
-        {0x23, 0, {18, 13, 14, 13, 15}}, // Jamal (Jordan's recommended stats)
-        {0x24, 0, {16, 13, 14, 15, 16}}, // Billy Gunn
-        {0x29, 4, {8, 12, 14, 12, 8}},   // Molly Holly
-        {0x2B, 0, {10, 12, 17, 14, 13}}, // Spike Dudley
-        {0x39, 0, {12, 13, 18, 15, 14}}, // Billy Kidman
-        {0x3F, 0, {15, 14, 14, 15, 16}}, // Al Snow
-        {0x4D, 0, {0, 0, 0, 0, 0}},      // Ultimate Warrior (keeps its stats)
+        {0x0D, 0, {13, 12, 19, 15, 15}, 0x0C, 1, "Jeff Hardy"},
+        {0x11, 0, {15, 19, 12, 18, 16}, 0x12, 1, "William Regal"},
+        {0x18, 0, {18, 13, 12, 14, 17}, 0x1A, 1, "Bradshaw"},
+        {0x20, 0, {0, 0, 0, 0, 0}, 0x2D, 3, "Hulk Hogan"},       // keeps its stats; Hogan / Hollywood / Mr. America
+        {0x21, 0, {20, 13, 10, 13, 16}, 0x1D, 1, "Rosey"},       // Jordan's recommended stats
+        {0x23, 0, {18, 13, 14, 13, 15}, 0x1D, 1, "Jamal"},       // Jordan's recommended stats
+        {0x24, 0, {16, 13, 14, 15, 16}, 0x19, 1, "Billy Gunn"},
+        {0x29, 4, {8, 12, 14, 12, 8}, 0x0E, 1, "Molly Holly"},
+        {0x2B, 0, {10, 12, 17, 14, 13}, 0x17, 1, "Spike Dudley"},
+        {0x39, 0, {12, 13, 18, 15, 14}, 0x17, 1, "Billy Kidman"},
+        {0x4D, 0, {0, 0, 0, 0, 0}, 0x4C, 1, "Ultimate Warrior"}, // keeps its stats
+        // Al Snow 0x3F left out: stock key 6300 is a Rock model (maybe the pads-off People's Elbow); needs his own key.
     };
-    bool g_cutRosterHasModel[sizeof(kCutRoster) / sizeof(kCutRoster[0])] = {};
+    constexpr size_t kCutCount = sizeof(kCutRoster) / sizeof(kCutRoster[0]);
+    bool g_cutRosterHasModel[kCutCount] = {};
     // A slot is only un-hidden when its attire-1 model (key BCD(id) << 8) is in pac/CH.PAC (ids < 30) or pac/CH2.PAC
     // (DPAC directory at 0x800: tag, u16 count | 0x8000, then u16 key + u16 sectors per entry), so stock archives
     // keep the vanilla roster. Returns the number of slots enabled.
     int scanCutRosterModels()
     {
         int enabled = 0;
-        for (size_t i = 0; i < sizeof(kCutRoster) / sizeof(kCutRoster[0]); ++i)
+        for (size_t i = 0; i < kCutCount; ++i)
         {
             const uint8_t id = kCutRoster[i].id;
             std::ifstream f(id < 30 ? "pac/ch.pac" : "pac/ch2.pac", std::ios::binary);
@@ -88,11 +93,9 @@ namespace
             const uint16_t key = static_cast<uint16_t>(((id / 10) << 12) | ((id % 10) << 8));
             for (uint32_t e = 0; e < n && 0x808u + e * 4u + 2u <= sizeof(dir); ++e)
             {
-                uint16_t k, sectors;
+                uint16_t k;
                 std::memcpy(&k, dir + 0x808 + e * 4, 2);
-                std::memcpy(&sectors, dir + 0x80A + e * 4, 2);
-                // stock CH2.PAC already has a stray 0x6300 entry (1834 sectors) although Al Snow is "No Model"
-                if (k == key && !(key == 0x6300u && sectors == 1834u))
+                if (k == key)
                 {
                     g_cutRosterHasModel[i] = true;
                     ++enabled;
@@ -104,7 +107,7 @@ namespace
     }
     void restoreCutRoster(uint8_t *rdram)
     {
-        for (size_t i = 0; i < sizeof(kCutRoster) / sizeof(kCutRoster[0]); ++i)
+        for (size_t i = 0; i < kCutCount; ++i)
         {
             const CutWrestler &w = kCutRoster[i];
             uint8_t *const rec = rdram + 0x4C0F54u + w.id * 0x170u;
@@ -121,6 +124,188 @@ namespace
     {
         restoreCutRoster(rdram);
         g_origGetCharaGameProp(rdram, ctx, runtime);
+    }
+
+    // Select-list expansion. The character select list is MENU/CHSL: kStockSelect 0x80-byte records (+2 s16 roster id,
+    // +4 name, +0x24/+0x46 finisher text with codes at +0x44/+0x66 filled by ReadEndProcess, +0x68 s16[5] costume id
+    // per attire slot (-1 = none), +0x74 s16[5] second costume set, +0x72/+0x7E flags). GetSelectRoster 0x26fb90
+    // returns the hard 0x41. After CSSNameListReader::ReadEndProcess the reader's list (reader+0x20) is swapped for a
+    // guest-heap copy: the stock records first (every other screen keeps its indices and 65-entry copy), then one
+    // record per restored wrestler. Only the exhibition select (SelectWrestlerFrame, list inline at +0x190 sized for
+    // 65) is pointed at the long list: its accessor and SelectWresTable::Make read a per-frame guest-heap buffer.
+    // GetSelectRoster returns the long count only inside those paths and in RosterID2IndexNo (reader-level lookups).
+    // The count is dynamic (stock + appended), so more slots later = more appended records.
+    constexpr uint32_t kStockSelect = 0x41, kSelectRec = 0x80, kSelectMax = 0x400;
+    uint32_t g_selectCount = kStockSelect;                           // stock + appended records
+    std::map<uint32_t, std::pair<uint32_t, uint32_t>> g_readerLists; // reader -> (original list, long list)
+    std::map<uint32_t, uint32_t> g_frameLists;                       // SelectWrestlerFrame +0x190 -> long list buffer
+    int g_selectLongDepth = 0;
+    PS2Runtime::RecompiledFunction g_origReadEndProcess = nullptr, g_origReaderDtor = nullptr,
+                                   g_origReaderGetList = nullptr, g_origWresTableMake = nullptr;
+    uint32_t gprU32(R5900Context *ctx, int r) { return static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[r])); }
+    uint32_t rdU32(const uint8_t *rdram, uint32_t a)
+    {
+        uint32_t v;
+        std::memcpy(&v, rdram + (a & 0x1FFFFFFu), 4);
+        return v;
+    }
+    void wrU32(uint8_t *rdram, uint32_t a, uint32_t v) { std::memcpy(rdram + (a & 0x1FFFFFFu), &v, 4); }
+    int16_t rdS16(const uint8_t *p)
+    {
+        int16_t v;
+        std::memcpy(&v, p, 2);
+        return v;
+    }
+
+    void readEndProcessSelectList(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t reader = gprU32(ctx, 4);
+        g_origReadEndProcess(rdram, ctx, runtime);
+        const uint32_t list = rdU32(rdram, reader + 0x20u);
+        if (list == 0u || list >= 0x2000000u || g_readerLists.count(reader))
+            return;
+        std::vector<const CutWrestler *> extra;
+        for (size_t i = 0; i < kCutCount; ++i)
+            if (g_cutRosterHasModel[i])
+                extra.push_back(&kCutRoster[i]);
+        if (extra.empty())
+            return;
+        const uint32_t total = kStockSelect + static_cast<uint32_t>(extra.size());
+        const uint32_t buf = runtime->guestMalloc(total * kSelectRec);
+        if (buf == 0u)
+            return;
+        uint8_t *const out = rdram + buf;
+        std::memcpy(out, rdram + list, kStockSelect * kSelectRec);
+        uint32_t n = kStockSelect;
+        for (const CutWrestler *w : extra)
+        {
+            const uint8_t *tmpl = nullptr;
+            for (uint32_t s = 0; s < kStockSelect && !tmpl; ++s)
+                if (rdS16(out + s * kSelectRec + 2) == w->tmpl)
+                    tmpl = out + s * kSelectRec;
+            if (!tmpl)
+                continue;
+            uint8_t *const rec = out + n * kSelectRec;
+            std::memcpy(rec, tmpl, kSelectRec);
+            const int16_t id = w->id;
+            std::memcpy(rec + 2, &id, 2);
+            std::memset(rec + 4, 0, 0x20);
+            std::strncpy(reinterpret_cast<char *>(rec + 4), w->name, 0x1F);
+            for (uint32_t set : {0x68u, 0x74u}) // costume ids: template ids for the attire slots that have models
+            {
+                const int16_t first = rdS16(tmpl + set);
+                for (uint32_t slot = 0; slot < 5; ++slot)
+                {
+                    int16_t v = -1;
+                    if (slot < w->attires && first != -1)
+                        v = rdS16(tmpl + set + slot * 2) != -1 ? rdS16(tmpl + set + slot * 2) : first;
+                    std::memcpy(rec + set + slot * 2, &v, 2);
+                }
+            }
+            ++n;
+        }
+        g_selectCount = n;
+        g_readerLists[reader] = {list, buf};
+        wrU32(rdram, reader + 0x20u, buf);
+        std::cerr << "[hctp] select list: " << n << " superstars (" << (n - kStockSelect) << " restored)" << std::endl;
+    }
+    // CSSNameListReader dtor 0x26fc20: hand the game back its own CHSL list pointer before it frees it
+    void readerDtorSelectList(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t reader = gprU32(ctx, 4);
+        if (auto it = g_readerLists.find(reader); it != g_readerLists.end())
+        {
+            wrU32(rdram, reader + 0x20u, it->second.first);
+            runtime->guestFree(it->second.second);
+            g_readerLists.erase(it);
+        }
+        g_origReaderDtor(rdram, ctx, runtime);
+    }
+    // CSSNameListReader::GetSuperStarList 0x26fe60 (a0 reader, a1 dest): the stock 65 always go to dest; a call from
+    // SelectWrestlerFrame::ChangeIntroduction (0x24e410-0x24e810) also fills that frame's long-list buffer.
+    void readerGetListSelectList(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t reader = gprU32(ctx, 4), dest = gprU32(ctx, 5), ra = gprU32(ctx, 31);
+        g_origReaderGetList(rdram, ctx, runtime);
+        auto rl = g_readerLists.find(reader);
+        if (ra < 0x24e410u || ra >= 0x24e810u || rl == g_readerLists.end() || g_selectCount > kSelectMax)
+            return;
+        uint32_t &buf = g_frameLists[dest];
+        if (buf == 0u)
+            buf = runtime->guestMalloc(kSelectMax * kSelectRec); // frames reuse addresses; buffer kept for reuse
+        if (buf == 0u)
+            return;
+        // Alphabetical like the stock list (which files "The Rock" under R): each restored record goes in front of the
+        // first stock record whose name sorts after it, ignoring a leading "The " and case; stock order is untouched.
+        const uint8_t *const src = rdram + rl->second.second;
+        const uint8_t *const stockEnd = src + kStockSelect * kSelectRec;
+        auto key = [](const uint8_t *rec) {
+            std::string s(reinterpret_cast<const char *>(rec + 4), strnlen(reinterpret_cast<const char *>(rec + 4), 0x20));
+            if (s.rfind("The ", 0) == 0)
+                s.erase(0, 4);
+            for (char &c : s)
+                c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+            return s;
+        };
+        std::vector<const uint8_t *> order;
+        for (uint32_t s = 0; s < kStockSelect; ++s)
+            order.push_back(src + s * kSelectRec);
+        for (uint32_t e = kStockSelect; e < g_selectCount; ++e)
+        {
+            const std::string k = key(src + e * kSelectRec);
+            auto at = std::find_if(order.begin(), order.end(),
+                                   [&](const uint8_t *r) { return r < stockEnd && key(r) > k; });
+            order.insert(at, src + e * kSelectRec);
+        }
+        for (uint32_t i = 0; i < order.size(); ++i)
+            std::memcpy(rdram + buf + i * kSelectRec, order[i], kSelectRec);
+    }
+    // SelectWrestlerFrame::GetSuperStarList(i) 0x24fa40 (leaf replacement)
+    void frameGetListSelectList(uint8_t *, R5900Context *ctx, PS2Runtime *)
+    {
+        const uint32_t frame = gprU32(ctx, 4), i = gprU32(ctx, 5);
+        uint32_t base = frame + 0x190u, count = kStockSelect;
+        if (auto it = g_frameLists.find(base); it != g_frameLists.end() && it->second != 0u)
+            base = it->second, count = g_selectCount;
+        SET_GPR_U32(ctx, 2, i < count ? base + i * kSelectRec : 0u);
+        ctx->pc = gprU32(ctx, 31);
+    }
+    // SelectWresTable::Make 0x2bd880 (a2 = superstar list)
+    void wresTableMakeSelectList(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        auto it = g_frameLists.find(gprU32(ctx, 6));
+        if (it == g_frameLists.end() || it->second == 0u)
+        {
+            g_origWresTableMake(rdram, ctx, runtime);
+            return;
+        }
+        SET_GPR_U32(ctx, 6, it->second);
+        ++g_selectLongDepth;
+        g_origWresTableMake(rdram, ctx, runtime);
+        --g_selectLongDepth;
+    }
+    // GetSelectRoster 0x26fb90 (leaf replacement)
+    void getSelectRosterSelectList(uint8_t *, R5900Context *ctx, PS2Runtime *)
+    {
+        const uint32_t ra = gprU32(ctx, 31);
+        const bool longList = g_selectLongDepth > 0 || (ra >= 0x26fea0u && ra < 0x26ff1cu); // RosterID2IndexNo
+        SET_GPR_U32(ctx, 2, longList ? g_selectCount : kStockSelect);
+        ctx->pc = ra;
+    }
+    void installSelectList(PS2Runtime &runtime)
+    {
+        g_origReadEndProcess = runtime.lookupFunction(0x26fcb0u);
+        g_origReaderDtor = runtime.lookupFunction(0x26fc20u);
+        g_origReaderGetList = runtime.lookupFunction(0x26fe60u);
+        g_origWresTableMake = runtime.lookupFunction(0x2bd880u);
+        const bool ok = g_origReadEndProcess && g_origReaderDtor && g_origReaderGetList && g_origWresTableMake &&
+                        runtime.replaceFunction(0x26fcb0u, readEndProcessSelectList) &&
+                        runtime.replaceFunction(0x26fc20u, readerDtorSelectList) &&
+                        runtime.replaceFunction(0x26fe60u, readerGetListSelectList) &&
+                        runtime.replaceFunction(0x24fa40u, frameGetListSelectList) &&
+                        runtime.replaceFunction(0x2bd880u, wresTableMakeSelectList) &&
+                        runtime.replaceFunction(0x26fb90u, getSelectRosterSelectList);
+        std::cerr << "[hctp] select list expansion " << (ok ? "on" : "FAILED") << std::endl;
     }
 
     void startPcProfiler()
@@ -674,8 +859,8 @@ namespace
                 optScale = kLevel[g_pbpRdram[0x4fb95au + 0x1bu] & 3u];
             }
             // the SvR public beta clips (partition 15, most Cole/Tazz lines) are mastered ~9 dB quieter than retail and
-            // the other packs (measured median -25 vs -16 dBFS): x2.8 to match
-            pl.gain = (partition == 14u ? kFinkelGain : partition == 15u ? kPbpGain * 2.8f : kPbpGain) * optScale;
+            // the other packs (measured median -25 vs -16 dBFS): x2.8 matched it, but Jordan found Cole/Tazz a bit loud -> x2.0
+            pl.gain = (partition == 14u ? kFinkelGain : partition == 15u ? kPbpGain * 2.0f : kPbpGain) * optScale;
             // the game's Options sound block (CSound* at 0x526768, CSound::GetOption = +4; byte 1 = BGM volume,
             // byte 3 = SFX volume): log it when it changes, to find the COMMENTARY VOLUME byte
             {
@@ -2136,6 +2321,8 @@ namespace
                                            runtime.replaceFunction(0x12cec0u, getCharaGamePropCutRoster));
             std::cerr << "[hctp] cut roster restore: " << slots << " slots with models"
                       << (ok ? "" : " (hook FAILED)") << std::endl;
+            if (slots > 0)
+                installSelectList(runtime);
         }
         std::cerr << "[hctp] overrides applied" << std::endl;
     }
