@@ -901,6 +901,120 @@ namespace
         }
         g_skTransOrig(rdram, ctx, runtime);
     }
+}
+
+#include "hctp_native_sk.inl"
+
+namespace
+{
+    // NATIVE SOUND KIT hooks (HCTP_NATIVE_SK=1). Native handles are >= hctpsk::kHandleBase; anything else goes to the
+    // original (IOP) function, so the MIDI-sequence banks keep the IOP path.
+    PS2Runtime::RecompiledFunction g_skOrigBindMsin = nullptr, g_skOrigMsinCtl = nullptr, g_skOrigMsinStat = nullptr,
+                                   g_skOrigHsynCtl = nullptr, g_skOrigHsynUnbind = nullptr, g_skOrigMsinUnbind = nullptr;
+    uint32_t skReg(R5900Context *ctx, int r) { return static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[r])); }
+    void skRet(R5900Context *ctx, uint32_t v) { ctx->r[2] = _mm_set_epi64x(0, static_cast<int64_t>(static_cast<int32_t>(v))); }
+    uint32_t skW32(uint8_t *rdram, uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & 0x1FFFFFCu), 4); return v; }
+
+    // CSkCtrl::BindMsinBank(bank) 0x2e3170 (Ghidra): HSYNTH_Bind(3, -1, HD adr +4, HD size +0x10, SPU adr +8, BD size
+    // +0x14) -> bank, HSYNTH_Bind(5, -1, bank, 0) -> track, MSIN_Bind(0..) -> port, MSIN_Bind(5, track, port); the
+    // handles go to *(info+0x24)+8 / +0 / +0xc and the "bound" flag info+0x2c = 1 (info = 0x53f600 + bank*0x30).
+    void skBindMsinBank(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t info = 0x53f600u + skReg(ctx, 4) * 0x30u;
+        const uint32_t spu = skW32(rdram, info + 8u);
+        std::vector<uint8_t> hd;
+        {
+            std::lock_guard<std::mutex> lock(g_skBankLock);
+            for (const auto &kv : g_skBanks)
+                if (kv.second.spuAddr == spu && !kv.second.hd.empty())
+                    hd = kv.second.hd;
+        }
+        hctpsk::Bank bank;
+        bank.hd = std::move(hd);
+        bank.spuAddr = spu;
+        bank.parse();
+        if (!bank.valid)
+        {
+            std::fprintf(stderr, "[nativesk] bank spu 0x%x not captured / not an HD: IOP path%c", spu, 10);
+            g_skOrigBindMsin(rdram, ctx, runtime);
+            return;
+        }
+        int handle;
+        {
+            std::lock_guard<std::mutex> lock(hctpsk::g_lock);
+            hctpsk::initTables();
+            hctpsk::g_banks.push_back(std::move(bank));
+            hctpsk::Track t;
+            t.bank = static_cast<int>(hctpsk::g_banks.size()) - 1;
+            hctpsk::g_tracks.push_back(t);
+            handle = hctpsk::kHandleBase + static_cast<int>(hctpsk::g_tracks.size()) - 1;
+        }
+        const uint32_t tr = skW32(rdram, info + 0x24u);
+        auto put = [rdram](uint32_t a, uint32_t v) { std::memcpy(rdram + (a & 0x1FFFFFCu), &v, 4); };
+        put(tr + 8u, static_cast<uint32_t>(handle));
+        put(tr + 0u, static_cast<uint32_t>(handle));
+        put(tr + 0xcu, static_cast<uint32_t>(handle));
+        rdram[(info + 0x2cu) & 0x1FFFFFFu] = 1;
+        std::fprintf(stderr, "[nativesk] effect bank spu 0x%x -> native track 0x%x%c", spu, handle, 10);
+    }
+
+    // sceSkSsMSIN_Control(track, msg, a2, a3, t0, t1, t2, t3, [sp]) 0x2e5038
+    void skMsinControl(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const int handle = static_cast<int>(skReg(ctx, 4));
+        if (handle < hctpsk::kHandleBase)
+        {
+            g_skOrigMsinCtl(rdram, ctx, runtime);
+            return;
+        }
+        const uint32_t a[7] = {skReg(ctx, 6), skReg(ctx, 7), skReg(ctx, 8), skReg(ctx, 9), skReg(ctx, 10), skReg(ctx, 11),
+                               skW32(rdram, skReg(ctx, 29))};
+        std::lock_guard<std::mutex> lock(hctpsk::g_lock);
+        skRet(ctx, hctpsk::msinControl(handle, skReg(ctx, 5), a));
+    }
+
+    // sceSkSsMSIN_Status(track, 0x11, id) 0x2e5138: non-zero while the id still sounds (skmsin: state & 0x70)
+    void skMsinStatus(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const int handle = static_cast<int>(skReg(ctx, 4));
+        if (handle < hctpsk::kHandleBase)
+        {
+            g_skOrigMsinStat(rdram, ctx, runtime);
+            return;
+        }
+        std::lock_guard<std::mutex> lock(hctpsk::g_lock);
+        skRet(ctx, hctpsk::idBusy(handle, static_cast<uint8_t>(skReg(ctx, 6))) ? 0x10u : 0u);
+    }
+
+    // sceSkSsHSYNTH_Control(track, 0x1f / 0x1e ...) 0x2e4ad0: CSkCtrl's stop / sound-off -> the track's voices off
+    void skHsynControl(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const int handle = static_cast<int>(skReg(ctx, 4));
+        if (handle < hctpsk::kHandleBase)
+        {
+            g_skOrigHsynCtl(rdram, ctx, runtime);
+            return;
+        }
+        std::lock_guard<std::mutex> lock(hctpsk::g_lock);
+        hctpsk::noteOff(handle, 0, 0xff, true);
+        skRet(ctx, 0u);
+    }
+
+    // sceSkSsHSYNTH_Unbind / sceSkSsMSIN_Unbind (0x2e4a28 / 0x2e4f90): a native track's voices off (its bank stays,
+    // a handle is never reused)
+    template <int Which>
+    void skUnbind(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const int handle = static_cast<int>(skReg(ctx, 4));
+        if (handle < hctpsk::kHandleBase)
+        {
+            (Which == 0 ? g_skOrigHsynUnbind : g_skOrigMsinUnbind)(rdram, ctx, runtime);
+            return;
+        }
+        std::lock_guard<std::mutex> lock(hctpsk::g_lock);
+        hctpsk::noteOff(handle, 0, 0xff, true);
+        skRet(ctx, 0u);
+    }
 
     // TEMP diag HCTP_IKLOG=1: see the hook install. "[iklog] acosf x=.. -> .. ra=.." (first 200 odd calls), and every
     // 600 calls a count line (calls, out of range, NaN results).
@@ -1067,6 +1181,23 @@ namespace
             g_skTransOrig = runtime.lookupFunction(0x2e19c0u);
             if (!g_skTransOrig || !runtime.replaceFunction(0x2e19c0u, skTransCaptured))
                 std::cerr << "[skbank] TransToIop hook FAILED" << std::endl;
+        }
+        if (std::getenv("HCTP_NATIVE_SK") && std::getenv("HCTP_NATIVE_SK")[0] == '1')
+        {
+            // the effect banks' synth on the host (hctp_native_sk.inl); MIDI-sequence banks keep the IOP path
+            bool ok = true;
+            auto hook = [&](uint32_t addr, PS2Runtime::RecompiledFunction &orig, PS2Runtime::RecompiledFunction fn)
+            {
+                orig = runtime.lookupFunction(addr);
+                ok = ok && orig && runtime.replaceFunction(addr, fn);
+            };
+            hook(0x2e3170u, g_skOrigBindMsin, skBindMsinBank);
+            hook(0x2e5038u, g_skOrigMsinCtl, skMsinControl);
+            hook(0x2e5138u, g_skOrigMsinStat, skMsinStatus);
+            hook(0x2e4ad0u, g_skOrigHsynCtl, skHsynControl);
+            hook(0x2e4a28u, g_skOrigHsynUnbind, skUnbind<0>);
+            hook(0x2e4f90u, g_skOrigMsinUnbind, skUnbind<1>);
+            std::cerr << (ok ? "[nativesk] native sound kit on (effect banks)" : "[nativesk] hook FAILED") << std::endl;
         }
         if (!std::getenv("HCTP_SHOW_YMEM"))
         {
