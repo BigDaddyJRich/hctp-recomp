@@ -1,4 +1,5 @@
 #include <utility>
+#include <atomic>
 // WWE SmackDown! Here Comes the Pain (USA, SLUS-20787) - runtime overrides for this game build.
 // Copied into ps2xRuntime/src/runner/ by tools/sync_generated.py; edit this file in the repo's overrides_hctp/ folder.
 //
@@ -22,6 +23,13 @@
 #include <cstdio>
 #include <iostream>
 #include <thread>
+
+extern "C" void hctpCommentaryEvent(uint32_t event); // ps2xRuntime/src/lib/hctp_commentary.cpp
+extern "C" void hctpCommentaryEntrance(uint32_t rosterId);
+extern "C" void hctpCommentaryMove(uint32_t chara, uint32_t moveId);
+extern "C" void hctpCommentaryParticipants(const uint32_t *rosterIds, uint32_t count);
+extern "C" void hctpCommentaryArena(int stage);
+extern "C" void hctpCommentaryCharaRoster(uint32_t chara, uint32_t rosterId);
 
 namespace ps2_stubs
 {
@@ -318,7 +326,11 @@ namespace
     {
         static const char *names[] = {"BGM/BGM000.afs", "BGM/BGM001.afs", "BGM/BGM002.afs", "BGM/BGM003.afs",
                                       "BGM/BGM004.afs", nullptr, nullptr, nullptr, nullptr, nullptr,
-                                      "BGM/PBP000.afs", "BGM/CHEER.afs", "BGM/BG_ENV.afs"};
+                                      "BGM/PBP000.afs", "BGM/CHEER.afs", "BGM/BG_ENV.afs",
+                                      "BGM/PBPSVR.afs", // 13 = host-only SvR commentary pack (never used by the game)
+                                      "BGM/FINKEL.afs", // 14 = host-only Howard Finkel pack (tools/build_finkel_pack.py)
+                                      "BGM/PBPBETA.afs", // 15 = host-only SvR public beta commentary (Jul 2004 pbppac.afs)
+                                      "BGM/PBPEXTRA.afs"}; // 16 = host-only extra lines (SYM / SvR 2006 / 2K14)
         return partition < sizeof(names) / sizeof(names[0]) ? names[partition] : nullptr;
     }
 
@@ -510,6 +522,84 @@ namespace
         return true;
     }
 
+    uint8_t *g_pbpRdram = nullptr; // guest RAM, set by the commentary hooks
+    bool hctpNativePlayAfsClipImpl(uint32_t partition, uint32_t fid)
+    {
+        static uint32_t nextHandle = 0xC0000000u;
+        std::lock_guard<std::mutex> alloc(g_adxAlloc);
+        // commentary keeps ONE player: reuse the one holding a commentary handle (lines are queued back to back by the
+        // engine), else take a free one - never more, so music/crowd players are never starved
+        int own = -1;
+        for (int i = 0; i < kAdxPlayers && own < 0; ++i)
+            if (g_adxPlayers[i].adxt >= 0xC0000000u)
+                own = i;
+        for (int i = 0; i < kAdxPlayers; ++i)
+        {
+            AdxPlayer &pl = g_adxPlayers[i];
+            if (own >= 0 ? i != own : pl.adxt != 0u)
+                continue;
+            std::lock_guard<std::mutex> lock(pl.m);
+            if (!adxLoad(pl, partition, fid))
+                return false;
+            if (!pl.streamOpen || pl.streamRate != pl.rate || pl.streamChannels != pl.channels)
+            {
+                if (pl.streamOpen)
+                    UnloadAudioStream(pl.stream);
+                pl.stream = LoadAudioStream(pl.rate, 16, pl.channels);
+                SetAudioStreamCallback(pl.stream, g_adxCallbacks[i]);
+                pl.streamRate = pl.rate;
+                pl.streamChannels = pl.channels;
+                pl.streamOpen = true;
+                PlayAudioStream(pl.stream);
+            }
+            // commentary sits under music + crowd: its own gain (HCTP_PBP_VOLUME, default 2.5; samples are clamped)
+            static const float kPbpGain = [] {
+                const char *v = std::getenv("HCTP_PBP_VOLUME");
+                return v ? float(std::atof(v)) : 2.5f;
+            }();
+            // Howard Finkel (partition 14) a bit quieter than the commentary (Jordan): HCTP_FINKEL_VOLUME, default 1.6
+            static const float kFinkelGain = [] {
+                const char *v = std::getenv("HCTP_FINKEL_VOLUME");
+                return v ? float(std::atof(v)) : 1.6f;
+            }();
+            // COMMENTARY VOLUME option (restored, In-Game Options): save byte g_SaveData+0x4550a+0x1b, stored
+            // inverted (0 = MAX = the gains above, 1 NORMAL, 2 MIN, 3 OFF) so old / fresh saves default to MAX
+            float optScale = 1.0f;
+            if (g_pbpRdram)
+            {
+                static const float kLevel[4] = {1.0f, 0.65f, 0.35f, 0.0f};
+                optScale = kLevel[g_pbpRdram[0x4fb95au + 0x1bu] & 3u];
+            }
+            pl.gain = (partition == 14u ? kFinkelGain : kPbpGain) * optScale;
+            // the game's Options sound block (CSound* at 0x526768, CSound::GetOption = +4; byte 1 = BGM volume,
+            // byte 3 = SFX volume): log it when it changes, to find the COMMENTARY VOLUME byte
+            {
+                static uint8_t s_lastOpt[12] = {0xFF};
+                uint32_t sound = 0;
+                if (g_pbpRdram)
+                    std::memcpy(&sound, g_pbpRdram + 0x526768u, 4);
+                if (g_pbpRdram && sound >= 0x100000u && sound < 0x1FFFFF0u)
+                {
+                    uint8_t opt[12];
+                    std::memcpy(opt, g_pbpRdram + sound + 4u, 12);
+                    if (std::memcmp(opt, s_lastOpt, 12) != 0)
+                    {
+                        std::memcpy(s_lastOpt, opt, 12);
+                        std::fprintf(stderr, "[hctp-pbp] sound options:");
+                        for (uint8_t b : opt)
+                            std::fprintf(stderr, " %02X", b);
+                        std::fprintf(stderr, "%c", 10);
+                    }
+                }
+            }
+            pl.adxt = nextHandle++;
+            pl.playing = true;
+            std::fprintf(stderr, "[hctp-pbp] native clip %u/%u started on player %d%c", partition, fid, i, 10);
+            return true;
+        }
+        return false;
+    }
+
     PS2Runtime::RecompiledFunction g_origAdxtStartAfs, g_origAdxtGetStat, g_origAdxtStop, g_origAdxtDestroy, g_origAdxtSetOutVol;
     uint32_t regU(R5900Context *ctx, int r) { return static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[r])); }
 
@@ -687,6 +777,147 @@ namespace
         g_origAdxtSetOutVol(rdram, ctx, runtime);
     }
 
+    // Commentary: every bell goes through the referee's CAcxPlayer (s_pInstance__14CRefereePlayer at
+    // 0x526730) as PlayByIndex(ref, 0x10, 0) - GameSE_gong is only one of its callers. Match start/end for the commentary engine.
+    PS2Runtime::RecompiledFunction g_origAcxPlayByIndex = nullptr;
+    void commentaryAcxPlayByIndex(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        g_pbpRdram = rdram;
+        const uint32_t obj = regU(ctx, 4), index = regU(ctx, 5);
+        uint32_t referee = 0;
+        std::memcpy(&referee, rdram + 0x526730u, 4);
+        g_origAcxPlayByIndex(rdram, ctx, runtime);
+        if (obj == 0u || obj != referee)
+            return;
+        std::fprintf(stderr, "[hctp-pbp] referee sound %u%c", index, 10);
+        if (index == 0x10u)
+        {
+            // who is in the match: entrant cast codes (u16 at 0x4921CA + slot * 0x20, roster id * 100)
+            uint32_t ids[4];
+            uint32_t n = 0;
+            for (uint32_t slot = 0; slot < 4u; ++slot)
+            {
+                uint16_t code = 0;
+                std::memcpy(&code, rdram + 0x4921CAu + slot * 0x20u, 2);
+                if (code >= 25500u) // empty slot (cast code 0 is The Rock)
+                    break;
+                const uint32_t id = code >= 10000u ? (code - 10000u) / 100u + 0x56u : code / 100u;
+                if (id < 0x56u)
+                    ids[n++] = code < 10000u ? id | (code % 100u) << 8 : id; // + attire variant (nWo Hogan)
+            }
+            const int8_t stage = int8_t(rdram[0x4922C0u]); // GetNowStage 0x1f53d0 (arena / PPV)
+            std::fprintf(stderr, "[hctp-pbp] arena (stage) %d%c", int(stage), 10);
+            hctpCommentaryArena(stage);
+            hctpCommentaryParticipants(ids, n);
+            hctpCommentaryEvent(1u);
+        } // kPbpBell: match start / match end (debounced in hctp_commentary.cpp)
+    }
+
+    // Koutai(CChar*, CChar*) = tag partners exchange places -> "the tag's been made" line.
+    PS2Runtime::RecompiledFunction g_origKoutai = nullptr;
+    void commentaryKoutai(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        g_origKoutai(rdram, ctx, runtime);
+        std::fprintf(stderr, "[hctp-pbp] tag exchange%c", 10);
+        hctpCommentaryEvent(2u); // kPbpTag
+    }
+
+    // Entrances: CSd5EventSequence::SetEvent(this) sets up event #(this+0x64) of type (this+0x38; 2 = entrance) while
+    // the loading screen is still up; CEventSystem::Play starts it once loaded. The entrant's cast code is the u16 at
+    // 0x4921CA + order * 0x20 (CSd5EventData::GetEntranceEventNoFromSystem): roster id * 100 (+ variant), or
+    // 10000 + (id - 0x56) * 100 for the created wrestlers. Finkel speaks when the entrance starts playing.
+    PS2Runtime::RecompiledFunction g_origSetEvent = nullptr, g_origEventPlay = nullptr;
+    std::atomic<int> g_pendingOrder{-1};
+    void commentarySetEvent(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        g_pbpRdram = rdram;
+        const uint32_t self = regU(ctx, 4);
+        uint32_t order = 0, type = 0;
+        std::memcpy(&order, rdram + ((self + 0x64u) & 0x1FFFFFFu), 4);
+        std::memcpy(&type, rdram + ((self + 0x38u) & 0x1FFFFFFu), 4);
+        g_origSetEvent(rdram, ctx, runtime);
+        if (type == 2u && order < 8u)
+            std::fprintf(stderr, "[hctp-pbp] entrance #%u set up%c", order, 10);
+        g_pendingOrder = (type == 2u && order < 8u) ? int(order) : -1;
+    }
+    void commentaryEventPlay(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        g_origEventPlay(rdram, ctx, runtime);
+        // ActionWaitGimmickReady calls Play every frame while the loading screen is up; it returns 1 only on the
+        // call that really starts the entrance (state 1 -> 2). Speak then, never on the waiting calls.
+        if (regU(ctx, 2) != 1u)
+            return;
+        const int order = g_pendingOrder.exchange(-1);
+        if (order < 0)
+            return;
+        // the cast slot is only filled by now (at SetEvent time it can still hold 25500 = empty)
+        uint16_t code = 0;
+        std::memcpy(&code, rdram + 0x4921CAu + uint32_t(order) * 0x20u, 2);
+        if (code >= 25500u && order > 0)
+        {
+            // later entrants: the entrance's cast list can hold the one walking out in slot 0 (seen: Undertaker as
+            // entrance #1 with slot 1 still 25500); the engine ignores a repeat of an entrant already announced
+            std::memcpy(&code, rdram + 0x4921CAu, 2);
+            std::fprintf(stderr, "[hctp-pbp] entrance #%d: own cast slot empty, slot 0 = %u%c", order, code, 10);
+        }
+        if (code >= 25500u)
+        {
+            std::fprintf(stderr, "[hctp-pbp] entrance #%d starts: cast code %u = empty slot, silent%c", order, code, 10);
+            return;
+        }
+        int roster = code >= 10000u ? int((code - 10000u) / 100u + 0x56u) : int(code / 100u | (code % 100u) << 8);
+        // belt held (CTitleHistoryData::CheckTitleHold 0x324110): u16 holder ids at GetSaveData() 0x4B6450 + 0x9EFC,
+        // 11 slots for 9 belts (belts 2 and 3 = tag titles, two holders each) -> belt + 1 above bit 16 for Finkel
+        static const uint8_t kSlotBelt[11] = {0, 1, 2, 2, 3, 3, 4, 5, 6, 7, 8};
+        int belt = -1;
+        for (uint32_t s = 0; s < 11u && belt < 0; ++s)
+        {
+            uint16_t holder = 0;
+            std::memcpy(&holder, rdram + 0x4C034Cu + s * 2u, 2);
+            if (holder == uint16_t(roster & 0xFF))
+                belt = kSlotBelt[s];
+        }
+        std::fprintf(stderr, "[hctp-pbp] entrance #%d starts: cast code %u -> roster 0x%02X attire %d belt %d%c", order, code,
+                     roster & 0xFF, (roster >> 8) & 0xFF, belt, 10);
+        if (belt >= 0)
+            roster |= (belt + 1) << 16;
+        hctpCommentaryEntrance(uint32_t(roster));
+    }
+
+    // GameSE(CChar*, se, ...) plays a wrestler's move sound: CChar+0xA4 = the move being performed (the id SvR's
+    // finisher tables use) -> finisher / signature move calls.
+    PS2Runtime::RecompiledFunction g_origGameSe = nullptr;
+    void commentaryGameSe(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t chara = regU(ctx, 4);
+        if (chara >= 0x100000u && chara < 0x2000000u)
+        {
+            uint32_t moveId = 0;
+            std::memcpy(&moveId, rdram + chara + 0xA4u, 4);
+            // find the CChar field that holds the wrestler (roster id / cast code): log candidate offsets once per CChar
+            static std::set<uint32_t> s_probed;
+            if (s_probed.size() < 64 && s_probed.insert(chara).second)
+            {
+                uint16_t cast[4] = {};
+                for (uint32_t k = 0; k < 4u; ++k)
+                    std::memcpy(&cast[k], rdram + 0x4921CAu + k * 0x20u, 2);
+                std::string hits;
+                for (uint32_t off = 0; off < 0x1000u; off += 2)
+                {
+                    uint16_t v = 0;
+                    std::memcpy(&v, rdram + chara + off, 2);
+                    for (uint32_t k = 0; k < 4u; ++k)
+                        if (cast[k] < 25500u && (v == cast[k] || (v == cast[k] / 100u && v != 0u)))
+                            hits += " +" + std::to_string(off) + "=" + std::to_string(v);
+                }
+                std::fprintf(stderr, "[hctp-pbp] chara %08x probe (cast %u %u %u %u):%s%c", chara, cast[0], cast[1], cast[2], cast[3],
+                             hits.c_str(), 10);
+            }
+            hctpCommentaryMove(chara, moveId);
+        }
+        g_origGameSe(rdram, ctx, runtime);
+    }
+
     void installNativeAdx(PS2Runtime &runtime)
     {
         g_nativeAdxLog = std::getenv("HCTP_ADXTLOG") != nullptr;
@@ -715,6 +946,19 @@ namespace
             runtime.replaceFunction(0x3bf8f8u, nativeStartMemIdx);
             std::cerr << "[nadx] native in-memory ADX (StartMem / StartMemIdx) on" << std::endl;
         }
+        if ((g_origAcxPlayByIndex = runtime.lookupFunction(0x1b1090u)) != nullptr)
+            runtime.replaceFunction(0x1b1090u, commentaryAcxPlayByIndex);
+        if ((g_origKoutai = runtime.lookupFunction(0x1e4080u)) != nullptr)
+            runtime.replaceFunction(0x1e4080u, commentaryKoutai);
+        if ((g_origSetEvent = runtime.lookupFunction(0x2a83b0u)) != nullptr &&
+            (g_origEventPlay = runtime.lookupFunction(0x166e80u)) != nullptr)
+        {
+            runtime.replaceFunction(0x2a83b0u, commentarySetEvent);
+            runtime.replaceFunction(0x166e80u, commentaryEventPlay);
+        }
+        if ((g_origGameSe = runtime.lookupFunction(0x1b0680u)) != nullptr)
+            runtime.replaceFunction(0x1b0680u, commentaryGameSe);
+        std::cerr << "[hctp-pbp] bell hook " << (g_origAcxPlayByIndex ? "on" : "NOT found") << std::endl;
         std::cerr << "[nadx] native ADX music on" << std::endl;
     }
 
@@ -1141,8 +1385,218 @@ namespace
         std::cerr << "[trfn] " << n << " hooks installed" << std::endl;
     }
 
+    // ---- restored In-Game Options entries: IN-GAME MUSIC TRACK + COMMENTARY VOLUME (deleted in retail HCTP) ----
+    // COptionFrame mode 2 (In-Game Options). Retail: 12 rows, param ids 0xa..0x13 + 0x16 (default) + 0x17 (decision);
+    // labels = RCstrIDs (0x7e "IN-GAME MUSIC TRACK" and 0x83 "COMMENTARY VOLUME" survive unused in the RC table).
+    // Music track = tagOptState byte 0x11 (frame +0x59), still copied to 0x4922c4 by the exhibition setup and read by
+    // SndPlayMatchBGM (0 = random, n = track n) - only the menu row was gone. Commentary volume = spare byte 0x1b
+    // (frame +0x63, inside the 0x20-byte option block saved with the system data), stored inverted (see clip gain).
+    // New param ids 0x14 (music) / 0x18 (commentary). The popup is the game's own COptionWindow: DecisionNext runs as
+    // for unused param 9 (a match-rule byte, frame +0x51) with its value list redirected, WindowEnd moves the result.
+    constexpr uint32_t kOptMusic = 0x14u, kOptComm = 0x18u, kOptDonor = 9u;
+    PS2Runtime::RecompiledFunction g_optOrigItemNum, g_optOrigItem, g_optOrigInit, g_optOrigStrList, g_optOrigIndexNo,
+        g_optOrigDecisionNext, g_optOrigWindowEnd, g_optOrigSetDef;
+    uint32_t g_optItems = 0, g_optMusicList = 0, g_optCommList = 0;
+    struct OptRedir
+    {
+        bool active;
+        uint32_t frame, row, id;
+        uint8_t donorSaved;
+    } g_optRedir = {};
+    inline uint32_t optArg(R5900Context *ctx, int r) { return static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[r])); }
+    inline uint8_t *optP(uint8_t *rdram, uint32_t a) { return rdram + (a & 0x1FFFFFFu); }
+    inline uint32_t optR32(uint8_t *rdram, uint32_t a)
+    {
+        uint32_t v;
+        std::memcpy(&v, optP(rdram, a), 4);
+        return v;
+    }
+    inline void optW32(uint8_t *rdram, uint32_t a, uint32_t v) { std::memcpy(optP(rdram, a), &v, 4); }
+    uint32_t optCurId(uint8_t *rdram, uint32_t frame, uint32_t *row)
+    {
+        *row = optR32(rdram, optR32(rdram, frame + 0x18u) + 0x18u);
+        return optR32(rdram, optR32(rdram, frame + 0x38u) + *row * 8u);
+    }
+    uint8_t optValue(uint8_t *rdram, uint32_t frame, uint32_t id)
+    {
+        return id == kOptMusic ? *optP(rdram, frame + 0x59u)
+                               : static_cast<uint8_t>(3u - (*optP(rdram, frame + 0x63u) & 3u));
+    }
+    void optEnsureTables(uint8_t *rdram, PS2Runtime *runtime)
+    {
+        if (g_optItems)
+            return;
+        g_optItems = runtime->guestMalloc(14u * 8u);
+        g_optMusicList = runtime->guestMalloc(8u + 8u * 4u);
+        g_optCommList = runtime->guestMalloc(8u);
+        static const uint32_t labels[14] = {0x79, 0x7a, 0x7b, 0x7c, 0x82, 0x7d, 0x7e, 0x7f, 0x80, 0x81, 0x83, 0x84, 0x77, 0x5b};
+        for (uint32_t i = 0; i < 14u; ++i)
+        {
+            optW32(rdram, g_optItems + i * 8u, 0u);
+            optW32(rdram, g_optItems + i * 8u + 4u, labels[i]);
+        }
+        optW32(rdram, g_optMusicList, g_optMusicList + 8u); // RANDOM, TRACK1..TRACK7
+        optW32(rdram, g_optMusicList + 4u, 8u);
+        optW32(rdram, g_optMusicList + 8u, 0x8fu);
+        for (uint32_t i = 0; i < 7u; ++i)
+            optW32(rdram, g_optMusicList + 12u + i * 4u, 0x9cu + i);
+        optW32(rdram, g_optCommList, optR32(rdram, 0x411020u + 0x10u * 8u)); // BGM VOLUME's OFF/MIN/NORMAL/MAX
+        optW32(rdram, g_optCommList + 4u, optR32(rdram, 0x411020u + 0x10u * 8u + 4u));
+        std::fprintf(stderr, "[hctp-opt] tables at items=%x music=%x comm=%x%c", g_optItems, g_optMusicList, g_optCommList, 10);
+    }
+    void optItemNum(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // GetOptMenuItemNum 0x181a90
+    {
+        if (optArg(ctx, 4) == 2u)
+        {
+            returnValue(ctx, 14);
+            return;
+        }
+        g_optOrigItemNum(rdram, ctx, runtime);
+    }
+    void optItem(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // GetOptMenuItem 0x181a30
+    {
+        if (optArg(ctx, 4) == 2u)
+        {
+            optEnsureTables(rdram, runtime);
+            for (uint32_t i = 0; i < 14u; ++i)
+                *optP(rdram, g_optItems + i * 8u) = 0u;
+            returnValue(ctx, static_cast<int32_t>(g_optItems));
+            return;
+        }
+        g_optOrigItem(rdram, ctx, runtime);
+    }
+    void optInit(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // COptionFrame::InitOptFrameParam 0x1837b0
+    {
+        const uint32_t frame = optArg(ctx, 4);
+        g_optOrigInit(rdram, ctx, runtime);
+        if (optR32(rdram, frame + 0x34u) == 2u && optR32(rdram, frame + 0x38u))
+        {
+            static const uint32_t ids[14] = {0xa, 0xb, 0xc, 0xd, 0xe, 0xf, kOptMusic, 0x10, 0x11, 0x12, kOptComm, 0x13, 0x16, 0x17};
+            const uint32_t tab = optR32(rdram, frame + 0x38u);
+            for (uint32_t i = 0; i < 14u; ++i)
+            {
+                optW32(rdram, tab + i * 8u, ids[i]);
+                optW32(rdram, tab + i * 8u + 4u, 0u);
+            }
+            g_optRedir.active = false;
+        }
+    }
+    void optStrList(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // GetWindStringList 0x185a60
+    {
+        uint32_t id = optArg(ctx, 4);
+        if (id == kOptDonor && g_optRedir.active)
+            id = g_optRedir.id;
+        if (id == kOptMusic || id == kOptComm)
+        {
+            optEnsureTables(rdram, runtime);
+            returnValue(ctx, static_cast<int32_t>(id == kOptMusic ? g_optMusicList : g_optCommList));
+            return;
+        }
+        g_optOrigStrList(rdram, ctx, runtime);
+    }
+    void optIndexNo(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // COptionFrame::GetOptIndexNo 0x185150
+    {
+        const uint32_t id = optArg(ctx, 5);
+        if (id == kOptMusic || id == kOptComm)
+        {
+            returnValue(ctx, optValue(rdram, optArg(ctx, 4), id));
+            return;
+        }
+        g_optOrigIndexNo(rdram, ctx, runtime);
+    }
+    void optDecisionNext(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // COptionFrame::DecisionNext 0x184c00
+    {
+        const uint32_t frame = optArg(ctx, 4);
+        uint32_t row = 0;
+        const uint32_t id = optR32(rdram, frame + 0x34u) == 2u ? optCurId(rdram, frame, &row) : 0u;
+        if (id == kOptMusic || id == kOptComm)
+        {
+            g_optRedir = {true, frame, row, id, *optP(rdram, frame + 0x51u)};
+            *optP(rdram, frame + 0x51u) = optValue(rdram, frame, id);
+            optW32(rdram, optR32(rdram, frame + 0x38u) + row * 8u, kOptDonor);
+        }
+        g_optOrigDecisionNext(rdram, ctx, runtime);
+    }
+    void optWindowEnd(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // COptionFrame::WindowEnd 0x184eb0
+    {
+        const uint32_t frame = optArg(ctx, 4);
+        g_optOrigWindowEnd(rdram, ctx, runtime);
+        if (g_optRedir.active && g_optRedir.frame == frame && optR32(rdram, frame + 0x88u) == 0u)
+        {
+            const uint8_t v = *optP(rdram, frame + 0x51u);
+            *optP(rdram, frame + 0x51u) = g_optRedir.donorSaved;
+            optW32(rdram, optR32(rdram, frame + 0x38u) + g_optRedir.row * 8u, g_optRedir.id);
+            if (g_optRedir.id == kOptMusic)
+                *optP(rdram, frame + 0x59u) = v & 7u;
+            else
+                *optP(rdram, frame + 0x63u) = static_cast<uint8_t>(3u - (v & 3u));
+            std::fprintf(stderr, "[hctp-opt] %s = %u%c", g_optRedir.id == kOptMusic ? "music track" : "commentary volume", v, 10);
+            g_optRedir.active = false;
+        }
+    }
+    void optSetDef(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // COptionFrame::SetDefCategory 0x1852e0
+    {
+        const uint32_t frame = optArg(ctx, 4), mode = optArg(ctx, 5);
+        g_optOrigSetDef(rdram, ctx, runtime);
+        if (mode == 2u)
+            *optP(rdram, frame + 0x63u) = 0u; // commentary MAX (music track 0 = RANDOM comes from the game's defaults)
+    }
+    // TEMP diag (HCTP_DTXLOG=<n>): CRI DTX_ExecHndl 0x3ca4f8 (EE<->IOP exchange per handle; movie PCM L/R) - handle,
+    // state, sent count, IOP counter, and the first words of the exchange buffer when the IOP has replied
+    PS2Runtime::RecompiledFunction g_dtxOrigExec = nullptr;
+    void dtxExecLogged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        static int left = std::getenv("HCTP_DTXLOG") ? std::atoi(std::getenv("HCTP_DTXLOG")) : 0;
+        const uint32_t h = optArg(ctx, 4);
+        if (left > 0)
+        {
+            const uint32_t state = *optP(rdram, h + 1u), sent = optR32(rdram, h + 8u), buf = optR32(rdram, h + 12u),
+                           rbuf = optR32(rdram, h + 20u), iopCnt = optR32(rdram, rbuf + 0x3cu), dest = optR32(rdram, h + 24u);
+            if (state == 1u && static_cast<int32_t>(iopCnt) > static_cast<int32_t>(sent))
+            {
+                bool any = false;
+                for (uint32_t i = 0; i < 16u; ++i)
+                    any = any || optR32(rdram, buf + i * 4u) != 0u;
+                if (!any)
+                {
+                    g_dtxOrigExec(rdram, ctx, runtime);
+                    return;
+                }
+                --left;
+                std::fprintf(stderr, "[dtx] h %x dest %x sent %u iop %u buf %x:", h, dest, sent, iopCnt, buf);
+                for (uint32_t i = 0; i < 16u; ++i)
+                    std::fprintf(stderr, " %08x", optR32(rdram, buf + i * 4u));
+                std::fprintf(stderr, "%c", 10);
+            }
+        }
+        g_dtxOrigExec(rdram, ctx, runtime);
+    }
+
+    void installOptionRestore(PS2Runtime &runtime)
+    {
+        if (const char *v = std::getenv("HCTP_OPT_RESTORE"); v && v[0] == '0')
+            return;
+        bool ok = true;
+        auto hook = [&](uint32_t addr, PS2Runtime::RecompiledFunction &orig, PS2Runtime::RecompiledFunction fn) {
+            orig = runtime.lookupFunction(addr);
+            ok = ok && orig && runtime.replaceFunction(addr, fn);
+        };
+        hook(0x181a90u, g_optOrigItemNum, optItemNum);
+        hook(0x181a30u, g_optOrigItem, optItem);
+        hook(0x1837b0u, g_optOrigInit, optInit);
+        hook(0x185a60u, g_optOrigStrList, optStrList);
+        hook(0x185150u, g_optOrigIndexNo, optIndexNo);
+        hook(0x184c00u, g_optOrigDecisionNext, optDecisionNext);
+        hook(0x184eb0u, g_optOrigWindowEnd, optWindowEnd);
+        hook(0x1852e0u, g_optOrigSetDef, optSetDef);
+        std::cerr << "[hctp-opt] in-game music track + commentary volume options " << (ok ? "on" : "FAILED") << std::endl;
+    }
+
     void applyHctp(PS2Runtime &runtime)
     {
+        installOptionRestore(runtime);
+        if (std::getenv("HCTP_DTXLOG") && (g_dtxOrigExec = runtime.lookupFunction(0x3ca4f8u)) != nullptr)
+            runtime.replaceFunction(0x3ca4f8u, dtxExecLogged);
         // CSR reads that test only FIELD (bit 13): yGsSyncV (vsync wait loop) and crisys_VSyncCallBack. Fenced, each
         // waited for the whole chain worker (7 + 4 s per 260 s demo run). Same exemption as Vendetta's 0x1A16C0.
         runtime.chain().allowUnfencedCsrRead(0x14c664u);
@@ -1313,4 +1767,18 @@ namespace
     }
 }
 
+// Keep the commentary runtime decoupled from the override's private state,
+// while exposing one stable host-side playback entry point.
+extern "C" bool hctpNativePlayPbpClip(uint32_t fid)
+{
+    return hctpNativePlayAfsClipImpl(13u, fid);
+}
+
+extern "C" bool hctpNativePlayAfsClip(uint32_t partition, uint32_t fid)
+{
+    return hctpNativePlayAfsClipImpl(partition, fid);
+}
+
 PS2_REGISTER_GAME_OVERRIDE("WWE SmackDown! Here Comes the Pain (USA)", "SLUS_207.87", 0x100008u, 0u, applyHctp)
+
+
