@@ -27,6 +27,7 @@ extern "C" bool hctpMovieFrame(int ch, uint8_t *rgba, int w, int h);
 #include <vector>
 #include <cstdlib>
 #include <cstring>
+#include <fstream>
 #include <cstdio>
 #include <iostream>
 #include <thread>
@@ -45,6 +46,83 @@ namespace ps2_stubs
 
 namespace
 {
+    // Cut-wrestler restore (HCTP_NO_CUT_ROSTER=1 disables): the ID sheet's "No Model" slots keep name/moveset/entrance
+    // data in CHAR\ALL_.pac but have type byte +0x163 = 6 (hidden) and zeroed stats (+0..+4, value/5; order str,
+    // sub/tech, speed, tech/sub, end). Models are inserted into CH/CH2.PAC by tools/build_cut_roster_pacs.py.
+    // Records: 0x4C0F54 + id*0x170 (GetCharaGameProp 0x12cec0, ids < 0x56).
+    struct CutWrestler
+    {
+        uint8_t id, type, stats[5];
+    };
+    constexpr CutWrestler kCutRoster[] = {
+        {0x0D, 0, {13, 12, 19, 15, 15}}, // Jeff Hardy
+        {0x11, 0, {15, 19, 12, 18, 16}}, // William Regal
+        {0x18, 0, {18, 13, 12, 14, 17}}, // Bradshaw
+        {0x20, 0, {0, 0, 0, 0, 0}},      // Hulk Hogan (keeps its stats)
+        {0x21, 0, {20, 13, 10, 13, 16}}, // Rosey (Jordan's recommended stats)
+        {0x23, 0, {18, 13, 14, 13, 15}}, // Jamal (Jordan's recommended stats)
+        {0x24, 0, {16, 13, 14, 15, 16}}, // Billy Gunn
+        {0x29, 4, {8, 12, 14, 12, 8}},   // Molly Holly
+        {0x2B, 0, {10, 12, 17, 14, 13}}, // Spike Dudley
+        {0x39, 0, {12, 13, 18, 15, 14}}, // Billy Kidman
+        {0x3F, 0, {15, 14, 14, 15, 16}}, // Al Snow
+        {0x4D, 0, {0, 0, 0, 0, 0}},      // Ultimate Warrior (keeps its stats)
+    };
+    bool g_cutRosterHasModel[sizeof(kCutRoster) / sizeof(kCutRoster[0])] = {};
+    // A slot is only un-hidden when its attire-1 model (key BCD(id) << 8) is in pac/CH.PAC (ids < 30) or pac/CH2.PAC
+    // (DPAC directory at 0x800: tag, u16 count | 0x8000, then u16 key + u16 sectors per entry), so stock archives
+    // keep the vanilla roster. Returns the number of slots enabled.
+    int scanCutRosterModels()
+    {
+        int enabled = 0;
+        for (size_t i = 0; i < sizeof(kCutRoster) / sizeof(kCutRoster[0]); ++i)
+        {
+            const uint8_t id = kCutRoster[i].id;
+            std::ifstream f(id < 30 ? "pac/ch.pac" : "pac/ch2.pac", std::ios::binary);
+            uint8_t dir[0x4000] = {};
+            if (!f.read(reinterpret_cast<char *>(dir), sizeof(dir)))
+                continue;
+            uint16_t n;
+            std::memcpy(&n, dir + 0x804, 2);
+            n &= 0x7FFFu;
+            const uint16_t key = static_cast<uint16_t>(((id / 10) << 12) | ((id % 10) << 8));
+            for (uint32_t e = 0; e < n && 0x808u + e * 4u + 2u <= sizeof(dir); ++e)
+            {
+                uint16_t k, sectors;
+                std::memcpy(&k, dir + 0x808 + e * 4, 2);
+                std::memcpy(&sectors, dir + 0x80A + e * 4, 2);
+                // stock CH2.PAC already has a stray 0x6300 entry (1834 sectors) although Al Snow is "No Model"
+                if (k == key && !(key == 0x6300u && sectors == 1834u))
+                {
+                    g_cutRosterHasModel[i] = true;
+                    ++enabled;
+                    break;
+                }
+            }
+        }
+        return enabled;
+    }
+    void restoreCutRoster(uint8_t *rdram)
+    {
+        for (size_t i = 0; i < sizeof(kCutRoster) / sizeof(kCutRoster[0]); ++i)
+        {
+            const CutWrestler &w = kCutRoster[i];
+            uint8_t *const rec = rdram + 0x4C0F54u + w.id * 0x170u;
+            if (!g_cutRosterHasModel[i] || rec[0x163] != 6)
+                continue;
+            rec[0x163] = w.type;
+            static constexpr uint8_t kZero[5] = {};
+            if (std::memcmp(rec, kZero, 5) == 0)
+                std::memcpy(rec, w.stats, 5);
+        }
+    }
+    PS2Runtime::RecompiledFunction g_origGetCharaGameProp = nullptr;
+    void getCharaGamePropCutRoster(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        restoreCutRoster(rdram);
+        g_origGetCharaGameProp(rdram, ctx, runtime);
+    }
+
     void startPcProfiler()
     {
         if (!std::getenv("HCTP_PCPROF"))
@@ -532,6 +610,22 @@ namespace
     }
 
     uint8_t *g_pbpRdram = nullptr; // guest RAM, set by the commentary hooks
+    // stop the commentary line now and give its player back (match / demo teardown): the commentary never keeps
+    // a native ADX player once it is not speaking
+    void hctpNativeStopCommentaryImpl()
+    {
+        std::lock_guard<std::mutex> alloc(g_adxAlloc);
+        for (int i = 0; i < kAdxPlayers; ++i)
+        {
+            AdxPlayer &pl = g_adxPlayers[i];
+            if (pl.adxt < 0xC0000000u)
+                continue;
+            std::lock_guard<std::mutex> lock(pl.m);
+            pl.playing = false;
+            pl.adxt = 0u;
+        }
+    }
+
     bool hctpNativePlayAfsClipImpl(uint32_t partition, uint32_t fid)
     {
         static uint32_t nextHandle = 0xC0000000u;
@@ -824,6 +918,37 @@ namespace
         } // kPbpBell: match start / match end (debounced in hctp_commentary.cpp)
     }
 
+    // Match / demo teardown -> commentary stops at once (Jordan: Cole kept talking over the black screen after a
+    // demo skip). Every exit path calls the original first, then stops the commentary.
+    PS2Runtime::RecompiledFunction g_origReleaseGameLink = nullptr, g_origDemoDtor = nullptr, g_origPauseExit = nullptr,
+                                   g_origExMatchEnd = nullptr;
+    void commentaryTeardown(const char *why)
+    {
+        std::fprintf(stderr, "[hctp-pbp] teardown (%s): commentary stopped%c", why, 10);
+        hctpCommentaryEvent(5u); // kPbpStop
+        hctpNativeStopCommentaryImpl();
+    }
+    void commentaryReleaseGameLink(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        g_origReleaseGameLink(rdram, ctx, runtime);
+        commentaryTeardown("ReleaseGameLinkObj");
+    }
+    void commentaryDemoDtor(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        g_origDemoDtor(rdram, ctx, runtime);
+        commentaryTeardown("title demo end");
+    }
+    void commentaryPauseExit(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        g_origPauseExit(rdram, ctx, runtime);
+        commentaryTeardown("pause exit");
+    }
+    void commentaryExMatchEnd(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        g_origExMatchEnd(rdram, ctx, runtime);
+        commentaryTeardown("exhibition match end");
+    }
+
     // Koutai(CChar*, CChar*) = tag partners exchange places -> "the tag's been made" line.
     PS2Runtime::RecompiledFunction g_origKoutai = nullptr;
     void commentaryKoutai(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -956,6 +1081,14 @@ namespace
         }
         if ((g_origGameSe = runtime.lookupFunction(0x1b0680u)) != nullptr)
             runtime.replaceFunction(0x1b0680u, commentaryGameSe);
+        if ((g_origReleaseGameLink = runtime.lookupFunction(0x202840u)) != nullptr)
+            runtime.replaceFunction(0x202840u, commentaryReleaseGameLink);
+        if ((g_origDemoDtor = runtime.lookupFunction(0x136ff0u)) != nullptr)
+            runtime.replaceFunction(0x136ff0u, commentaryDemoDtor);
+        if ((g_origPauseExit = runtime.lookupFunction(0x2a24d0u)) != nullptr)
+            runtime.replaceFunction(0x2a24d0u, commentaryPauseExit);
+        if ((g_origExMatchEnd = runtime.lookupFunction(0x132450u)) != nullptr)
+            runtime.replaceFunction(0x132450u, commentaryExMatchEnd);
         std::cerr << "[hctp-pbp] bell hook " << (g_origAcxPlayByIndex ? "on" : "NOT found") << std::endl;
         std::cerr << "[nadx] native ADX music on" << std::endl;
     }
@@ -1995,6 +2128,15 @@ namespace
             installNativeAdx(runtime);
         else if (std::getenv("HCTP_ADXTLOG"))
             installAdxtLog(runtime, std::make_integer_sequence<int, 15>{});
+        if (!std::getenv("HCTP_NO_CUT_ROSTER"))
+        {
+            g_origGetCharaGameProp = runtime.lookupFunction(0x12cec0u);
+            const int slots = scanCutRosterModels();
+            const bool ok = slots == 0 || (g_origGetCharaGameProp &&
+                                           runtime.replaceFunction(0x12cec0u, getCharaGamePropCutRoster));
+            std::cerr << "[hctp] cut roster restore: " << slots << " slots with models"
+                      << (ok ? "" : " (hook FAILED)") << std::endl;
+        }
         std::cerr << "[hctp] overrides applied" << std::endl;
     }
 }
@@ -2004,6 +2146,11 @@ namespace
 extern "C" bool hctpNativePlayPbpClip(uint32_t fid)
 {
     return hctpNativePlayAfsClipImpl(13u, fid);
+}
+
+extern "C" void hctpNativeStopCommentary()
+{
+    hctpNativeStopCommentaryImpl();
 }
 
 extern "C" bool hctpNativePlayAfsClip(uint32_t partition, uint32_t fid)
