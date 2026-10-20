@@ -439,7 +439,9 @@ namespace
             const uint32_t k = static_cast<uint32_t>(pl.pos % 32u);
             for (uint32_t c = 0; c < ch; ++c)
             {
-                const int32_t v = static_cast<int32_t>(pl.blk[std::min(c, pl.channels - 1u)][k] * pl.gain);
+                int32_t v = static_cast<int32_t>(pl.blk[std::min(c, pl.channels - 1u)][k] * pl.gain);
+                if (pl.gain > 1.0f && (v > 24576 || v < -24576)) // soft knee for boosted commentary (no hard clipping)
+                    v = v > 0 ? 24576 + (v - 24576) / 4 : -24576 + (v + 24576) / 4;
                 out[i * ch + c] = static_cast<int16_t>(std::clamp(v, -32768, 32767));
             }
             ++pl.pos;
@@ -567,7 +569,7 @@ namespace
             // Howard Finkel (partition 14) a bit quieter than the commentary (Jordan): HCTP_FINKEL_VOLUME, default 1.6
             static const float kFinkelGain = [] {
                 const char *v = std::getenv("HCTP_FINKEL_VOLUME");
-                return v ? float(std::atof(v)) : 1.6f;
+                return v ? float(std::atof(v)) : 1.2f; // 1.6 was still a bit loud (Jordan, Oct 20)
             }();
             // COMMENTARY VOLUME option (restored, In-Game Options): save byte g_SaveData+0x4550a+0x1b, stored
             // inverted (0 = MAX = the gains above, 1 NORMAL, 2 MIN, 3 OFF) so old / fresh saves default to MAX
@@ -577,7 +579,9 @@ namespace
                 static const float kLevel[4] = {1.0f, 0.65f, 0.35f, 0.0f};
                 optScale = kLevel[g_pbpRdram[0x4fb95au + 0x1bu] & 3u];
             }
-            pl.gain = (partition == 14u ? kFinkelGain : kPbpGain) * optScale;
+            // the SvR public beta clips (partition 15, most Cole/Tazz lines) are mastered ~9 dB quieter than retail and
+            // the other packs (measured median -25 vs -16 dBFS): x2.8 to match
+            pl.gain = (partition == 14u ? kFinkelGain : partition == 15u ? kPbpGain * 2.8f : kPbpGain) * optScale;
             // the game's Options sound block (CSound* at 0x526768, CSound::GetOption = +4; byte 1 = BGM volume,
             // byte 3 = SFX volume): log it when it changes, to find the COMMENTARY VOLUME byte
             {
