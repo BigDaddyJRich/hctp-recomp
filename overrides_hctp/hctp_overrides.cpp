@@ -121,6 +121,36 @@ namespace
     {
         ctx->pc = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
     }
+    // TEMP diag (rope-shadow width): DrawRopeShadow 0x217c50 (a0 = CRope*) reads per rope (3) per side (4) the
+    // segment offsets at rope + 0x5a4 / 0x5a8 + seg*0x40 + rope*0x340 + side*0x9c0 for [rope+0x40]+1 segments.
+    // HCTP_ROPELOG=1: print them every 300 calls.
+    PS2Runtime::RecompiledFunction g_origDrawRopeShadow = nullptr;
+    void drawRopeShadowLogged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        static uint32_t s_n = 0;
+        if (s_n++ % 300u == 0u)
+        {
+            const uint32_t rope = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+            int32_t segs;
+            std::memcpy(&segs, rdram + rope + 0x40u, 4);
+            std::fprintf(stderr, "[ropelog] rope=0x%x segs=%d%c", rope, segs, 10);
+            for (int side = 0; side < 4; ++side)
+                for (int r = 0; r < 3; ++r)
+                {
+                    std::fprintf(stderr, "[ropelog] side %d rope %d:", side, r);
+                    for (int k = 0; k <= segs && k < 16; ++k)
+                    {
+                        float a, b;
+                        const uint32_t at = rope + static_cast<uint32_t>(k * 0x40 + r * 0x340 + side * 0x9c0);
+                        std::memcpy(&a, rdram + ((at + 0x5a4u) & 0x1FFFFFFu), 4);
+                        std::memcpy(&b, rdram + ((at + 0x5a8u) & 0x1FFFFFFu), 4);
+                        std::fprintf(stderr, " (%.2f,%.2f)", a, b);
+                    }
+                    std::fprintf(stderr, "%c", 10);
+                }
+        }
+        g_origDrawRopeShadow(rdram, ctx, runtime);
+    }
     // No interlacing (PCSX2's HCTP "No-Interlacing" patch nops the odd-field branch in both): sceGsSetHalfOffset
     // 0x102660 / sceGsSetHalfOffset2 0x1028c8 (a0 = draw env, a1 = x, a2 = y, a3 = odd field) write XYOFFSET at
     // env+0x20 with +8 (half a line) on odd fields - a bounce when every field is shown as a frame. Always the even
@@ -2625,6 +2655,8 @@ namespace
             runtime.replaceFunction(0x1028c8u, gsSetHalfOffsetEven);
             std::cerr << "[hctp] no-interlace half offset on" << std::endl;
         }
+        if (std::getenv("HCTP_ROPELOG") && (g_origDrawRopeShadow = runtime.lookupFunction(0x217c50u)) != nullptr)
+            runtime.replaceFunction(0x217c50u, drawRopeShadowLogged);
         if (std::getenv("HCTP_NO_ROPE_SHADOW"))
             runtime.replaceFunction(0x217c50u, skipRopeShadow);
         std::setvbuf(stdout, nullptr, _IONBF, 0); // diagnostics ([burst], [gs-trace]) survive a freeze / kill
