@@ -114,6 +114,30 @@ namespace
         }
         return enabled;
     }
+    // Restored-wrestler gloss: CSkinModel::DrawChar 0x155dc0 multiplies every material colour constant by the vector
+    // at 0x40F330 before the VU1 gets it; its .w (0x40F33C, 128.0) scales the reflection / gloss strength. The restored
+    // (cut) wrestlers' materials come out far too glossy, so while CChar::Draw 0x1bb200 (a0 = CChar*, +0x30 = cast code
+    // id*100+attire) draws one of them the scale is 32.0, and 128.0 again afterwards - stock wrestlers keep their sheen.
+    // HCTP_RESTORED_GLOSS=1 = leave it. (Same constant a known global "no glossy wrestlers" cheat lowers; ours is restored-only.)
+    PS2Runtime::RecompiledFunction g_origCharDraw = nullptr;
+    void charDrawRestoredGloss(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t chara = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        uint16_t cast = 0;
+        if (chara >= 0x100000u && chara < 0x1FFFFF0u)
+            std::memcpy(&cast, rdram + chara + 0x30u, 2);
+        bool restored = false;
+        if (cast < 10000u)
+            for (size_t i = 0; i < kCutCount && !restored; ++i)
+                restored = g_cutRosterHasModel[i] && kCutRoster[i].id == cast / 100u;
+        if (!restored)
+            return g_origCharDraw(rdram, ctx, runtime);
+        float saved, dull = 32.0f;
+        std::memcpy(&saved, rdram + 0x40F33Cu, 4);
+        std::memcpy(rdram + 0x40F33Cu, &dull, 4);
+        g_origCharDraw(rdram, ctx, runtime);
+        std::memcpy(rdram + 0x40F33Cu, &saved, 4);
+    }
     // Rope shadows: CRope::Draw 0x2185b0 ends with DrawRopeShadow 0x217c50 (subtract blend, no Z test, drawn through
     // the crowd program p17). Here they come out as long white streaks across the screen (Jordan, Oct 20) - skipped
     // debug switch only: HCTP_NO_ROPE_SHADOW=1 skips them (to tell them apart from other streaks).
@@ -2655,6 +2679,8 @@ namespace
             runtime.replaceFunction(0x1028c8u, gsSetHalfOffsetEven);
             std::cerr << "[hctp] no-interlace half offset on" << std::endl;
         }
+        if (!std::getenv("HCTP_RESTORED_GLOSS") && (g_origCharDraw = runtime.lookupFunction(0x1bb200u)) != nullptr)
+            runtime.replaceFunction(0x1bb200u, charDrawRestoredGloss);
         if (std::getenv("HCTP_ROPELOG") && (g_origDrawRopeShadow = runtime.lookupFunction(0x217c50u)) != nullptr)
             runtime.replaceFunction(0x217c50u, drawRopeShadowLogged);
         if (std::getenv("HCTP_NO_ROPE_SHADOW"))
