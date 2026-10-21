@@ -74,6 +74,7 @@ namespace
         {0x2B, 0, {10, 12, 17, 14, 13}, 0x17, 1, "Spike Dudley", 3071},
         {0x39, 0, {12, 13, 18, 15, 14}, 0x17, 1, "Billy Kidman", 3071},
         {0x4D, 0, {0, 0, 0, 0, 0}, 0x4C, 1, "Ultimate Warrior", 0}, // keeps its stats
+        {0x4E, 0, {18, 12, 10, 12, 19}, 0x2D, 1, "Hulk Hogan (Legend)", 0},
         // Al Snow 0x3F left out: stock key 6300 is a Rock model (maybe the pads-off People's Elbow); needs his own key.
     };
     constexpr size_t kCutCount = sizeof(kCutRoster) / sizeof(kCutRoster[0]);
@@ -314,13 +315,30 @@ namespace
         return v;
     }
 
+    void expandReaderList(uint8_t *rdram, PS2Runtime *runtime, uint32_t reader);
     void readEndProcessSelectList(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t reader = gprU32(ctx, 4);
         g_origReadEndProcess(rdram, ctx, runtime);
+        expandReaderList(rdram, runtime, reader);
+    }
+    // Appends the restored records to the reader's CHSL list (also called lazily from GetSuperStarList, since the
+    // Create-a-Moveset picker can use a reader whose ReadEndProcess we never saw).
+    void expandReaderList(uint8_t *rdram, PS2Runtime *runtime, uint32_t reader)
+    {
         const uint32_t list = rdU32(rdram, reader + 0x20u);
-        if (list == 0u || list >= 0x2000000u || g_readerLists.count(reader))
+        if (list == 0u || list >= 0x2000000u)
             return;
+        // A reader re-read (or freed without the dtor and rebuilt at the same address) holds a fresh stock list: the
+        // old entry is stale, so expand again instead of keeping the select screen on a dead long list.
+        if (auto it = g_readerLists.find(reader); it != g_readerLists.end())
+        {
+            if (it->second.second == list)
+                return;
+            std::fprintf(stderr, "[selist] reader %08x re-read; stale long list %08x dropped%c", reader,
+                         it->second.second, 10);
+            g_readerLists.erase(it);
+        }
         std::vector<const CutWrestler *> extra;
         for (size_t i = 0; i < kCutCount; ++i)
             if (g_cutRosterHasModel[i])
@@ -384,14 +402,36 @@ namespace
     {
         const uint32_t reader = gprU32(ctx, 4), dest = gprU32(ctx, 5), ra = gprU32(ctx, 31);
         g_origReaderGetList(rdram, ctx, runtime);
+        // SelectWrestlerFrame::ChangeIntroduction, or CEasySelectWrestler::WaitAction 0x2fd8a4 (Create-a-Moveset
+        // picker: reader +0x28, inline 65-record list at +0x2C; its record addresses go through hctpEasyListAddr).
+        const bool longCaller = (ra >= 0x24e410u && ra < 0x24e810u) || ra == 0x2fd8acu;
+        {
+            static int calls = 0; // where each screen gets its superstar list (Create-a-Moveset picker diagnosis)
+            if (calls++ < 40)
+                std::fprintf(stderr, "[selist] GetSuperStarList ra %08x reader %08x dest %08x known %d long %d%c", ra,
+                             reader, dest, int(g_readerLists.count(reader)), int(longCaller), 10);
+        }
+        if (longCaller && !g_readerLists.count(reader))
+            expandReaderList(rdram, runtime, reader);
         auto rl = g_readerLists.find(reader);
-        if (ra < 0x24e410u || ra >= 0x24e810u || rl == g_readerLists.end() || g_selectCount > kSelectMax)
+        if (rl != g_readerLists.end() && !longCaller)
+        {
+            static int logged = 0; // callers that only get the stock 65
+            if (logged++ < 32)
+                std::fprintf(stderr, "[selist] GetSuperStarList stock-only ra %08x dest %08x%c", ra, dest, 10);
+        }
+        if (!longCaller || rl == g_readerLists.end() || g_selectCount > kSelectMax)
             return;
+        // Sized to the real list and freed by the screen's dtor: a lingering block splits the guest heap and
+        // Create-a-Moveset's big moves-data allocation then never fits (endless Now Loading).
         uint32_t &buf = g_frameLists[dest];
         if (buf == 0u)
-            buf = runtime->guestMalloc(kSelectMax * kSelectRec); // frames reuse addresses; buffer kept for reuse
+            buf = runtime->guestMalloc(g_selectCount * kSelectRec);
         if (buf == 0u)
+        {
+            g_frameLists.erase(dest);
             return;
+        }
         // Alphabetical like the stock list (which files "The Rock" under R): each restored record goes in front of the
         // first stock record whose name sorts after it, ignoring a leading "The " and case; stock order is untouched.
         const uint8_t *const src = rdram + rl->second.second;
@@ -441,11 +481,62 @@ namespace
         g_origWresTableMake(rdram, ctx, runtime);
         --g_selectLongDepth;
     }
+    // SelectWrestlerFrame dtor 0x24da10 (list +0x190) / CEasySelectWrestler dtor 0x2fd460 (list +0x2C): free the long list
+    PS2Runtime::RecompiledFunction g_origFrameDtor = nullptr, g_origEasyDtor = nullptr;
+    void freeFrameList(PS2Runtime *runtime, uint32_t key)
+    {
+        if (auto it = g_frameLists.find(key); it != g_frameLists.end())
+        {
+            if (it->second != 0u)
+                runtime->guestFree(it->second);
+            g_frameLists.erase(it);
+        }
+    }
+    void frameDtorSelectList(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        freeFrameList(runtime, gprU32(ctx, 4) + 0x190u);
+        g_origFrameDtor(rdram, ctx, runtime);
+    }
+    void easyDtorSelectList(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        freeFrameList(runtime, gprU32(ctx, 4) + 0x2Cu);
+        g_origEasyDtor(rdram, ctx, runtime);
+    }
+    // Create-a-Moveset picker: CSuperStarListDrawer::SetSuperStarList 0x3934c0 walks roster ids itself and keeps an id
+    // only if IsSmackDownEntry 0x12cfd0 and !IsRosterHidden 0x12d160 (buffer sized for all 162 ids, no 65 limit). Cut
+    // wrestlers fail both, so inside that builder restored ids with a model pass. Other callers keep stock answers.
+    PS2Runtime::RecompiledFunction g_origIsSmackDownEntry = nullptr, g_origIsRosterHidden = nullptr;
+    bool restoredFromSSList(R5900Context *ctx)
+    {
+        const uint32_t ra = gprU32(ctx, 31), id = gprU32(ctx, 4);
+        if (ra < 0x3934c0u || ra >= 0x3938b8u)
+            return false;
+        for (size_t i = 0; i < kCutCount; ++i)
+            if (g_cutRosterHasModel[i] && kCutRoster[i].id == id)
+                return true;
+        return false;
+    }
+    void isSmackDownEntrySSList(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (!restoredFromSSList(ctx))
+            return g_origIsSmackDownEntry(rdram, ctx, runtime);
+        SET_GPR_U32(ctx, 2, 1u);
+        ctx->pc = gprU32(ctx, 31);
+    }
+    void isRosterHiddenSSList(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (!restoredFromSSList(ctx))
+            return g_origIsRosterHidden(rdram, ctx, runtime);
+        SET_GPR_U32(ctx, 2, 0u);
+        ctx->pc = gprU32(ctx, 31);
+    }
     // GetSelectRoster 0x26fb90 (leaf replacement)
     void getSelectRosterSelectList(uint8_t *, R5900Context *ctx, PS2Runtime *)
     {
         const uint32_t ra = gprU32(ctx, 31);
-        const bool longList = g_selectLongDepth > 0 || (ra >= 0x26fea0u && ra < 0x26ff1cu); // RosterID2IndexNo
+        // RosterID2IndexNo; CEasySelectWrestler::SelectWresAction's cursor bound (0x2fdd28) when its list is long
+        const bool longList = g_selectLongDepth > 0 || (ra >= 0x26fea0u && ra < 0x26ff1cu) ||
+                              (ra == 0x2fdd30u && g_frameLists.count(gprU32(ctx, 17) + 0x2Cu));
         SET_GPR_U32(ctx, 2, longList ? g_selectCount : kStockSelect);
         ctx->pc = ra;
     }
@@ -462,6 +553,14 @@ namespace
                         runtime.replaceFunction(0x24fa40u, frameGetListSelectList) &&
                         runtime.replaceFunction(0x2bd880u, wresTableMakeSelectList) &&
                         runtime.replaceFunction(0x26fb90u, getSelectRosterSelectList);
+        if (ok && (g_origFrameDtor = runtime.lookupFunction(0x24da10u)) != nullptr)
+            runtime.replaceFunction(0x24da10u, frameDtorSelectList);
+        if (ok && (g_origEasyDtor = runtime.lookupFunction(0x2fd460u)) != nullptr)
+            runtime.replaceFunction(0x2fd460u, easyDtorSelectList);
+        if (ok && (g_origIsSmackDownEntry = runtime.lookupFunction(0x12cfd0u)) != nullptr)
+            runtime.replaceFunction(0x12cfd0u, isSmackDownEntrySSList);
+        if (ok && (g_origIsRosterHidden = runtime.lookupFunction(0x12d160u)) != nullptr)
+            runtime.replaceFunction(0x12d160u, isRosterHiddenSSList);
         std::cerr << "[hctp] select list expansion " << (ok ? "on" : "FAILED") << std::endl;
     }
 
@@ -744,6 +843,8 @@ namespace
     }
 
     #include "hctp_media_routes.inl"
+    #include "hctp_media_host.inl"
+    #include "hctp_media_defaults.inl"
 
     // ---- Native ADX music (HCTP_NATIVE_ADX=1) ----------------------------------------------------------------------
     // ADXT_StartAfs(adxt, partition, file) for the BGM / CHEER / BG_ENV partitions is played on the host: the ADX file
@@ -925,6 +1026,16 @@ namespace
 
     bool adxLoad(AdxPlayer &pl, uint32_t partition, uint32_t fid)
     {
+        if (const std::string *imported = hostMediaPath('M', partition, fid))
+        {
+            std::ifstream file(*imported, std::ios::binary | std::ios::ate);
+            const auto length = file ? file.tellg() : std::streampos(-1);
+            if (length < 0x40 || length > 0x8000000) return false;
+            std::vector<uint8_t> data(static_cast<size_t>(length));
+            file.seekg(0);
+            if (!file.read(reinterpret_cast<char *>(data.data()), data.size())) return false;
+            return adxSetup(pl, std::move(data), imported->c_str());
+        }
         const char *path = adxPartitionFile(partition);
         if (!path)
             return false;
@@ -1644,29 +1755,7 @@ namespace
     // every victory preview (to identify the unreferenced 62xx / 63xx events in CAM).
     std::map<uint32_t, uint32_t> g_victoryEvent; // n -> event
     PS2Runtime::RecompiledFunction g_origConvertDoramock = nullptr;
-    void convertDoramockFromMoves(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
-    {
-        const uint32_t p = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
-        int32_t n; std::memcpy(&n, rdram + p, 4);
-        g_origConvertDoramock(rdram, ctx, runtime);
-        static const char *test = std::getenv("HCTP_VICTORY_TEST");
-        auto it = g_victoryEvent.find(static_cast<uint32_t>(n));
-        // HCTP_VICTORY_TEST=cycle: each preview plays the next unreferenced event (order below); the log names it.
-        static const int32_t kOrphans[] = {6202, 6208, 6220, 6223, 6226, 6236, 6240, 6243, 6258, 6261, 6262, 6263, 6264,
-                                           6265, 6266, 6267, 6268, 6269, 6270, 6271, 6272, 6273, 6274, 6275, 6284, 6285,
-                                           6286, 6287, 6288, 6289, 6290, 6291, 6292, 6293, 6294, 6295, 6296, 6297, 6298,
-                                           6299, 6300, 6301, 6314, 6315, 6316, 6317, 6318, 6319, 6320, 6321, 6322, 6323,
-                                           6328, 6329, 6331, 6332, 6333, 6334, 6335, 6336, 6337, 6338, 6339, 6340, 6341,
-                                           6342, 6344, 6345, 6346, 6347, 6348, 6349, 6350};
-        static size_t cycle = 0;
-        const bool cycling = test && std::strcmp(test, "cycle") == 0;
-        int32_t ev = cycling ? kOrphans[cycle++ % (sizeof(kOrphans) / sizeof(kOrphans[0]))]
-                     : test ? std::atoi(test) : it != g_victoryEvent.end() ? static_cast<int32_t>(it->second) : -1;
-        if (ev < 0)
-            return;
-        std::memcpy(rdram + p, &ev, 4);
-        std::fprintf(stderr, "[victory] list %d -> event %d%c", n, ev, 10);
-    }
+    #include "hctp_victory_safe.inl"
     void installLooseEntrances(PS2Runtime &runtime)
     {
         {
@@ -2305,7 +2394,9 @@ namespace
             return false;
         hctpMovieStop(static_cast<int>(ch));
         makePath3Tag(rdram, ctx, runtime, ch);
-        if (!hctpMovieOpen(static_cast<int>(ch), files[part - 5u], static_cast<int>(fid), loop != 0u))
+        const std::string *imported = hostMediaPath('V', part, fid);
+        if (!hctpMovieOpen(static_cast<int>(ch), imported ? imported->c_str() : files[part - 5u],
+                           imported ? -1 : static_cast<int>(fid), loop != 0u))
             return false;
         movieStarted(rdram, ch);
         std::fprintf(stderr, "[nmovie] PlayByAFS ch %u part %u fid %u loop %u%c", ch, part, fid, loop, 10);
@@ -2724,6 +2815,8 @@ namespace
             runtime.replaceFunction(0x217c50u, skipRopeShadow);
         std::setvbuf(stdout, nullptr, _IONBF, 0); // diagnostics ([burst], [gs-trace]) survive a freeze / kill
         installImportedMedia(runtime);
+        installHostMedia(runtime);
+        installMediaDefaults(runtime);
         std::cerr << "[hctp] overrides applied" << std::endl;
     }
 }
@@ -2748,3 +2841,16 @@ extern "C" bool hctpNativePlayAfsClip(uint32_t partition, uint32_t fid)
 PS2_REGISTER_GAME_OVERRIDE("WWE SmackDown! Here Comes the Pain (USA)", "SLUS_207.87", 0x100008u, 0u, applyHctp)
 
 
+
+// Create-a-Moveset picker (CEasySelectWrestler): its generated code computes record addresses as obj + 0x2C + i*0x80
+// (inline, room for the stock 65). When that list has a long buffer the address is moved into it (hand edit in the
+// 5 runner sites: AutoSelectAction 0x2fe18c, ChangeIntroduction 0x2fd698, SelectWresAction 0x2fdd44/0x2fddd0,
+// SetCurrentRoster 0x2fe558).
+uint32_t hctpEasyListAddr(uint32_t obj, uint32_t addr)
+{
+    auto it = g_frameLists.find(obj + 0x2Cu);
+    if (it == g_frameLists.end() || it->second == 0u || addr < obj + 0x2Cu)
+        return addr;
+    const uint32_t index = (addr - obj - 0x2Cu) / kSelectRec;
+    return index < g_selectCount ? it->second + index * kSelectRec : addr;
+}
