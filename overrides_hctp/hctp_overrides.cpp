@@ -1,4 +1,5 @@
 #include <utility>
+#include "hctp_restored_finishers.h"
 #include <atomic>
 // WWE SmackDown! Here Comes the Pain (USA, SLUS-20787) - runtime overrides for this game build.
 // Copied into ps2xRuntime/src/runner/ by tools/sync_generated.py; edit this file in the repo's overrides_hctp/ folder.
@@ -366,6 +367,10 @@ namespace
             std::memcpy(rec + 2, &id, 2);
             std::memset(rec + 4, 0, 0x20);
             std::strncpy(reinterpret_cast<char *>(rec + 4), w->name, 0x1F);
+            // Original ReadEndProcess fills only the stock 65. Never inherit
+            // another wrestler's SmackDown names/situations from the template.
+            if (!hctp_restored_finishers::refresh(rdram, 0x2000000u, buf + n * kSelectRec, w->id))
+                std::fprintf(stderr, "[selist] restored finisher display pending for %u%c", unsigned(w->id), 10);
             for (uint32_t set : {0x68u, 0x74u}) // costume ids: template ids for the attire slots that have models
             {
                 const int16_t first = rdS16(tmpl + set);
@@ -422,6 +427,15 @@ namespace
         }
         if (!longCaller || rl == g_readerLists.end() || g_selectCount > kSelectMax)
             return;
+        // CAM can change a finisher while this reader survives. Refresh the
+        // appended display fields from live assignments before copying again.
+        for (uint32_t s = kStockSelect; s < g_selectCount; ++s)
+        {
+            const uint32_t p = rl->second.second + s * kSelectRec;
+            const int16_t id = rdS16(rdram + p + 2);
+            if (id >= 0)
+                hctp_restored_finishers::refresh(rdram, 0x2000000u, p, uint16_t(id));
+        }
         // Sized to the real list and freed by the screen's dtor: a lingering block splits the guest heap and
         // Create-a-Moveset's big moves-data allocation then never fits (endless Now Loading).
         uint32_t &buf = g_frameLists[dest];
@@ -1927,6 +1941,17 @@ namespace
 
 #include "hctp_native_sk.inl"
 
+// The game's own recompiled libvu0 functions (runner), for HCTP_VU0_RECOMP=1: A/B against the host stubs (leg twitch).
+#define HCTP_VU0_FN(name, addr) void name##_##addr(uint8_t *, R5900Context *, PS2Runtime *);
+#define HCTP_VU0_LIST(X) X(sceVu0RotMatrixX, 0x103ce0) X(sceVu0RotMatrixY, 0x103d88) X(sceVu0RotMatrixZ, 0x103c38) \
+    X(sceVu0RotMatrix, 0x103e30) X(sceVu0MulMatrix, 0x1038a0) X(sceVu0InversMatrix, 0x1039b8)                        \
+    X(sceVu0Normalize, 0x103930) X(sceVu0ApplyMatrix, 0x103870) X(sceVu0InterVector, 0x103a68)                       \
+    X(sceVu0InterVectorXYZ, 0x1043d8) X(sceVu0OuterProduct, 0x1038e8) X(sceVu0InnerProduct, 0x103908)                \
+    X(sceVu0TransMatrix, 0x103af0) X(sceVu0UnitMatrix, 0x103b98) X(sceVu0CopyMatrix, 0x103b30)                       \
+    X(sceVu0TransposeMatrix, 0x103970) X(sceVu0ScaleVector, 0x103ad8) X(sceVu0MulVector, 0x103ac0)
+HCTP_VU0_LIST(HCTP_VU0_FN)
+#undef HCTP_VU0_FN
+
 namespace
 {
     // NATIVE SOUND KIT hooks (HCTP_NATIVE_SK=1). Native handles are >= hctpsk::kHandleBase; anything else goes to the
@@ -2038,6 +2063,41 @@ namespace
         skRet(ctx, 0u);
     }
 
+    // TEMP diag HCTP_IKFLIP=1 (leg twitch): CCharIK::ActionLink 0x1b8860 restarts a 9-frame target ease when a limb's
+    // bone-tip index (+0x88+i*4) differs from +0x9c+i*4. Logs every change of those per IK object.
+    PS2Runtime::RecompiledFunction g_ikFlipOrig = nullptr;
+    struct IkTips { int32_t v[8]; };
+    std::map<uint32_t, IkTips> g_ikFlipLast;
+    void ikFlipLogged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t ik = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        g_ikFlipOrig(rdram, ctx, runtime);
+        if (ik < 0x100000u || ik > 0x1FFFE00u)
+            return;
+        IkTips now;
+        std::memcpy(now.v, rdram + ik + 0x88u, 16);
+        std::memcpy(now.v + 4, rdram + ik + 0x9cu, 16);
+        static unsigned long long calls = 0, changes = 0;
+        ++calls;
+        auto [it, fresh] = g_ikFlipLast.try_emplace(ik, now);
+        if (!fresh && std::memcmp(&it->second, &now, sizeof(now)) != 0)
+        {
+            ++changes;
+            static int logged = 0;
+            if (logged++ < 400)
+            {
+                int32_t ease;
+                std::memcpy(&ease, rdram + ik + 0x16cu, 4);
+                std::fprintf(stderr, "[ikflip] ik %06x tip %d %d %d %d | 9c %d %d %d %d | 16c %d (call %llu)%c", ik,
+                             now.v[0], now.v[1], now.v[2], now.v[3], now.v[4], now.v[5], now.v[6], now.v[7], ease,
+                             calls, 10);
+            }
+        }
+        it->second = now;
+        if (calls % 20000 == 0)
+            std::fprintf(stderr, "[ikflip] calls=%llu changes=%llu objects=%zu%c", calls, changes, g_ikFlipLast.size(),
+                         10);
+    }
     // TEMP diag HCTP_IKLOG=1: see the hook install. "[iklog] acosf x=.. -> .. ra=.." (first 200 odd calls), and every
     // 600 calls a count line (calls, out of range, NaN results).
     PS2Runtime::RecompiledFunction g_ikAcosOrig = nullptr;
@@ -2674,6 +2734,20 @@ namespace
             if (!runtime.replaceFunction(0x1412c0u, [](uint8_t *, R5900Context *ctx, PS2Runtime *)
                                          { ctx->r[2] = _mm_cvtsi32_si128(_mm_cvtsi128_si32(ctx->r[5])); }))
                 std::cerr << "[ymem] ymemDispMem skip FAILED" << std::endl;
+        }
+        if (std::getenv("HCTP_VU0_RECOMP"))
+        {
+            int n = 0;
+#define HCTP_VU0_PUT(name, addr) n += runtime.replaceFunction(addr##u, name##_##addr) ? 1 : 0;
+            HCTP_VU0_LIST(HCTP_VU0_PUT)
+#undef HCTP_VU0_PUT
+            std::cerr << "[vu0recomp] " << n << " libvu0 functions back to the recompiled game code" << std::endl;
+        }
+        if (std::getenv("HCTP_IKFLIP"))
+        {
+            g_ikFlipOrig = runtime.lookupFunction(0x1b8860u);
+            if (!g_ikFlipOrig || !runtime.replaceFunction(0x1b8860u, ikFlipLogged))
+                std::cerr << "[ikflip] hook FAILED" << std::endl;
         }
         if (std::getenv("HCTP_IKLOG"))
         {
