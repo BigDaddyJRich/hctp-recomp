@@ -105,7 +105,10 @@ namespace
                     g_cutRosterHasModel[i] = true;
                     ++enabled;
                 }
-                if ((k & 0xFF00u) == key && (k & 0xFu) == 4u) // entrance attire XXA4 -> decimal cast code
+                // Hogan's 32A4 packs are gear-only leftovers (YOBJ = 9 parts: glasses/shirt/boa; no RTX3 skin sub 8,
+                // 6 textures vs 28) - stock XXA4 packs (3904...) are full models. Drawn alone = floating gear, so Hogan
+                // keeps his ring model until a merged body+gear pack exists (HCTP_HOGAN_GEAR=1 to test one).
+                if ((k & 0xFF00u) == key && (k & 0xFu) == 4u && (id != 0x20 || std::getenv("HCTP_HOGAN_GEAR"))) // XXA4 -> cast code
                     g_cutEntranceCodes.insert(static_cast<uint16_t>(id * 100u + ((k >> 4) & 0xFu) * 10u + 4u));
             }
         }
@@ -122,6 +125,32 @@ namespace
         const uint32_t entrance = code - code % 10u + 4u;
         if (code < 10000u && g_cutEntranceCodes.count(static_cast<uint16_t>(entrance)))
             SET_GPR_U32(ctx, 2, entrance);
+    }
+    // Shirt tear: CSd5EventData::InitEventSystem 0x2ad340 (a0 = this) calls SetDressCast(code - code%10 + 2) after the
+    // entrance cast when member byte +0x155 is set (8 members of 0xd4 bytes from this+0x88, u16 cast code at +0).
+    // Modern Hogan (0x20) never gets that byte, so his entrance gear stays on after the tear. Set it for him when the
+    // after-tear pack /EMD2/32A2 is a loose file (MODS\PAC\EMD2\3202/3212/3222 = copies of his ring packs 32A0).
+    PS2Runtime::RecompiledFunction g_origInitEventSystem = nullptr;
+    void initEventSystemShirtTear(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        for (uint32_t k = 0; self && k < 8; ++k)
+        {
+            uint8_t *const m = rdram + self + 0x88u + k * 0xD4u;
+            uint16_t code;
+            std::memcpy(&code, m, 2);
+            if (code / 100u != 0x20u || code >= 10000u)
+                continue;
+            char key[8];
+            std::snprintf(key, sizeof(key), "%04u", code - code % 10u + 2u);
+            std::error_code ec;
+            if (std::filesystem::exists(std::string("MODS/PAC/EMD2/") + key, ec) && !m[0x155 - 0x88])
+            {
+                m[0x155 - 0x88] = 1;
+                std::fprintf(stderr, "[entrance] shirt tear on for cast %u (dress %s)%c", code, key, 10);
+            }
+        }
+        g_origInitEventSystem(rdram, ctx, runtime);
     }
     void restoreCutRoster(uint8_t *rdram)
     {
@@ -606,6 +635,8 @@ namespace
         ctx->pc = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
     }
 
+    #include "hctp_media_routes.inl"
+
     // ---- Native ADX music (HCTP_NATIVE_ADX=1) ----------------------------------------------------------------------
     // ADXT_StartAfs(adxt, partition, file) for the BGM / CHEER / BG_ENV partitions is played on the host: the ADX file
     // is read from the .afs, decoded here (CRI ADX v3/v4, unencrypted) and played on its own raylib stream. The ADXT
@@ -747,6 +778,34 @@ namespace
 
     bool adxSetup(AdxPlayer &pl, std::vector<uint8_t> &&data, const char *label);
 
+    // RMS of the whole loaded clip (channel 0), same decoder as adxDecodeFrame - for per-clip commentary gain
+    double adxClipRms(const AdxPlayer &pl)
+    {
+        int32_t h1 = 0, h2 = 0;
+        double sum = 0.0;
+        uint64_t n = 0;
+        for (uint32_t frame = 0; frame * 32u < pl.total; ++frame)
+        {
+            const size_t off = pl.dataOff + size_t(frame) * pl.channels * 18u;
+            if (off + 18u > pl.file.size())
+                break;
+            const uint8_t *b = pl.file.data() + off;
+            const int32_t scale = (be16(b) & 0x1FFF) + 1;
+            for (int k = 0; k < 32; ++k)
+            {
+                int32_t nib = (k & 1) ? (b[2 + k / 2] & 0xF) : (b[2 + k / 2] >> 4);
+                if (nib & 8)
+                    nib -= 16;
+                const int32_t smp = std::clamp(nib * scale + ((pl.c1 * h1 + pl.c2 * h2) >> 12), -32768, 32767);
+                h2 = h1;
+                h1 = smp;
+                sum += double(smp) * smp;
+                ++n;
+            }
+        }
+        return n ? std::sqrt(sum / double(n)) : 0.0;
+    }
+
     bool adxLoad(AdxPlayer &pl, uint32_t partition, uint32_t fid)
     {
         const char *path = adxPartitionFile(partition);
@@ -881,6 +940,21 @@ namespace
             // the SvR public beta clips (partition 15, most Cole/Tazz lines) are mastered ~9 dB quieter than retail and
             // the other packs (measured median -25 vs -16 dBFS): x2.8 matched it, but Jordan found Cole/Tazz a bit loud -> x2.0
             pl.gain = (partition == 14u ? kFinkelGain : partition == 15u ? kPbpGain * 2.0f : kPbpGain) * optScale;
+            // some Cole/Tazz clips are mastered far quieter than the rest (Jordan: Booker T vs Big Show): lift any
+            // commentary clip whose level (after the partition gain) is under the retail median -16 dBFS (RMS ~5190),
+            // at most x2.5 more. Loud clips are left alone. Finkel (14) has his own level.
+            if (partition != 14u && pl.gain > 0.0f)
+            {
+                const double rms = adxClipRms(pl) * (pl.gain / (kPbpGain * optScale));
+                if (rms > 50.0 && rms < 5190.0)
+                {
+                    const float lift = std::min(2.5f, float(5190.0 / rms));
+                    pl.gain *= lift;
+                    static unsigned s_quietLogs = 0;
+                    if (s_quietLogs++ < 40)
+                        std::fprintf(stderr, "[hctp-pbp] clip %u/%u quiet (rms %.0f): gain x%.2f%c", partition, fid, rms, lift, 10);
+                }
+            }
             // the game's Options sound block (CSound* at 0x526768, CSound::GetOption = +4; byte 1 = BGM volume,
             // byte 3 = SFX volume): log it when it changes, to find the COMMENTARY VOLUME byte
             {
@@ -2509,7 +2583,10 @@ namespace
             if (!g_cutEntranceCodes.empty() && (g_origGetEntranceCastNo = runtime.lookupFunction(0x2af480u)) != nullptr &&
                 runtime.replaceFunction(0x2af480u, getEntranceCastNoCutRoster))
                 std::cerr << "[hctp] cut roster entrance attires: " << g_cutEntranceCodes.size() << std::endl;
+            if ((g_origInitEventSystem = runtime.lookupFunction(0x2ad340u)) != nullptr)
+                runtime.replaceFunction(0x2ad340u, initEventSystemShirtTear);
         }
+        installImportedMedia(runtime);
         std::cerr << "[hctp] overrides applied" << std::endl;
     }
 }

@@ -1,0 +1,13 @@
+@echo off
+cd /d "F:\HCTP MODS\Vanilla"
+set VENDETTA_EE_CYCLE_PCT=100
+set HCTP_VU1_FAST=1
+set HCTP_RENDERER=d3d11
+set HCTP_NATIVE_P08=1
+set HCTP_NATIVE_ADX=1
+set HCTP_NATIVE_P01=1
+set HCTP_NATIVE_S1=15
+set HCTP_S1_ANYHASH=1
+set HCTP_SHOT_DIR=F:\hctp-newbase\shots\cutroster
+set VENDETTA_PADSCRIPT=10:START,14:START,18:START,22:START,26:CROSS,30:CROSS,34:CROSS,38:CROSS,42:CROSS,46:CROSS,50:CROSS,54:CROSS,58:CROSS,62:CROSS,66:CROSS,70:CROSS
+"F:\hctp-newbase\PS2Recomp\out\native\ps2xRuntime\ps2EntryRunner.exe" SLUS_207.87 2> "F:\hctp-newbase\logs\cutroster.err"
