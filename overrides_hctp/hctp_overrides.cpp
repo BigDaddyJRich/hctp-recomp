@@ -138,6 +138,36 @@ namespace
         g_origCharDraw(rdram, ctx, runtime);
         std::memcpy(rdram + 0x40F33Cu, &saved, 4);
     }
+    // Select screen: MenuWrestler::Draw 0x243540 (this+0x68 = its CChar) / thunk 0x244620 (this-8: +0x60) call DrawChar
+    // themselves while the model fades in/out (fully shown it goes through CChar::Draw above).
+    bool castIsRestored(uint8_t *rdram, uint32_t chara)
+    {
+        uint16_t cast = 0;
+        if (chara >= 0x100000u && chara < 0x1FFFFF0u)
+            std::memcpy(&cast, rdram + chara + 0x30u, 2);
+        if (cast >= 10000u || cast == 0u)
+            return false;
+        for (size_t i = 0; i < kCutCount; ++i)
+            if (g_cutRosterHasModel[i] && kCutRoster[i].id == cast / 100u)
+                return true;
+        return false;
+    }
+    PS2Runtime::RecompiledFunction g_origMenuWrDraw[2] = {nullptr, nullptr};
+    template <int I>
+    void menuWrestlerDrawRestoredGloss(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        uint32_t chara = 0;
+        if (self >= 0x100000u && self < 0x1FFFF00u)
+            std::memcpy(&chara, rdram + self + (I == 0 ? 0x68u : 0x60u), 4);
+        if (!castIsRestored(rdram, chara & 0x1FFFFFFu))
+            return g_origMenuWrDraw[I](rdram, ctx, runtime);
+        float saved, dull = 32.0f;
+        std::memcpy(&saved, rdram + 0x40F33Cu, 4);
+        std::memcpy(rdram + 0x40F33Cu, &dull, 4);
+        g_origMenuWrDraw[I](rdram, ctx, runtime);
+        std::memcpy(rdram + 0x40F33Cu, &saved, 4);
+    }
     // Rope shadows: CRope::Draw 0x2185b0 ends with DrawRopeShadow 0x217c50 (subtract blend, no Z test, drawn through
     // the crowd program p17). Here they come out as long white streaks across the screen (Jordan, Oct 20) - skipped
     // debug switch only: HCTP_NO_ROPE_SHADOW=1 skips them (to tell them apart from other streaks).
@@ -2681,6 +2711,13 @@ namespace
         }
         if (!std::getenv("HCTP_RESTORED_GLOSS") && (g_origCharDraw = runtime.lookupFunction(0x1bb200u)) != nullptr)
             runtime.replaceFunction(0x1bb200u, charDrawRestoredGloss);
+        if (!std::getenv("HCTP_RESTORED_GLOSS"))
+        {
+            if ((g_origMenuWrDraw[0] = runtime.lookupFunction(0x243540u)) != nullptr)
+                runtime.replaceFunction(0x243540u, menuWrestlerDrawRestoredGloss<0>);
+            if ((g_origMenuWrDraw[1] = runtime.lookupFunction(0x244620u)) != nullptr)
+                runtime.replaceFunction(0x244620u, menuWrestlerDrawRestoredGloss<1>);
+        }
         if (std::getenv("HCTP_ROPELOG") && (g_origDrawRopeShadow = runtime.lookupFunction(0x217c50u)) != nullptr)
             runtime.replaceFunction(0x217c50u, drawRopeShadowLogged);
         if (std::getenv("HCTP_NO_ROPE_SHADOW"))
