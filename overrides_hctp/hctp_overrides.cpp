@@ -29,6 +29,7 @@ extern "C" bool hctpMovieFrame(int ch, uint8_t *rgba, int w, int h);
 #include <cstring>
 #include <cctype>
 #include <fstream>
+#include <filesystem>
 #include <cstdio>
 #include <iostream>
 #include <thread>
@@ -57,23 +58,27 @@ namespace
         uint8_t tmpl;    // stock CHSL record cloned for the select list (finisher text, flags, costume ids)
         uint8_t attires; // attire slots with models (CH/CH2 keys XX00, XX10, XX20 ...)
         const char *name;
+        int16_t entrance; // entrance event (record +0xEC) when the stock one is an empty 512-byte stub; 0 = keep
     };
+    // Stopgap entrances (Jordan, Oct 20): Sean O'Haire 3071 for the men, Jazz 3084 for Molly. Planned ports: Jeff's own
+    // (Jordan), Spike/Kidman/Gunn from Shut Your Mouth, Molly/Bradshaw/Jeff from SmackDown vs RAW.
     constexpr CutWrestler kCutRoster[] = {
-        {0x0D, 0, {13, 12, 19, 15, 15}, 0x0C, 1, "Jeff Hardy"},
-        {0x11, 0, {15, 19, 12, 18, 16}, 0x12, 1, "William Regal"},
-        {0x18, 0, {18, 13, 12, 14, 17}, 0x1A, 1, "Bradshaw"},
-        {0x20, 0, {0, 0, 0, 0, 0}, 0x2D, 3, "Hulk Hogan"},       // keeps its stats; Hogan / Hollywood / Mr. America
-        {0x21, 0, {20, 13, 10, 13, 16}, 0x1D, 1, "Rosey"},       // Jordan's recommended stats
-        {0x23, 0, {18, 13, 14, 13, 15}, 0x1D, 1, "Jamal"},       // Jordan's recommended stats
-        {0x24, 0, {16, 13, 14, 15, 16}, 0x19, 1, "Billy Gunn"},
-        {0x29, 4, {8, 12, 14, 12, 8}, 0x0E, 1, "Molly Holly"},
-        {0x2B, 0, {10, 12, 17, 14, 13}, 0x17, 1, "Spike Dudley"},
-        {0x39, 0, {12, 13, 18, 15, 14}, 0x17, 1, "Billy Kidman"},
-        {0x4D, 0, {0, 0, 0, 0, 0}, 0x4C, 1, "Ultimate Warrior"}, // keeps its stats
+        {0x0D, 0, {13, 12, 19, 15, 15}, 0x0C, 1, "Jeff Hardy", 0},   // keeps his own (empty) event: Jordan ports his entrance,
+        {0x11, 0, {15, 19, 12, 18, 16}, 0x12, 1, "William Regal", 3071},
+        {0x18, 0, {18, 13, 12, 14, 17}, 0x1A, 1, "Bradshaw", 3071},
+        {0x20, 0, {0, 0, 0, 0, 0}, 0x2D, 3, "Hulk Hogan", 0},       // keeps its stats; Hogan / Hollywood / Mr. America
+        {0x21, 0, {20, 13, 10, 13, 16}, 0x1D, 1, "Rosey", 3071},       // Jordan's recommended stats
+        {0x23, 0, {18, 13, 14, 13, 15}, 0x1D, 1, "Jamal", 3071},       // Jordan's recommended stats
+        {0x24, 0, {16, 13, 14, 15, 16}, 0x19, 1, "Billy Gunn", 3071},
+        {0x29, 4, {8, 12, 14, 12, 8}, 0x0E, 1, "Molly Holly", 3084},
+        {0x2B, 0, {10, 12, 17, 14, 13}, 0x17, 1, "Spike Dudley", 3071},
+        {0x39, 0, {12, 13, 18, 15, 14}, 0x17, 1, "Billy Kidman", 3071},
+        {0x4D, 0, {0, 0, 0, 0, 0}, 0x4C, 1, "Ultimate Warrior", 0}, // keeps its stats
         // Al Snow 0x3F left out: stock key 6300 is a Rock model (maybe the pads-off People's Elbow); needs his own key.
     };
     constexpr size_t kCutCount = sizeof(kCutRoster) / sizeof(kCutRoster[0]);
     bool g_cutRosterHasModel[kCutCount] = {};
+    std::set<uint16_t> g_cutEntranceCodes; // decimal cast codes of restored entrance attires (e.g. 3204, 3214)
     // A slot is only un-hidden when its attire-1 model (key BCD(id) << 8) is in pac/CH.PAC (ids < 30) or pac/CH2.PAC
     // (DPAC directory at 0x800: tag, u16 count | 0x8000, then u16 key + u16 sectors per entry), so stock archives
     // keep the vanilla roster. Returns the number of slots enabled.
@@ -95,15 +100,28 @@ namespace
             {
                 uint16_t k;
                 std::memcpy(&k, dir + 0x808 + e * 4, 2);
-                if (k == key)
+                if (k == key && !g_cutRosterHasModel[i])
                 {
                     g_cutRosterHasModel[i] = true;
                     ++enabled;
-                    break;
                 }
+                if ((k & 0xFF00u) == key && (k & 0xFu) == 4u) // entrance attire XXA4 -> decimal cast code
+                    g_cutEntranceCodes.insert(static_cast<uint16_t>(id * 100u + ((k >> 4) & 0xFu) * 10u + 4u));
             }
         }
         return enabled;
+    }
+    // CSd5EventData::GetEntranceCastNo 0x2af480 (a1 = cast code id*100 + attire*10) hard-codes the wrestlers who wear an
+    // entrance attire (part 4): 0x3A->5804, 0x45->6904, 0x48->7204, 0x4B->7504, 0x4C->7604, 0x50->8004, 0x27->3904;
+    // everyone else gets the ring (or high-poly) model. Restored wrestlers with an XXA4 pack get their entrance attire.
+    PS2Runtime::RecompiledFunction g_origGetEntranceCastNo = nullptr;
+    void getEntranceCastNoCutRoster(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t code = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5])) & 0xFFFFu;
+        g_origGetEntranceCastNo(rdram, ctx, runtime);
+        const uint32_t entrance = code - code % 10u + 4u;
+        if (code < 10000u && g_cutEntranceCodes.count(static_cast<uint16_t>(entrance)))
+            SET_GPR_U32(ctx, 2, entrance);
     }
     void restoreCutRoster(uint8_t *rdram)
     {
@@ -114,6 +132,8 @@ namespace
             if (!g_cutRosterHasModel[i] || rec[0x163] != 6)
                 continue;
             rec[0x163] = w.type;
+            if (w.entrance != 0)
+                std::memcpy(rec + 0xEC, &w.entrance, 2);
             static constexpr uint8_t kZero[5] = {};
             if (std::memcmp(rec, kZero, 5) == 0)
                 std::memcpy(rec, w.stats, 5);
@@ -1327,6 +1347,168 @@ namespace
         runtime->lookupFunction(0x11db28u)(rdram, ctx, runtime);
     }
 
+    // Loose pac sub-files (HCTP_NO_LOOSE_PAC=1 disables): CFile::Search 0x1482f0 maps "/TAG/KEY" (e.g. "/EVET/3600",
+    // "/ENTR/SEVP") to a FILE_INFO {u32 sector, u32 size/0x100, u32 m_EntryFiles index, char path[]} at m_FilePos
+    // 0x524DE0; the read opens m_EntryFiles 0x523DE0 + index*0x20 (128 x 0x20 names) with ADXF_Open and reads from that
+    // sector. A host file MODS\PAC\<TAG>\<KEY> in the game folder replaces (or adds) that sub-file: it gets its own
+    // m_EntryFiles slot (from 127 down) and sector 0, so evtEnt.pac and the other pacs stay stock. Extra entrances =
+    // MODS\PAC\EVET\36xx (+ 37xx stage-plane variant) plus a MODS\PAC\ENTR\SEVP that carries their script rows.
+    std::map<std::string, std::pair<uint32_t, int>> g_loosePac; // "/TAG/KEY" -> (size bytes, entry slot or -1)
+    int g_loosePacNextSlot = 127;
+    PS2Runtime::RecompiledFunction g_origCFileSearch = nullptr;
+    void scanLoosePac()
+    {
+        std::error_code ec;
+        for (const auto &dir : std::filesystem::directory_iterator("MODS/PAC", ec))
+        {
+            if (!dir.is_directory(ec))
+                continue;
+            for (const auto &f : std::filesystem::directory_iterator(dir.path(), ec))
+            {
+                std::string tag = dir.path().filename().string(), key = f.path().filename().string();
+                if (!f.is_regular_file(ec) || tag.size() > 4 || key.size() > 4 || f.file_size(ec) == 0)
+                    continue;
+                for (char &c : tag) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                for (char &c : key) c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                g_loosePac["/" + tag + "/" + key] = {static_cast<uint32_t>(f.file_size(ec)), -1};
+            }
+        }
+    }
+    void cfileSearchLoose(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t pathAddr = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        char path[33] = {};
+        for (int i = 0; i < 32 && rdram[pathAddr + i]; ++i)
+            path[i] = static_cast<char>(std::toupper(rdram[pathAddr + i]));
+        auto it = g_loosePac.find(path);
+        if (it == g_loosePac.end())
+            return g_origCFileSearch(rdram, ctx, runtime);
+        char *const names = reinterpret_cast<char *>(rdram + 0x523DE0u);
+        if (it->second.second < 0)
+        {
+            // Name in the stock entries' style (device prefix up to the first separator, ";1" suffix if they use it).
+            const std::string stock(names, strnlen(names, 0x20));
+            const size_t sepAt = stock.find_first_of("\\/");
+            const char sep = sepAt == std::string::npos ? '\\' : stock[sepAt];
+            const bool device = sepAt != std::string::npos && (sepAt == 0 || stock[sepAt - 1] == ':'); // "\" / "cdrom0:\"
+            std::string name = (device ? stock.substr(0, sepAt + 1) : std::string()) + "MODS" + sep +
+                               "PAC" + (path + 0) + (stock.find(";1") != std::string::npos ? ";1" : "");
+            for (char &c : name)
+                if (c == '/' || c == '\\') c = sep;
+            const int slot = g_loosePacNextSlot;
+            if (name.size() >= 0x20 || slot < 32 || names[slot * 0x20] != 0)
+            {
+                std::fprintf(stderr, "[loosepac] %s: no free entry slot (name %s), stock file used%c", path, name.c_str(), 10);
+                g_loosePac.erase(it);
+                return g_origCFileSearch(rdram, ctx, runtime);
+            }
+            std::memcpy(names + slot * 0x20, name.c_str(), name.size() + 1);
+            it->second.second = slot;
+            --g_loosePacNextSlot;
+            std::fprintf(stderr, "[loosepac] %s -> %s (%u bytes, entry %d)%c", path, name.c_str(), it->second.first, slot, 10);
+        }
+        uint8_t *const info = rdram + 0x524DE0u;
+        const uint32_t sector = 0, size = (it->second.first + 0xFFu) >> 8, slot = static_cast<uint32_t>(it->second.second);
+        std::memcpy(info, &sector, 4);
+        std::memcpy(info + 4, &size, 4);
+        std::memcpy(info + 8, &slot, 4);
+        std::memcpy(info + 12, rdram + pathAddr, strnlen(reinterpret_cast<char *>(rdram + pathAddr), 0x3F) + 1);
+        returnValue(ctx, 0x524DE0);
+    }
+
+    // Per-attire entrances: MODS\PAC\entrances.txt lines "<roster id> <attire digit> <event>" (decimal, '#' comments).
+    // CSd5EventData::GetEntranceEventNoFromSystem 0x2ad1b0 (a1 = cast order) takes the event from roster record +0xEC
+    // (0x4C0F54 + id*0x170), +200 (event < 3400) / +100 on stage-plane arenas; the cast code at 0x4921CA + order*0x20
+    // = id*100 + attire*10. A listed (id, attire) gets its own event (extras: 3600-3699, plane variant +100).
+    std::map<uint32_t, uint32_t> g_attireEntrance; // id*10 + attire -> event
+    PS2Runtime::RecompiledFunction g_origGetEntranceEventNo = nullptr;
+    void getEntranceEventNoPerAttire(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        const uint32_t order = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5]));
+        g_origGetEntranceEventNo(rdram, ctx, runtime);
+        if (order >= 8)
+            return;
+        uint32_t season; std::memcpy(&season, rdram + self + order * 0xD4u + 0x14Cu, 4);
+        uint16_t code; std::memcpy(&code, rdram + 0x4921CAu + order * 0x20u, 2);
+        if (season != 0 || code >= 10000u)
+            return;
+        const uint32_t id = code / 100u, attire = (code / 10u) % 10u;
+        auto it = g_attireEntrance.find(id * 10u + attire);
+        if (it == g_attireEntrance.end())
+            return;
+        int16_t own; std::memcpy(&own, rdram + 0x4C0F54u + id * 0x170u + 0xECu, 2);
+        const int32_t got = static_cast<int32_t>(_mm_cvtsi128_si32(ctx->r[2]));
+        const int32_t delta = got - own; // 0 = normal, 100/200 = stage plane, else a special case (left alone)
+        if (delta != 0 && delta != 100 && delta != 200)
+            return;
+        const uint32_t ev = it->second + (delta ? (it->second < 3400u ? 200u : 100u) : 0u);
+        std::fprintf(stderr, "[entrance] cast %u id 0x%x attire %u: event %d -> %u%c", code, id, attire, got, ev, 10);
+        SET_GPR_U32(ctx, 2, ev);
+    }
+    // Victory motions: a Create-a-Moveset / match victory list number n (moves.pac MOVE/LIST sub-entry 7) becomes
+    // doramock event 6200 + table[n] (u8 x 86 at 0x421830) in ConvertDoramockFromMoves 0x39dba0 (evtDora.pac, EVDR).
+    // Cut wrestlers' entries point at the shared 59 (6259) although many own events are still in evtDora.
+    // MODS\PAC\victory.txt "<n> <event 6200-6455>" re-points entries; HCTP_VICTORY_TEST=<event> plays that event for
+    // every victory preview (to identify the unreferenced 62xx / 63xx events in CAM).
+    std::map<uint32_t, uint32_t> g_victoryEvent; // n -> event
+    PS2Runtime::RecompiledFunction g_origConvertDoramock = nullptr;
+    void convertDoramockFromMoves(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t p = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        int32_t n; std::memcpy(&n, rdram + p, 4);
+        g_origConvertDoramock(rdram, ctx, runtime);
+        static const char *test = std::getenv("HCTP_VICTORY_TEST");
+        auto it = g_victoryEvent.find(static_cast<uint32_t>(n));
+        // HCTP_VICTORY_TEST=cycle: each preview plays the next unreferenced event (order below); the log names it.
+        static const int32_t kOrphans[] = {6202, 6208, 6220, 6223, 6226, 6236, 6240, 6243, 6258, 6261, 6262, 6263, 6264,
+                                           6265, 6266, 6267, 6268, 6269, 6270, 6271, 6272, 6273, 6274, 6275, 6284, 6285,
+                                           6286, 6287, 6288, 6289, 6290, 6291, 6292, 6293, 6294, 6295, 6296, 6297, 6298,
+                                           6299, 6300, 6301, 6314, 6315, 6316, 6317, 6318, 6319, 6320, 6321, 6322, 6323,
+                                           6328, 6329, 6331, 6332, 6333, 6334, 6335, 6336, 6337, 6338, 6339, 6340, 6341,
+                                           6342, 6344, 6345, 6346, 6347, 6348, 6349, 6350};
+        static size_t cycle = 0;
+        const bool cycling = test && std::strcmp(test, "cycle") == 0;
+        int32_t ev = cycling ? kOrphans[cycle++ % (sizeof(kOrphans) / sizeof(kOrphans[0]))]
+                     : test ? std::atoi(test) : it != g_victoryEvent.end() ? static_cast<int32_t>(it->second) : -1;
+        if (ev < 0)
+            return;
+        std::memcpy(rdram + p, &ev, 4);
+        std::fprintf(stderr, "[victory] list %d -> event %d%c", n, ev, 10);
+    }
+    void installLooseEntrances(PS2Runtime &runtime)
+    {
+        {
+            std::ifstream vcfg("MODS/PAC/victory.txt");
+            for (std::string line; std::getline(vcfg, line);)
+            {
+                unsigned n, ev;
+                if (!line.empty() && line[0] != '#' && std::sscanf(line.c_str(), "%u %u", &n, &ev) == 2)
+                    g_victoryEvent[n] = ev;
+            }
+            if ((!g_victoryEvent.empty() || std::getenv("HCTP_VICTORY_TEST")) &&
+                (g_origConvertDoramock = runtime.lookupFunction(0x39dba0u)) != nullptr)
+                runtime.replaceFunction(0x39dba0u, convertDoramockFromMoves);
+        }
+        if (std::getenv("HCTP_NO_LOOSE_PAC") != nullptr)
+            return;
+        scanLoosePac();
+        if (!g_loosePac.empty() && (g_origCFileSearch = runtime.lookupFunction(0x1482f0u)) != nullptr)
+            runtime.replaceFunction(0x1482f0u, cfileSearchLoose);
+        std::ifstream cfg("MODS/PAC/entrances.txt");
+        for (std::string line; std::getline(cfg, line);)
+        {
+            unsigned id, attire, ev;
+            if (line.empty() || line[0] == '#' || std::sscanf(line.c_str(), "%u %u %u", &id, &attire, &ev) != 3 || attire > 9)
+                continue;
+            g_attireEntrance[id * 10u + attire] = ev;
+        }
+        if (!g_attireEntrance.empty() && (g_origGetEntranceEventNo = runtime.lookupFunction(0x2ad1b0u)) != nullptr)
+            runtime.replaceFunction(0x2ad1b0u, getEntranceEventNoPerAttire);
+        std::cerr << "[hctp] loose pac files: " << g_loosePac.size() << ", per-attire entrances: "
+                  << g_attireEntrance.size() << std::endl;
+    }
+
     // TEMP diag (HCTP_SPRLOG=1): who calls Sofdec's mwPlySwitchToIdle 0x3ea680 (distinct return addresses)
     PS2Runtime::RecompiledFunction g_origSwitchToIdle = nullptr;
     void switchToIdleLogged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -2259,6 +2441,7 @@ namespace
         installTraceHooks(runtime);
         startPcProfiler();
         runtime.replaceFunction(0x11d810u, cdLayerSearchFile);
+        installLooseEntrances(runtime);
         // native libsdr: sceSdRemote as SIF RPC to the real sdrdrv IRX (sound effects); the game's client data at
         // 0x48F240 and command buffer at 0x48F200 (from its sceSdRemoteInit / sceSdRemote). HCTP_SDR_STUB=1 = stand-in.
         if (std::getenv("HCTP_SDR_STUB") == nullptr)
@@ -2323,6 +2506,9 @@ namespace
                       << (ok ? "" : " (hook FAILED)") << std::endl;
             if (slots > 0)
                 installSelectList(runtime);
+            if (!g_cutEntranceCodes.empty() && (g_origGetEntranceCastNo = runtime.lookupFunction(0x2af480u)) != nullptr &&
+                runtime.replaceFunction(0x2af480u, getEntranceCastNoCutRoster))
+                std::cerr << "[hctp] cut roster entrance attires: " << g_cutEntranceCodes.size() << std::endl;
         }
         std::cerr << "[hctp] overrides applied" << std::endl;
     }
