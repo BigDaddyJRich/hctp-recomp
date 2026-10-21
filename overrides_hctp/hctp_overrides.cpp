@@ -114,6 +114,23 @@ namespace
         }
         return enabled;
     }
+    // No interlacing (PCSX2's HCTP "No-Interlacing" patch nops the odd-field branch in both): sceGsSetHalfOffset
+    // 0x102660 / sceGsSetHalfOffset2 0x1028c8 (a0 = draw env, a1 = x, a2 = y, a3 = odd field) write XYOFFSET at
+    // env+0x20 with +8 (half a line) on odd fields - a bounce when every field is shown as a frame. Always the even
+    // field here. HCTP_INTERLACE_OFFSET=1 keeps the game's offset.
+    void gsSetHalfOffsetEven(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
+    {
+        const uint32_t env = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        const int64_t x = static_cast<int16_t>(_mm_cvtsi128_si32(ctx->r[5]));
+        const int64_t y = static_cast<int16_t>(_mm_cvtsi128_si32(ctx->r[6]));
+        uint64_t display;
+        std::memcpy(&display, rdram + env + 0x30u, 8);
+        const int64_t ox = x - static_cast<int64_t>((((display >> 16) & 0x7FFu) + 1u) >> 1);
+        const int64_t oy = y - static_cast<int64_t>((((display >> 48) & 0x7FFu) + 1u) >> 1);
+        const uint64_t xyoffset = static_cast<uint64_t>(ox * 16) | (static_cast<uint64_t>(oy) << 36);
+        std::memcpy(rdram + env + 0x20u, &xyoffset, 8);
+        ctx->pc = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
+    }
     // CSd5EventData::GetEntranceCastNo 0x2af480 (a1 = cast code id*100 + attire*10) hard-codes the wrestlers who wear an
     // entrance attire (part 4): 0x3A->5804, 0x45->6904, 0x48->7204, 0x4B->7504, 0x4C->7604, 0x50->8004, 0x27->3904;
     // everyone else gets the ring (or high-poly) model. Restored wrestlers with an XXA4 pack get their entrance attire.
@@ -2585,6 +2602,12 @@ namespace
                 std::cerr << "[hctp] cut roster entrance attires: " << g_cutEntranceCodes.size() << std::endl;
             if ((g_origInitEventSystem = runtime.lookupFunction(0x2ad340u)) != nullptr)
                 runtime.replaceFunction(0x2ad340u, initEventSystemShirtTear);
+        }
+        if (!std::getenv("HCTP_INTERLACE_OFFSET"))
+        {
+            runtime.replaceFunction(0x102660u, gsSetHalfOffsetEven);
+            runtime.replaceFunction(0x1028c8u, gsSetHalfOffsetEven);
+            std::cerr << "[hctp] no-interlace half offset on" << std::endl;
         }
         installImportedMedia(runtime);
         std::cerr << "[hctp] overrides applied" << std::endl;
