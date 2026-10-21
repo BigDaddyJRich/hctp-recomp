@@ -746,9 +746,18 @@ namespace
 
     void adxFill(AdxPlayer &pl, void *buffer, unsigned int frames)
     {
-        std::lock_guard<std::mutex> lock(pl.m);
+        // raylib calls this from its audio thread WITH its audio lock held, while the game thread holds pl.m when it
+        // (re)opens a stream (Load/Unload/PlayAudioStream take that audio lock): blocking here deadlocked the game
+        // (freezes at Finkel's entrance line / commentary after a finisher - a clip at another sample rate reopens
+        // the stream). Never wait: a busy player gives one buffer of silence.
+        std::unique_lock<std::mutex> lock(pl.m, std::try_to_lock);
         int16_t *out = static_cast<int16_t *>(buffer);
         const uint32_t ch = pl.streamChannels ? pl.streamChannels : 2u;
+        if (!lock.owns_lock())
+        {
+            std::memset(out, 0, static_cast<size_t>(frames) * ch * sizeof(int16_t));
+            return;
+        }
         for (unsigned int i = 0; i < frames; ++i)
         {
             if (pl.playing && !pl.ended && pl.channels != 0u && pl.loop && pl.loopEnd > pl.loopStart &&
@@ -2618,6 +2627,7 @@ namespace
         }
         if (std::getenv("HCTP_NO_ROPE_SHADOW"))
             runtime.replaceFunction(0x217c50u, skipRopeShadow);
+        std::setvbuf(stdout, nullptr, _IONBF, 0); // diagnostics ([burst], [gs-trace]) survive a freeze / kill
         installImportedMedia(runtime);
         std::cerr << "[hctp] overrides applied" << std::endl;
     }
