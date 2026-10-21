@@ -114,6 +114,13 @@ namespace
         }
         return enabled;
     }
+    // Rope shadows: CRope::Draw 0x2185b0 ends with DrawRopeShadow 0x217c50 (subtract blend, no Z test, drawn through
+    // the crowd program p17). Here they come out as long white streaks across the screen (Jordan, Oct 20) - skipped
+    // debug switch only: HCTP_NO_ROPE_SHADOW=1 skips them (to tell them apart from other streaks).
+    void skipRopeShadow(uint8_t *, R5900Context *ctx, PS2Runtime *)
+    {
+        ctx->pc = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
+    }
     // No interlacing (PCSX2's HCTP "No-Interlacing" patch nops the odd-field branch in both): sceGsSetHalfOffset
     // 0x102660 / sceGsSetHalfOffset2 0x1028c8 (a0 = draw env, a1 = x, a2 = y, a3 = odd field) write XYOFFSET at
     // env+0x20 with +8 (half a line) on odd fields - a bounce when every field is shown as a frame. Always the even
@@ -2609,6 +2616,8 @@ namespace
             runtime.replaceFunction(0x1028c8u, gsSetHalfOffsetEven);
             std::cerr << "[hctp] no-interlace half offset on" << std::endl;
         }
+        if (std::getenv("HCTP_NO_ROPE_SHADOW"))
+            runtime.replaceFunction(0x217c50u, skipRopeShadow);
         installImportedMedia(runtime);
         std::cerr << "[hctp] overrides applied" << std::endl;
     }
