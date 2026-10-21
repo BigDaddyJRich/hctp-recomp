@@ -63,6 +63,20 @@ Build these first, test, then commit (PS2Recomp, then bump the submodule in the 
     - Launcher (`settings-app` folder exists): pick the game folder, resolution/fullscreen/vsync (`hctp_native.ini`),
       roster option (task 8), extras pack on/off, starts the exe from the game folder.
     - Package: exe + launcher + readme. NO game files, NO SLUS ELF, NO ISO data.
+11b. **Commentary from the player's OWN discs (required for release; Jordan, Oct 21)**. Today `Build HCTP.bat` /
+    `tools/hctp_setup.py` only takes the HCTP disc; commentary data (BGM\PBPSVR*, PBPBETA*, PBPEXTRA*, FINKEL*, PBP_*.csv)
+    is built by hand on Jordan's PC and never shipped. Make it a setup step:
+    - `hctp_setup.py --extra <iso|chd|folder>` (repeatable; also drag several files onto the bat): identify each disc by
+      its serial / key files (SvR 2004 retail, SvR06, SvR07, SvR08, Shut Your Mouth, LoW, 2K14 PS3...) and skip unknowns
+      with a clear message. Optional: a missing disc only removes that source's clips (the engine already copes).
+    - Move the builders from `F:\hctp-project\tools` into this repo's `tools/commentary/` (build_pbp_extra.py,
+      build_finkel_pack.py, map_moves.py, build_line_owners.py, build_banter_drop.py, build_banter_pairs.py) and make
+      them take paths from the setup instead of Jordan's folders. Transcripts/CSVs that are OUR work (line tables,
+      move map rules, owners, banter pairs) ship; audio and anything copied from a disc never ship.
+    - Read F:\hctp-project\notes\COMMENTARY_HANDOFF.md first (data layout, partitions 13-16, rules), plus the memory
+      rules: SvR retail+beta first, other games only for gaps; Finkel from SYM/LoW/2K14; name rules (Valbowski=Val Venis...).
+    - The SvR public BETA clips: find out whether players can get that build; if not, ship without it (retail covers it).
+    - Check: fresh folder + HCTP disc + one extra disc -> BGM\ files built, `[hctp-pbp] loaded N tables` in the log.
 12. **Final QA pass**: boot, menus, CAM round trip, exhibition match with entrances, season, saves.
 
 ## Test launchers made this session (`F:\hctp-newbase`)
