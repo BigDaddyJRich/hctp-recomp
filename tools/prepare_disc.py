@@ -1,10 +1,10 @@
-# Prepares your own Def Jam Vendetta (USA, SLUS-20639) disc for the recomp — the game's files never go in git.
-#   disc/SLUS-20639.iso  a plain 2048-byte-sector image: the recompiled game reads the disc by raw sector number
+# Prepares your own WWE SmackDown! Here Comes the Pain (USA, SLUS-20787) disc for the recomp — the game's files never go in git.
+#   disc/SLUS-20787.iso  a plain 2048-byte-sector image: the recompiled game reads the disc by raw sector number
 #                        (sceCdRead — the ISO volume descriptor at sector 16, DATA.BIN by sector)
-#   game/                every file of the disc; SLUS_206.39 is the executable the recompiler reads, and the runtime
+#   game/                every file of the disc; SLUS_207.87 is the executable the recompiler reads, and the runtime
 #                        treats this folder as cdrom0: (IOP modules, file-name opens)
 # usage: python tools/prepare_disc.py [--check] <disc.chd | disc.iso>
-#   --check: only says whether it is the right disc (prints "ok SLUS-20639"), writes nothing
+#   --check: only says whether it is the right disc (prints "ok SLUS-20787"), writes nothing
 #   VENDETTA_DATA=<folder>: where disc/ and game/ go (default: the repository)
 import os
 import shutil
@@ -13,7 +13,7 @@ import sys
 ROOT = os.environ.get('VENDETTA_DATA') or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'disc'))
 SECTOR = 2048
-SERIAL_FILE = 'SLUS_206.39'
+SERIAL_FILE = 'SLUS_207.87'
 
 
 class ChdSectors:
@@ -86,13 +86,13 @@ def main():
     root_size = int.from_bytes(pvd[156 + 10:156 + 14], 'little')
     entries = list(walk(src, root_lba, root_size))
     if not any(p.upper() == '/' + SERIAL_FILE for p, _, _, d in entries if not d):
-        sys.exit(f'{SERIAL_FILE} not on this disc — the recomp is for Def Jam Vendetta (USA, SLUS-20639) only')
+        sys.exit(f'{SERIAL_FILE} not on this disc — the recomp is for WWE SmackDown! Here Comes the Pain (USA, SLUS-20787) only')
     if check_only:
-        print(f'ok SLUS-20639 {vol_blocks} sectors')
+        print(f'ok SLUS-20787 {vol_blocks} sectors')
         return
 
     os.makedirs(os.path.join(ROOT, 'disc'), exist_ok=True)
-    iso_out = os.path.join(ROOT, 'disc', 'SLUS-20639.iso')
+    iso_out = os.path.join(ROOT, 'disc', 'SLUS-20787.iso')
     total = min(vol_blocks, src.total)
     if isinstance(src, IsoSectors) and os.path.abspath(path) != os.path.abspath(iso_out):
         shutil.copyfile(path, iso_out)

@@ -49,12 +49,12 @@ public sealed class UpdateEntry
 /// is touched. The program's own file can be renamed while it runs: the new one starts after the swap.</summary>
 public static class Updater
 {
-    public const string Repo = "jcsix694/def-jam-vendetta-recomp";
+    public const string Repo = "BigDaddyJRich/hctp-recomp";
     public const string ReleasesUrl = "https://github.com/" + Repo + "/releases";
-    public const string ZipName = "Def-Jam-Vendetta-Recompiled-Windows.zip";
+    public const string ZipName = "HCTP-Recompiled-Windows.zip";
     public const string ManifestName = "release-manifest.txt";
-    public const string ProgramName = "Def Jam Vendetta Recompiled Settings.exe";
-    private const string Top = "Def Jam Vendetta Recompiled/";
+    public const string ProgramName = "HCTP Recompiled Settings.exe";
+    private const string Top = "HCTP Recompiled/";
     private const string ManifestPath = "files/" + ManifestName;
 
     public static Version Current { get; } = Normalise(Assembly.GetExecutingAssembly().GetName().Version ?? new Version(0, 1, 0));
@@ -73,7 +73,7 @@ public static class Updater
     private static HttpClient MakeClient()
     {
         var client = new HttpClient { Timeout = Timeout.InfiniteTimeSpan };
-        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("DefJamVendettaRecompiled", CurrentText));
+        client.DefaultRequestHeaders.UserAgent.Add(new ProductInfoHeaderValue("HCTPRecompiled", CurrentText));
         return client;
     }
 

@@ -1,7 +1,7 @@
-# A player's first-run setup, step by step (run by Def Jam Vendetta Recompiled Settings; also by hand):
+# A player's first-run setup, step by step (run by HCTP Recompiled Settings; also by hand):
 #   python tools/setup_game.py --data <install folder> [--disc <disc.chd | disc.iso>]
 # 1. the disc -> disc/ + game/ in the install folder, 2. Microsoft's C++ build tools (installed when missing: one
-# Windows prompt), 3. PS2Recomp's recompiler, 4. the game's code -> C++, 5. the game, 6. "Def Jam Vendetta
+# Windows prompt), 3. PS2Recomp's recompiler, 4. the game's code -> C++, 5. the game, 6. "SmackDown! Here Comes the Pain
 # Recompiled.exe" in the install folder. The build folders are build/recomp and build/game there.
 #
 # What it prints for a program to follow (each on its own line, besides everything the tools print):
@@ -22,7 +22,7 @@ import urllib.request
 
 SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PS2RECOMP = os.path.join(SRC, 'PS2Recomp')
-GAME_EXE = 'Def Jam Vendetta Recompiled.exe'
+GAME_EXE = 'HCTP Recompiled.exe'
 VS_INSTALLER_URL = 'https://aka.ms/vs/17/release/vs_BuildTools.exe'
 VS_COMPONENTS = ['Microsoft.VisualStudio.Workload.VCTools', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
                  'Microsoft.VisualStudio.Component.VC.CMake.Project', 'Microsoft.VisualStudio.Component.Windows11SDK.22621']
@@ -168,8 +168,8 @@ def step_tools():
 
 def step_disc(data, disc):
     step(1, STEPS[0])
-    elf = os.path.join(data, 'game', 'SLUS_206.39')
-    iso = os.path.join(data, 'disc', 'SLUS-20639.iso')
+    elf = os.path.join(data, 'game', 'SLUS_207.87')
+    iso = os.path.join(data, 'disc', 'SLUS-20787.iso')
     if not disc:
         if os.path.isfile(elf) and os.path.isfile(iso):
             say('the disc is already prepared')
@@ -184,7 +184,7 @@ def step_disc(data, disc):
             progress(0.9 * int(m.group(1)) / max(1, int(m.group(2))))
     run([sys.executable, os.path.join(SRC, 'tools', 'prepare_disc.py'), disc], env=env, parse=parse)
     if not os.path.isfile(elf):
-        raise SetupError('the disc was read but SLUS_206.39 is missing')
+        raise SetupError('the disc was read but SLUS_207.87 is missing')
     progress(1.0)
 
 
@@ -302,12 +302,39 @@ def step_game(env, data):
          '-DPS2X_BUILD_TEST=OFF', '-DPS2X_BUILD_STUDIO=OFF', '-DPS2X_BUILD_ANALYZER=OFF', '-DPS2X_ENABLE_AGRESSIVE_LOGS=OFF',
          '-DPS2X_SHOW_WINDOWS_CONSOLE=OFF',  # a windowed program: no terminal behind the game (its output: logs\)
          f'-DPS2X_PARALLEL_GS_DIR={os.path.join(SRC, "third_party", "parallel-gs")}',
-         # double-click the game: it finds game/SLUS_206.39 beside itself (main.cpp)
-         '-DPS2X_DEFAULT_BOOT_ELF=game/SLUS_206.39'] + deps_args(), env=env)
+         # double-click the game: it finds game/SLUS_207.87 beside itself (main.cpp)
+         '-DPS2X_DEFAULT_BOOT_ELF=game/SLUS_207.87'] + deps_args(), env=env)
     progress(0.03)
     build_with_retry(build, env, 0.03, 1.0)
     progress(1.0)
     return os.path.join(build, 'ps2xRuntime')
+
+
+def step_extras(data, pack):
+    """The extras pack: a zip whose MODS/ folder goes over game/MODS (the game's own files are never touched).
+    Files it replaces are kept in game/backup_before_extras first."""
+    import zipfile
+    say('installing the extras pack')
+    game = os.path.join(data, 'game')
+    backup = os.path.join(game, 'backup_before_extras')
+    with zipfile.ZipFile(pack) as z:
+        names = [n for n in z.namelist() if n.replace(chr(92), '/').startswith('MODS/') and not n.endswith('/')]
+        if not names:
+            raise SetupError('that zip is not an HCTP extras pack (no MODS folder in it)')
+        for i, name in enumerate(names):
+            dest = os.path.normpath(os.path.join(game, name))
+            if not dest.startswith(os.path.normpath(game) + os.sep):
+                raise SetupError(f'bad path in the extras pack: {name}')
+            if os.path.isfile(dest):
+                keep = os.path.join(backup, name)
+                os.makedirs(os.path.dirname(keep), exist_ok=True)
+                if not os.path.exists(keep):
+                    shutil.copy2(dest, keep)
+            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            with z.open(name) as src, open(dest, 'wb') as out:
+                shutil.copyfileobj(src, out)
+            progress((i + 1) / len(names))
+    say(f'extras pack: {len(names)} files installed')
 
 
 def step_finish(out_dir, data):
@@ -327,13 +354,20 @@ def step_finish(out_dir, data):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='First-run setup: your disc -> Def Jam Vendetta Recompiled.exe')
+    parser = argparse.ArgumentParser(description='First-run setup: your disc -> HCTP Recompiled.exe')
     parser.add_argument('--data', required=True, help='the install folder (disc/, game/, the game program, build/)')
-    parser.add_argument('--disc', help='your disc: .chd or .iso (USA, SLUS-20639)')
+    parser.add_argument('--extras', help='optional: the HCTP extras pack zip (models, trons, music, portraits)')
+    parser.add_argument('--disc', help='your disc: .chd or .iso (USA, SLUS-20787)')
     args = parser.parse_args()
     data = os.path.abspath(args.data)
     try:
         step_disc(data, args.disc)
+        if args.extras:
+            step_extras(data, args.extras)
+        if os.path.isfile(os.path.join(data, 'HCTP Recompiled.exe')):
+            say('the game program came with this release: no build needed')
+            say('[done]')
+            return 0
         env = step_tools()
         recompiler = step_recompiler(env, data)
         step_recompile(recompiler, data)

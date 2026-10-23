@@ -46,7 +46,7 @@
                         <TextBlock Grid.Column="1" Classes="mono" Text="{Binding DiscTitle}" />
                         <TextBlock Grid.Row="1" Classes="key" Text="Serial" />
                         <StackPanel Grid.Row="1" Grid.Column="1" Orientation="Horizontal" Spacing="8">
-                            <TextBlock Classes="mono" Text="SLUS-20639" VerticalAlignment="Center" />
+                            <TextBlock Classes="mono" Text="SLUS-20787" VerticalAlignment="Center" />
                             <Border Classes="tag good" IsVisible="{Binding HasGame}"><TextBlock Text="✓ checked" /></Border>
                         </StackPanel>
                         <TextBlock Grid.Row="2" Classes="key" Text="Save data" />

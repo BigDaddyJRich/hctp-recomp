@@ -184,7 +184,7 @@ public partial class MainViewModel : ObservableObject
     public string Version => "v" + Updater.CurrentText;
 
     public bool HasGame => Folder.HasGame;
-    public string DiscTitle => Folder.HasGame ? "Def Jam Vendetta · PS2 · USA" : "Not set up yet";
+    public string DiscTitle => Folder.HasGame ? "SmackDown! Here Comes the Pain · PS2 · USA" : "Not set up yet";
     public string SaveLine => Folder.HasSave ? "Saved · game\\mc0" : "No save yet";
     // during the setup PLAY waits for the build to finish
     public bool CanPlay => Folder.HasGame && Folder.GameExe != null && !GameRunning && (!InSetup || Setup.Done) && !Updates.IsWorking;

@@ -8,7 +8,7 @@ internal static class Program
     public static void Main(string[] args)
     {
         // Dev: a page as a picture, drawn without opening a window (nothing is saved):
-        //   "Def Jam Vendetta Recompiled Settings" --shot <play|display|graphics|sound|controls|gameplay|about> <out.png> [width height]
+        //   "HCTP Recompiled Settings" --shot <play|display|graphics|sound|controls|gameplay|about> <out.png> [width height]
         if (args.Length >= 3 && args[0] == "--shot")
         {
             Shot.Render(args[1], args[2], args.Length >= 5 ? int.Parse(args[3]) : 1120, args.Length >= 5 ? int.Parse(args[4]) : 700);

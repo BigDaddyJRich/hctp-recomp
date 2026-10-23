@@ -1,6 +1,7 @@
 #include <utility>
 #include "hctp_restored_finishers.h"
 #include <atomic>
+#include <array>
 // WWE SmackDown! Here Comes the Pain (USA, SLUS-20787) - runtime overrides for this game build.
 // Copied into ps2xRuntime/src/runner/ by tools/sync_generated.py; edit this file in the repo's overrides_hctp/ folder.
 //
@@ -37,6 +38,10 @@ extern "C" bool hctpMovieFrame(int ch, uint8_t *rgba, int w, int h);
 
 extern "C" void hctpCommentaryEvent(uint32_t event); // ps2xRuntime/src/lib/hctp_commentary.cpp
 extern "C" void hctpCommentaryEntrance(uint32_t rosterId);
+extern "C" void hctpCommentaryResetEntrances();
+extern "C" void hctpCommentarySetTagMatch(uint32_t tag);
+extern "C" void hctpCommentarySetTeamSize(uint32_t size);
+extern "C" void hctpCommentarySetMatchRule(uint32_t rule);
 extern "C" void hctpCommentaryMove(uint32_t chara, uint32_t moveId);
 extern "C" void hctpCommentaryParticipants(const uint32_t *rosterIds, uint32_t count);
 extern "C" void hctpCommentaryArena(int stage);
@@ -76,6 +81,13 @@ namespace
         {0x39, 0, {12, 13, 18, 15, 14}, 0x17, 1, "Billy Kidman", 3071},
         {0x4D, 0, {0, 0, 0, 0, 0}, 0x4C, 1, "Ultimate Warrior", 0}, // keeps its stats
         {0x4E, 0, {18, 12, 10, 12, 19}, 0x2D, 1, "Hulk Hogan (Legend)", 0},
+        // Original NPC slots already have model keys in CH2. Keep their own moveset data.
+        {50, 0, {10, 9, 12, 9, 8}, 22, 1, "Michael Cole", 3022},
+        {52, 0, {10, 9, 11, 9, 8}, 22, 1, "Jim Ross", 3022},
+        {53, 0, {17, 16, 14, 17, 17}, 21, 1, "Jerry Lawler", 3021},
+        {54, 0, {9, 8, 14, 10, 8}, 22, 1, "Jonathan Coachman", 3022},
+        {55, 4, {6, 7, 14, 10, 7}, 20, 1, "Linda McMahon", 3020},
+        {65, 0, {17, 20, 13, 16, 19}, 18, 1, "Tazz", 3071},
         // Al Snow 0x3F left out: stock key 6300 is a Rock model (maybe the pads-off People's Elbow); needs his own key.
     };
     constexpr size_t kCutCount = sizeof(kCutRoster) / sizeof(kCutRoster[0]);
@@ -107,33 +119,20 @@ namespace
                     g_cutRosterHasModel[i] = true;
                     ++enabled;
                 }
-                // Hogan's 32A4 packs are gear-only leftovers (YOBJ = 9 parts: glasses/shirt/boa; no RTX3 skin sub 8,
-                // 6 textures vs 28) - stock XXA4 packs (3904...) are full models. Drawn alone = floating gear, so Hogan
-                // keeps his ring model until a merged body+gear pack exists (HCTP_HOGAN_GEAR=1 to test one).
-                if ((k & 0xFF00u) == key && (k & 0xFu) == 4u && (id != 0x20 || std::getenv("HCTP_HOGAN_GEAR"))) // XXA4 -> cast code
+                // Hogan's yellow 3204 is gear-only in the active game; routing it as a full cast
+                // produces floating shirt/boa/glasses. NWO's entrance attire is working, so retain it.
+                if ((k & 0xFF00u) == key && (k & 0xFu) == 4u && !(id == 0x20 && k == 0x3204u))
                     g_cutEntranceCodes.insert(static_cast<uint16_t>(id * 100u + ((k >> 4) & 0xFu) * 10u + 4u));
             }
         }
         return enabled;
     }
-    // Restored-wrestler gloss: CSkinModel::DrawChar 0x155dc0 multiplies every material colour constant by the vector
-    // at 0x40F330 before the VU1 gets it; its .w (0x40F33C, 128.0) scales the reflection / gloss strength. The restored
-    // (cut) wrestlers' materials come out far too glossy, so while CChar::Draw 0x1bb200 (a0 = CChar*, +0x30 = cast code
-    // id*100+attire) draws one of them the scale is 32.0, and 128.0 again afterwards - stock wrestlers keep their sheen.
-    // HCTP_RESTORED_GLOSS=1 = leave it. (Same constant a known global "no glossy wrestlers" cheat lowers; ours is restored-only.)
+    // Roster-wide gloss reduction: CSkinModel::DrawChar 0x155dc0 multiplies every material colour constant by the
+    // vector at 0x40F330. Its .w (0x40F33C, normally 128.0) scales the excessive reflection/gloss strength. Use 32.0
+    // around every wrestler draw, then restore the game constant. HCTP_FULL_GLOSS=1 keeps the original appearance.
     PS2Runtime::RecompiledFunction g_origCharDraw = nullptr;
-    void charDrawRestoredGloss(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    void charDrawReducedGloss(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t chara = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
-        uint16_t cast = 0;
-        if (chara >= 0x100000u && chara < 0x1FFFFF0u)
-            std::memcpy(&cast, rdram + chara + 0x30u, 2);
-        bool restored = false;
-        if (cast < 10000u)
-            for (size_t i = 0; i < kCutCount && !restored; ++i)
-                restored = g_cutRosterHasModel[i] && kCutRoster[i].id == cast / 100u;
-        if (!restored)
-            return g_origCharDraw(rdram, ctx, runtime);
         float saved, dull = 32.0f;
         std::memcpy(&saved, rdram + 0x40F33Cu, 4);
         std::memcpy(rdram + 0x40F33Cu, &dull, 4);
@@ -142,28 +141,10 @@ namespace
     }
     // Select screen: MenuWrestler::Draw 0x243540 (this+0x68 = its CChar) / thunk 0x244620 (this-8: +0x60) call DrawChar
     // themselves while the model fades in/out (fully shown it goes through CChar::Draw above).
-    bool castIsRestored(uint8_t *rdram, uint32_t chara)
-    {
-        uint16_t cast = 0;
-        if (chara >= 0x100000u && chara < 0x1FFFFF0u)
-            std::memcpy(&cast, rdram + chara + 0x30u, 2);
-        if (cast >= 10000u || cast == 0u)
-            return false;
-        for (size_t i = 0; i < kCutCount; ++i)
-            if (g_cutRosterHasModel[i] && kCutRoster[i].id == cast / 100u)
-                return true;
-        return false;
-    }
     PS2Runtime::RecompiledFunction g_origMenuWrDraw[2] = {nullptr, nullptr};
     template <int I>
-    void menuWrestlerDrawRestoredGloss(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    void menuWrestlerDrawReducedGloss(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
-        uint32_t chara = 0;
-        if (self >= 0x100000u && self < 0x1FFFF00u)
-            std::memcpy(&chara, rdram + self + (I == 0 ? 0x68u : 0x60u), 4);
-        if (!castIsRestored(rdram, chara & 0x1FFFFFFu))
-            return g_origMenuWrDraw[I](rdram, ctx, runtime);
         float saved, dull = 32.0f;
         std::memcpy(&saved, rdram + 0x40F33Cu, 4);
         std::memcpy(rdram + 0x40F33Cu, &dull, 4);
@@ -236,28 +217,40 @@ namespace
         if (code < 10000u && g_cutEntranceCodes.count(static_cast<uint16_t>(entrance)))
             SET_GPR_U32(ctx, 2, entrance);
     }
-    // Shirt tear: CSd5EventData::InitEventSystem 0x2ad340 (a0 = this) calls SetDressCast(code - code%10 + 2) after the
-    // entrance cast when member byte +0x155 is set (8 members of 0xd4 bytes from this+0x88, u16 cast code at +0).
-    // Modern Hogan (0x20) never gets that byte, so his entrance gear stays on after the tear. Set it for him when the
-    // after-tear pack /EMD2/32A2 is a loose file (MODS\PAC\EMD2\3202/3212/3222 = copies of his ring packs 32A0).
+    // Hogan's entrance shirt tear: InitEventSystem normally switches to the XXX2
+    // after-tear dress only when the event member flag at +0x155 is set. Modern
+    // Hogan's 32xx cast entries do not set it, so the entrance gear remains on.
+    // Enable the switch only when the matching loose after-tear pack exists.
     PS2Runtime::RecompiledFunction g_origInitEventSystem = nullptr;
     void initEventSystemShirtTear(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
-        for (uint32_t k = 0; self && k < 8; ++k)
+        const uint32_t event = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5]));
+        // Ghidra: InitEventSystem selects a member through this+0x728[event], not member[event].
+        // The old first-eight scan missed Hogan's selected member and never armed SetDressCast.
+        if (self && event < 16u && self + 0x728u + event * 4u < 0x2000000u)
         {
-            uint8_t *const m = rdram + self + 0x88u + k * 0xD4u;
-            uint16_t code;
-            std::memcpy(&code, m, 2);
-            if (code / 100u != 0x20u || code >= 10000u)
-                continue;
-            char key[8];
-            std::snprintf(key, sizeof(key), "%04u", code - code % 10u + 2u);
-            std::error_code ec;
-            if (std::filesystem::exists(std::string("MODS/PAC/EMD2/") + key, ec) && !m[0x155 - 0x88])
+            uint32_t selected = 0;
+            std::memcpy(&selected, rdram + self + 0x728u + event * 4u, 4);
+            const uint32_t member = self + 0x88u + selected * 0xD4u;
+            if (selected < 32u && member + 0xCEu < 0x2000000u)
             {
-                m[0x155 - 0x88] = 1;
-                std::fprintf(stderr, "[entrance] shirt tear on for cast %u (dress %s)%c", code, key, 10);
+                uint16_t code = 0;
+                std::memcpy(&code, rdram + member, 2);
+                std::fprintf(stderr, "[entrance] InitEventSystem event %u member %u cast %u dress flag %u%c", event,
+                             selected, unsigned(code), unsigned(rdram[member + (0x155u - 0x88u)]), 10);
+                if (false && code / 100u == 0x20u && code < 10000u) // superseded by enableHoganDress (IsDress table)
+                {
+                    char key[8];
+                    std::snprintf(key, sizeof(key), "%04u", code - code % 10u + 2u);
+                    std::error_code ec;
+                    if (std::filesystem::exists(std::string("MODS/PAC/EMD2/") + key, ec))
+                    {
+                        rdram[member + (0x155u - 0x88u)] = 1;
+                        std::fprintf(stderr, "[entrance] shirt tear armed: event %u member %u cast %u dress %s%c",
+                                     event, selected, unsigned(code), key, 10);
+                    }
+                }
             }
         }
         g_origInitEventSystem(rdram, ctx, runtime);
@@ -279,10 +272,47 @@ namespace
         }
     }
     PS2Runtime::RecompiledFunction g_origGetCharaGameProp = nullptr;
+    // CSd5EventData::IsDress 0x2af300 returns byte 0x41B5C0[id * 6 + attire]: 1 = the attire has an entrance dress
+    // (XXX2 pack) that SetSuperStarData arms (+0x155) and the shirt tear removes. Stock sets it for Legend Hogan
+    // (78) only; give Modern Hogan's attire 0 the same flag when its dress pack (EMD2\3202) is installed.
+    void enableHoganDress(uint8_t *rdram)
+    {
+        static const bool hasDress = std::filesystem::exists("MODS/PAC/EMD2/3202");
+        if (hasDress)
+            rdram[0x41B5C0u + 0x20u * 6u + 0u] = 1;
+        // Legend Hogan (0x4E) is a restored cut slot: ch2 has his body 7800 but no dress 7802, so his stock flag made
+        // the entrance ask for a missing pack -> CFile::MemAllocCashPage spun forever in CachRemoveHead (hang).
+        static const bool legendDress = std::filesystem::exists("MODS/PAC/EMD2/7802");
+        if (!legendDress)
+            rdram[0x41B5C0u + 0x4Eu * 6u + 0u] = 0;
+        static bool logged = false;
+        if (!logged)
+        {
+            logged = true;
+            uint16_t modern = 0, legend = 0;
+            std::memcpy(&modern, rdram + 0x4C0F54u + 0x20u * 0x170u + 0xECu, 2);
+            std::memcpy(&legend, rdram + 0x4C0F54u + 0x4Eu * 0x170u + 0xECu, 2);
+            std::fprintf(stderr, "[entrance] event no: modern Hogan %u, legend Hogan %u%c", modern, legend, 10);
+        }
+    }
     void getCharaGamePropCutRoster(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        enableHoganDress(rdram);
         restoreCutRoster(rdram);
         g_origGetCharaGameProp(rdram, ctx, runtime);
+    }
+    // Season's IsSeasonEntry reads the character type directly from the global
+    // property table, so it can run before GetCharaGameProp has restored the NPCs.
+    PS2Runtime::RecompiledFunction g_origIsSeasonEntry = nullptr;
+    void isSeasonEntryCutRoster(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t id = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0xFFu;
+        restoreCutRoster(rdram);
+        g_origIsSeasonEntry(rdram, ctx, runtime);
+        // The commentator/NPC profiles have no Season story/player data. Exposing them here reaches the match loader
+        // and hangs on a black screen (verified with Jerry Lawler). Keep them in Exhibition/CAM but not Season.
+        if (id == 50u || id == 52u || id == 53u || id == 54u || id == 55u || id == 65u)
+            SET_GPR_U32(ctx, 2, 0u);
     }
 
     // Select-list expansion. The character select list is MENU/CHSL: kStockSelect 0x80-byte records (+2 s16 roster id,
@@ -1485,6 +1515,8 @@ namespace
     // 10000 + (id - 0x56) * 100 for the created wrestlers. Finkel speaks when the entrance starts playing.
     PS2Runtime::RecompiledFunction g_origSetEvent = nullptr, g_origEventPlay = nullptr;
     std::atomic<int> g_pendingOrder{-1};
+    std::array<uint16_t, 8> g_entranceCast = {25500u, 25500u, 25500u, 25500u,
+                                               25500u, 25500u, 25500u, 25500u};
     void commentarySetEvent(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         g_pbpRdram = rdram;
@@ -1495,6 +1527,8 @@ namespace
         g_origSetEvent(rdram, ctx, runtime);
         if (type == 2u && order < 8u)
             std::fprintf(stderr, "[hctp-pbp] entrance #%u set up%c", order, 10);
+        if (type == 2u && order == 0u)
+            hctpCommentaryResetEntrances();
         g_pendingOrder = (type == 2u && order < 8u) ? int(order) : -1;
     }
     void commentaryEventPlay(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -1507,15 +1541,52 @@ namespace
         const int order = g_pendingOrder.exchange(-1);
         if (order < 0)
             return;
-        // the cast slot is only filled by now (at SetEvent time it can still hold 25500 = empty)
+        // Some events clear the live cast table before Play. GetEntranceEventNoFromSystem sees the authoritative
+        // value earlier, so use that captured value when the live slot has already become empty.
+        if (order == 0)
+        {
+            uint32_t present = 0;
+            for (uint32_t i = 0; i < 8u; ++i)
+            {
+                uint16_t candidate = 0;
+                std::memcpy(&candidate, rdram + 0x4921CAu + i * 0x20u, 2);
+                if (candidate >= 25500u)
+                    candidate = g_entranceCast[i];
+                if (candidate < 25500u)
+                    ++present;
+            }
+            hctpCommentarySetTagMatch(present > 2u ? 1u : 0u);
+            hctpCommentarySetTeamSize(present >= 6u ? 3u : 2u);
+            // GetRule() returns the live HCTP match-rule object at 0x4920C0;
+            // its first byte is the eRuleType used by the game's rule helpers.
+            hctpCommentarySetMatchRule(rdram[0x4920C0u]);
+        }
         uint16_t code = 0;
         std::memcpy(&code, rdram + 0x4921CAu + uint32_t(order) * 0x20u, 2);
+        if (code >= 25500u)
+        {
+            code = g_entranceCast[uint32_t(order)];
+            std::fprintf(stderr, "[hctp-pbp] entrance #%d: cached cast slot -> %u%c", order, code, 10);
+        }
         if (code >= 25500u && order > 0)
         {
-            // later entrants: the entrance's cast list can hold the one walking out in slot 0 (seen: Undertaker as
-            // entrance #1 with slot 1 still 25500); the engine ignores a repeat of an entrant already announced
-            std::memcpy(&code, rdram + 0x4921CAu, 2);
-            std::fprintf(stderr, "[hctp-pbp] entrance #%d: own cast slot empty, slot 0 = %u%c", order, code, 10);
+            // Some entrance events leave their own slot empty. Pick the first present cast that is not already
+            // announced instead of blindly reusing slot 0 (which duplicated Bubba for the Dudleys).
+            for (uint32_t i = 0; i < 8u && code >= 25500u; ++i)
+            {
+                uint16_t candidate = 0;
+                std::memcpy(&candidate, rdram + 0x4921CAu + i * 0x20u, 2);
+                bool already = false;
+                for (int j = 0; j < order; ++j)
+                {
+                    uint16_t prior = 0;
+                    std::memcpy(&prior, rdram + 0x4921CAu + uint32_t(j) * 0x20u, 2);
+                    already = already || (candidate == prior);
+                }
+                if (candidate < 25500u && !already)
+                    code = candidate;
+            }
+            std::fprintf(stderr, "[hctp-pbp] entrance #%d: resolved cast slot -> %u%c", order, code, 10);
         }
         if (code >= 25500u)
         {
@@ -1745,8 +1816,12 @@ namespace
         g_origGetEntranceEventNo(rdram, ctx, runtime);
         if (order >= 8)
             return;
+        if (order == 0)
+            g_entranceCast.fill(25500u);
         uint32_t season; std::memcpy(&season, rdram + self + order * 0xD4u + 0x14Cu, 4);
         uint16_t code; std::memcpy(&code, rdram + 0x4921CAu + order * 0x20u, 2);
+        if (code < 25500u)
+            g_entranceCast[order] = code;
         if (season != 0 || code >= 10000u)
             return;
         const uint32_t id = code / 100u, attire = (code / 10u) % 10u;
@@ -2419,6 +2494,7 @@ namespace
     // Movie AFS partitions: 5-8 = MOVIE/NMV000-003.afs, 9 = MOVIE/LOGOS.afs; credits = movie/credits.sfd by name.
     constexpr uint32_t kSfdInfo = 0x525140u, kSfdStride = 0x1ecu;
     bool g_movieNative[4] = {};
+    bool g_movieNativeImportedOnly = false;
     PS2Runtime::RecompiledFunction g_mvOrigPlayAfs, g_mvOrigPlayName, g_mvOrigStop, g_mvOrigPause, g_mvOrigContinue,
         g_mvOrigGetStat, g_mvOrigLoadImage;
 
@@ -2452,9 +2528,11 @@ namespace
         static const char *files[] = {"MOVIE/NMV000.AFS", "MOVIE/NMV001.AFS", "MOVIE/NMV002.AFS", "MOVIE/NMV003.AFS", "MOVIE/LOGOS.AFS"};
         if (ch >= 4u || part < 5u || part > 9u)
             return false;
+        const std::string *imported = hostMediaPath('V', part, fid);
+        if (g_movieNativeImportedOnly && !imported)
+            return false; // stock movies retain their working Sofdec/interlace path
         hctpMovieStop(static_cast<int>(ch));
         makePath3Tag(rdram, ctx, runtime, ch);
-        const std::string *imported = hostMediaPath('V', part, fid);
         if (!hctpMovieOpen(static_cast<int>(ch), imported ? imported->c_str() : files[part - 5u],
                            imported ? -1 : static_cast<int>(fid), loop != 0u))
             return false;
@@ -2477,6 +2555,7 @@ namespace
             returnValue(ctx, 1);
             return;
         }
+        if (g_movieNative[ch & 3u]) nativeStop(rdram,ch & 3u);
         g_movieNative[ch & 3u] = false;
         g_mvOrigPlayAfs(rdram, ctx, runtime);
     }
@@ -2491,6 +2570,7 @@ namespace
             returnValue(ctx, 1);
             return;
         }
+        if (g_movieNative[ch & 3u]) nativeStop(rdram,ch & 3u);
         g_movieNative[ch & 3u] = false;
         g_cmpOrigPlayAfs(rdram, ctx, runtime);
     }
@@ -2521,6 +2601,12 @@ namespace
     void mvPlayName(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // CADX_CTRL::PlayByName 0x1598b0
     {
         const uint32_t ch = optArg(ctx, 4), name = optArg(ctx, 5), loop = optArg(ctx, 6);
+        if (g_movieNativeImportedOnly)
+        {
+            if (g_movieNative[ch & 3u]) nativeStop(rdram,ch & 3u);
+            g_mvOrigPlayName(rdram,ctx,runtime);
+            return;
+        }
         std::string path(reinterpret_cast<const char *>(optP(rdram, name)));
         if (const size_t colon = path.find(':'); colon != std::string::npos)
             path = path.substr(colon + 1);
@@ -2621,8 +2707,9 @@ namespace
             guestCall(rdram, ctx, runtime, 0x103120u, {dmaCh, pkt});              // sceDmaSend
         }
     }
-    void installNativeMovies(PS2Runtime &runtime)
+    void installNativeMovies(PS2Runtime &runtime, bool importedOnly = false)
     {
+        g_movieNativeImportedOnly = importedOnly;
         bool ok = true;
         auto hook = [&](uint32_t addr, PS2Runtime::RecompiledFunction &orig, PS2Runtime::RecompiledFunction fn) {
             orig = runtime.lookupFunction(addr);
@@ -2639,7 +2726,8 @@ namespace
         hook(0x1b0c30u, g_cmpOrigStop, cmpStop);
         hook(0x1b0f60u, g_cmpOrigPause, cmpPause);
         hook(0x1b0f70u, g_cmpOrigContinue, cmpContinue);
-        std::cerr << "[nmovie] native movies (FFmpeg) " << (ok ? "on" : "FAILED") << std::endl;
+        std::cerr << "[nmovie] native movies (FFmpeg) " << (ok ? "on" : "FAILED")
+                  << (importedOnly ? " (imported TitanTrons only; stock movies use Sofdec)" : " (all movies)") << std::endl;
     }
 
 
@@ -2809,8 +2897,18 @@ namespace
               runtime.replaceFunction(0x123570u, libcFreeR) && runtime.replaceFunction(0x126c20u, libcReallocR)))
             std::cerr << "[heap] libc _r allocator override FAILED" << std::endl;
         const std::string moviesMode = std::getenv("HCTP_MOVIES") ? std::getenv("HCTP_MOVIES") : "";
+        // Host catalog entries are loose MPEG files, not entries in the stock AFS.
+        // Legacy launchers used =1 and sent those virtual entries to Sofdec -> black entrances.
+        bool catalogHasVideo = false;
+        {
+            std::ifstream catalog("HOST_MEDIA.txt");
+            for (std::string line; std::getline(catalog,line);)
+                if (line.size()>1 && line[0]=='V' && line[1]==' ') { catalogHasVideo=true; break; }
+        }
         if (moviesMode == "native")
             installNativeMovies(runtime);
+        else if (moviesMode == "hybrid" || (moviesMode == "1" && catalogHasVideo))
+            installNativeMovies(runtime,true);
         else if (moviesMode.empty() || moviesMode == "0")
         {
             const bool ok = runtime.replaceFunction(0x1377c0u, titleMovieLoopEndActSkip) &&
@@ -2858,6 +2956,8 @@ namespace
             const int slots = scanCutRosterModels();
             const bool ok = slots == 0 || (g_origGetCharaGameProp &&
                                            runtime.replaceFunction(0x12cec0u, getCharaGamePropCutRoster));
+            if (slots > 0 && (g_origIsSeasonEntry = runtime.lookupFunction(0x12d050u)) != nullptr)
+                runtime.replaceFunction(0x12d050u, isSeasonEntryCutRoster);
             std::cerr << "[hctp] cut roster restore: " << slots << " slots with models"
                       << (ok ? "" : " (hook FAILED)") << std::endl;
             if (slots > 0)
@@ -2865,23 +2965,24 @@ namespace
             if (!g_cutEntranceCodes.empty() && (g_origGetEntranceCastNo = runtime.lookupFunction(0x2af480u)) != nullptr &&
                 runtime.replaceFunction(0x2af480u, getEntranceCastNoCutRoster))
                 std::cerr << "[hctp] cut roster entrance attires: " << g_cutEntranceCodes.size() << std::endl;
-            if ((g_origInitEventSystem = runtime.lookupFunction(0x2ad340u)) != nullptr)
-                runtime.replaceFunction(0x2ad340u, initEventSystemShirtTear);
         }
+        if ((g_origInitEventSystem = runtime.lookupFunction(0x2ad340u)) != nullptr &&
+            runtime.replaceFunction(0x2ad340u, initEventSystemShirtTear))
+            std::cerr << "[hctp] Hogan shirt-tear dress routing on" << std::endl;
         if (!std::getenv("HCTP_INTERLACE_OFFSET"))
         {
             runtime.replaceFunction(0x102660u, gsSetHalfOffsetEven);
             runtime.replaceFunction(0x1028c8u, gsSetHalfOffsetEven);
             std::cerr << "[hctp] no-interlace half offset on" << std::endl;
         }
-        if (!std::getenv("HCTP_RESTORED_GLOSS") && (g_origCharDraw = runtime.lookupFunction(0x1bb200u)) != nullptr)
-            runtime.replaceFunction(0x1bb200u, charDrawRestoredGloss);
-        if (!std::getenv("HCTP_RESTORED_GLOSS"))
+        if (!std::getenv("HCTP_FULL_GLOSS") && (g_origCharDraw = runtime.lookupFunction(0x1bb200u)) != nullptr)
+            runtime.replaceFunction(0x1bb200u, charDrawReducedGloss);
+        if (!std::getenv("HCTP_FULL_GLOSS"))
         {
             if ((g_origMenuWrDraw[0] = runtime.lookupFunction(0x243540u)) != nullptr)
-                runtime.replaceFunction(0x243540u, menuWrestlerDrawRestoredGloss<0>);
+                runtime.replaceFunction(0x243540u, menuWrestlerDrawReducedGloss<0>);
             if ((g_origMenuWrDraw[1] = runtime.lookupFunction(0x244620u)) != nullptr)
-                runtime.replaceFunction(0x244620u, menuWrestlerDrawRestoredGloss<1>);
+                runtime.replaceFunction(0x244620u, menuWrestlerDrawReducedGloss<1>);
         }
         if (std::getenv("HCTP_ROPELOG") && (g_origDrawRopeShadow = runtime.lookupFunction(0x217c50u)) != nullptr)
             runtime.replaceFunction(0x217c50u, drawRopeShadowLogged);

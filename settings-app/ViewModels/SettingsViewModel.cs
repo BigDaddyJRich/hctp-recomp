@@ -125,7 +125,7 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private double _sharpening;
     [ObservableProperty] private bool _highPoly;
     [ObservableProperty] private bool _sharp2D;
-    /// <summary>The fight camera: 0 Def Jam Vendetta (the game's own), 1 WWF No Mercy, 2 Wrestle Kingdom 2.</summary>
+    /// <summary>The fight camera: 0 SmackDown! Here Comes the Pain (the game's own), 1 WWF No Mercy, 2 Wrestle Kingdom 2.</summary>
     [ObservableProperty] private int _cameraIndex;
     [ObservableProperty] private bool _checkUpdates = true;
     // Sound

@@ -10,9 +10,9 @@
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Assets\icon.ico</ApplicationIcon>
     <AvaloniaUseCompiledBindingsByDefault>true</AvaloniaUseCompiledBindingsByDefault>
-    <AssemblyName>Def Jam Vendetta Recompiled Settings</AssemblyName>
+    <AssemblyName>HCTP Recompiled Settings</AssemblyName>
     <RootNamespace>VendettaSettings</RootNamespace>
-    <Product>Def Jam Vendetta Recompiled</Product>
+    <Product>HCTP Recompiled</Product>
     <Version>0.2.0</Version>
   </PropertyGroup>
 

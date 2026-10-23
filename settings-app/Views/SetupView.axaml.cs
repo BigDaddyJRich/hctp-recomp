@@ -41,7 +41,7 @@ public partial class SetupView : UserControl
             return;
         var files = await storage.OpenFilePickerAsync(new FilePickerOpenOptions
         {
-            Title = "Your Def Jam Vendetta disc (USA, SLUS-20639)",
+            Title = "Your SmackDown! Here Comes the Pain disc (USA, SLUS-20787)",
             AllowMultiple = false,
             FileTypeFilter = new[]
             {

@@ -405,7 +405,7 @@ public partial class SetupViewModel : ObservableObject
     /// <summary>For pictures (--shot setup2): the build page part-way.</summary>
     public void ShowSample(double percent, bool done)
     {
-        DiscPath = @"C:\Games\Discs\Def Jam Vendetta (USA).chd";
+        DiscPath = @"C:\Games\Discs\WWE SmackDown! Here Comes the Pain (USA).chd";
         DiscOk = true;
         Page = 2;
         _step = done ? Steps.Count : 4;
@@ -429,7 +429,7 @@ public partial class SetupViewModel : ObservableObject
     public static readonly string[] SampleDetails =
     {
         "FAILED: ps2xRuntime/CMakeFiles/ps2EntryRunner.dir/src/runner/out_00412.cpp.obj",
-        @"C:\Games\Def Jam Vendetta Recompiled\files\source\PS2Recomp\ps2xRuntime\src\runner\out_00412.cpp(18211): fatal error C1060: compiler is out of heap space",
+        @"C:\Games\HCTP Recompiled\files\source\PS2Recomp\ps2xRuntime\src\runner\out_00412.cpp(18211): fatal error C1060: compiler is out of heap space",
         "ninja: build stopped: subcommand failed.",
     };
 }

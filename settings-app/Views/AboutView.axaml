@@ -13,7 +13,7 @@
                 <Border Classes="capline" Margin="0,8,0,8" />
                 <Grid ColumnDefinitions="150,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="8">
                     <TextBlock Classes="key" Text="Name" VerticalAlignment="Center" />
-                    <TextBlock Grid.Column="1" Classes="mono" Text="Def Jam Vendetta Recompiled" VerticalAlignment="Center" />
+                    <TextBlock Grid.Column="1" Classes="mono" Text="HCTP Recompiled" VerticalAlignment="Center" />
                     <TextBlock Grid.Row="1" Classes="key" Text="Version" VerticalAlignment="Center" />
                     <Border Grid.Row="1" Grid.Column="1" Classes="tag" HorizontalAlignment="Left"><TextBlock Text="{Binding Version}" /></Border>
                     <TextBlock Grid.Row="2" Classes="key" Text="Made by" VerticalAlignment="Center" />
@@ -78,7 +78,7 @@
                 <Grid ColumnDefinitions="150,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="8">
                     <TextBlock Classes="key" Text="Built from" />
                     <TextBlock Grid.Column="1" Classes="mono" TextWrapping="Wrap"
-                               Text="{Binding DiscTitle, StringFormat='{}{0} · SLUS-20639'}" />
+                               Text="{Binding DiscTitle, StringFormat='{}{0} · SLUS-20787'}" />
                     <TextBlock Grid.Row="1" Classes="key" Text="The game" />
                     <TextBlock Grid.Row="1" Grid.Column="1" Classes="mono" TextWrapping="Wrap" Text="{Binding GameExeName}" />
                     <TextBlock Grid.Row="2" Classes="key" Text="Folder" />

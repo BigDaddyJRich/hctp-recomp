@@ -3,25 +3,25 @@ using System.Diagnostics;
 namespace VendettaSettings.Services;
 
 /// <summary>Where everything is. <see cref="Root"/> = the install folder (this program and the read-me);
-/// <see cref="Data"/> = where the rest lives: the game program, the game's files from the disc (<c>game\SLUS_206.39</c>),
-/// its memory card (<c>game\mc0</c>), <c>settings.toml</c>, <c>logs\</c> and the build kit. A player's install keeps
+/// <see cref="Data"/> = where the rest lives: the game program, the game's files from the disc (<c>game\SLUS_207.87</c>),
+/// its PC save folder (<c>Documents\HERE COMES THE PAIN\Saves</c>), <c>settings.toml</c>, <c>logs\</c> and the build kit. A player's install keeps
 /// those in <c>files\</c> so the top of the folder stays simple; in the repository (a developer build, this program
 /// deep in <c>settings-app\bin\…</c>) both are its root. Found by looking up from this program's folder;
 /// VENDETTA_ROOT=&lt;folder&gt; picks it by hand.</summary>
 public sealed class GameFolder
 {
-    public const string Serial = "SLUS-20639";
+    public const string Serial = "SLUS-20787";
     public const string DataFolder = "files";
-    public const string GameExeName = "Def Jam Vendetta Recompiled.exe";
+    public const string GameExeName = "HCTP Recompiled.exe";
 
     public string Root { get; }
     public string Data { get; }
     public string SettingsPath => Path.Combine(Data, "settings.toml");
-    public string ElfPath => Path.Combine(Data, "game", "SLUS_206.39");
-    public string SavesPath => Path.Combine(Data, "game", "mc0");
+    public string ElfPath => Path.Combine(Data, "game", "SLUS_207.87");
+    public string SavesPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "HERE COMES THE PAIN", "Saves");
     public string LogsPath => Path.Combine(Data, "logs");
     public bool HasGame => File.Exists(ElfPath);
-    public bool HasSave => Directory.Exists(Path.Combine(SavesPath, "BASLUS-20639GAMEDATA"));
+    public bool HasSave => Directory.Exists(Path.Combine(SavesPath, "BASLUS-20787GAMEDATA"));
 
     /// <summary>The game program: the newest of the places a build puts it (a player's install: in <c>files\</c>).</summary>
     public string? GameExe =>
@@ -63,7 +63,7 @@ public sealed class GameFolder
         }
     }
 
-    /// <summary>Is it the right disc (the USA Def Jam Vendetta, SLUS-20639)? Null = yes, else why not.</summary>
+    /// <summary>Is it the right disc (the USA SmackDown! Here Comes the Pain, SLUS-20787)? Null = yes, else why not.</summary>
     public async Task<string?> CheckDiscAsync(string disc)
     {
         var start = PythonStart(Path.Combine(SourceRoot, "tools", "prepare_disc.py"), "--check", disc);
@@ -73,7 +73,7 @@ public sealed class GameFolder
             var output = await process.StandardOutput.ReadToEndAsync();
             var errors = await process.StandardError.ReadToEndAsync();
             await process.WaitForExitAsync();
-            if (process.ExitCode == 0 && output.Contains("ok SLUS-20639"))
+            if (process.ExitCode == 0 && output.Contains("ok SLUS-20787"))
                 return null;
             var why = (errors.Trim().Split('\n').LastOrDefault() ?? "").Trim();
             return why.Length > 0 ? why : "This file couldn't be read as a disc.";
@@ -125,11 +125,11 @@ public sealed class GameFolder
     /// <paramref name="folder"/>) the game's and this program's. Returns what went wrong, or null.</summary>
     public string? CreateShortcuts(bool desktop, string? folder = null)
     {
-        var settings = Environment.ProcessPath ?? Path.Combine(Root, "Def Jam Vendetta Recompiled Settings.exe");
+        var settings = Environment.ProcessPath ?? Path.Combine(Root, "HCTP Recompiled Settings.exe");
         try
         {
             if (GameExe is { } exe && Data != Root)
-                Shortcut(Path.Combine(Root, "Def Jam Vendetta Recompiled.lnk"), exe, Data, settings);
+                Shortcut(Path.Combine(Root, "HCTP Recompiled.lnk"), exe, Data, settings);
         }
         catch (Exception ex)
         {
@@ -141,8 +141,8 @@ public sealed class GameFolder
         {
             var where = folder ?? Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory);
             if (GameExe is { } exe)
-                Shortcut(Path.Combine(where, "Def Jam Vendetta Recompiled.lnk"), exe, Data, settings);
-            Shortcut(Path.Combine(where, "Def Jam Vendetta Recompiled Settings.lnk"), settings, Root, settings);
+                Shortcut(Path.Combine(where, "HCTP Recompiled.lnk"), exe, Data, settings);
+            Shortcut(Path.Combine(where, "HCTP Recompiled Settings.lnk"), settings, Root, settings);
             return null;
         }
         catch (Exception ex)
@@ -164,7 +164,7 @@ public sealed class GameFolder
 
     /// <summary>The game's program names (a player's install, a developer build); one running = PLAY is off, so two
     /// copies never share the memory card.</summary>
-    private static readonly string[] GameProcessNames = { "Def Jam Vendetta Recompiled", "ps2EntryRunner" };
+    private static readonly string[] GameProcessNames = { "HCTP Recompiled", "ps2EntryRunner" };
 
     public const string AlreadyRunning = "The game is already running.";
 
@@ -185,9 +185,9 @@ public sealed class GameFolder
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir != null; dir = dir.Parent)
         {
             var files = Path.Combine(dir.FullName, DataFolder);
-            if (Directory.Exists(Path.Combine(files, "source", "tools")) || File.Exists(Path.Combine(files, "game", "SLUS_206.39")))
+            if (Directory.Exists(Path.Combine(files, "source", "tools")) || File.Exists(Path.Combine(files, "game", "SLUS_207.87")))
                 return new GameFolder(dir.FullName, files); // a player's install
-            if (File.Exists(Path.Combine(dir.FullName, "game", "SLUS_206.39")) ||
+            if (File.Exists(Path.Combine(dir.FullName, "game", "SLUS_207.87")) ||
                 File.Exists(Path.Combine(dir.FullName, "settings.toml")))
                 return new GameFolder(dir.FullName, dir.FullName); // the repository
         }
@@ -217,9 +217,9 @@ public sealed class GameFolder
         // program: in fullscreen it then couldn't take the screen over. This program was just clicked, so it may let
         // the game come to the front.
         AllowSetForegroundWindow(AsfwAny);
-        var start = new ProcessStartInfo(exe, $"\"{ElfPath}\"")
+        var start = new ProcessStartInfo(exe, "SLUS_207.87")
         {
-            WorkingDirectory = Data,
+            WorkingDirectory = Path.Combine(Data, "game"), // HCTP reads its files relative to the game folder
             UseShellExecute = true,
         };
         game = Process.Start(start);
