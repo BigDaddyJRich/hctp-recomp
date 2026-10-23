@@ -14,13 +14,22 @@ it (the recompiled C++ in `PS2Recomp/ps2xRuntime/src/runner/` and `generated/`) 
 
 ## Current status (October 2026)
 
-Working:
-- Boot, ATTENTION / memory-card screens, real Sofdec movies (intro, menus) with ADX audio
-- All menus, character select, Create-a-Moveset, Season mode (cutscenes, locker room, backstage)
-- Entrances and matches in the ring (exhibition, season, attract-mode demo)
-- Music, commentary/crowd audio, **menu and in-game sound effects** (native libsdr -> the game's real sdrdrv IRX)
-- Memory-card screens and save/load paths are working in the native test path; saves are stored in the PC runtime's
-  user-data area rather than requiring a PCSX2 card image.
+Working in the native Windows build:
+
+- The recompiled game runs natively on Windows. The game code is recompiled C++, the graphics path is GPU-backed
+  through paraLLEl-GS, and the audio path runs through the native runtime/IOP integration rather than PCSX2.
+- Native video playback works for the game's Sofdec movies, with the game's ADX audio path available alongside the
+  native music option.
+- Native game audio works across music, commentary, crowd audio, menu sound effects, and in-match sound effects.
+- Gameplay is running at approximately 60 FPS in normal matches and menus on the tested configuration; entrance
+  playback is the remaining area with noticeable frame-rate drops.
+- Boot, loading, menus, character selection, Create-a-Moveset, Season mode, cutscenes, locker-room/backstage scenes,
+  entrances, exhibition matches, and attract-mode demonstrations are functional.
+- Commentary is playable in matches, including the HCTP commentary restoration path. The public setup plan supports
+  HCTP, Shut Your Mouth, SmackDown vs. Raw, and the public beta as the core sources, with later games as optional
+  supplements.
+- Memory-card screens and save/load paths work in the native test path. PC builds use a user-data save location rather
+  than requiring a PCSX2 memory-card image.
 - A Windows test package is produced separately from this source repository. It contains the launcher, native runner,
   optional media/mod content, and setup instructions; copyrighted game files and commentary source audio are never
   redistributed.
@@ -34,6 +43,9 @@ Fixed since the first release (Oct 13-14):
 - Optional native music (`developer/runs/run_hctp_native_audio.bat`, `HCTP_NATIVE_ADX=1`): ADX streams decoded on the PC
 - Right-channel audio timing and weak stereo separation
 - Wrestler shadow artifacts / visible triangles
+- Missing skin gloss, stray grey slabs, and crowd geometry regressions
+- Runaway VU1 programs, garbage polygons, and incomplete VU1 program coverage
+- Exhibition loading softlocks, long in-match freezes, and missing in-match hit sounds
 
 Known limitations:
 - Dots can appear in nameplates
