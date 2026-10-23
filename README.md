@@ -33,6 +33,8 @@ Working in the native Windows build:
 - A Windows test package is produced separately from this source repository. It contains the launcher, native runner,
   optional media/mod content, and setup instructions; copyrighted game files and commentary source audio are never
   redistributed.
+- PS2 modders: see [`docs/COMMENTARY_PS2_PORTING.md`](docs/COMMENTARY_PS2_PORTING.md) for the documented pack format,
+  hook addresses, and the remaining ELF code-cave work needed for original-hardware commentary.
 
 Fixed since the first release (Oct 13-14):
 - Garbled in-match HUD / season dialogue text (PSMT4HH/PSMT8H upload sizes)
