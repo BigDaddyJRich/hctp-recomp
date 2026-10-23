@@ -31,14 +31,14 @@ Fixed since the first release (Oct 13-14):
 - Runaway VU1 programs / garbage polygons (JR/JALR branch fix); all 20 VU1 programs now compiled
 - Exhibition match load softlock (IOP heap), whole-screen shimmy, 5-9 s in-match freezes, in-match hit sounds
 - Frame rate: demo match ~10 fps -> 32-44 (VU1 throughput mode, on by default; `HCTP_VU1_FAST=0` = exact)
-- Optional native music (`run_hctp_native_audio.bat`, `HCTP_NATIVE_ADX=1`): ADX streams decoded on the PC
+- Optional native music (`developer/runs/run_hctp_native_audio.bat`, `HCTP_NATIVE_ADX=1`): ADX streams decoded on the PC
+- Right-channel audio timing and weak stereo separation
+- Wrestler shadow artifacts / visible triangles
 
 Known limitations:
-- Frame rate: not yet a steady 60 in matches
-- Intro movie hangs at boot now and then (press START to skip the intro)
-- ADX music can stop after several minutes on the emulated IOP path; the native music path is still being tested
-- Right audio channel late / weak stereo separation; weak rumble
-- Shadows under the wrestlers show lines / visible triangles
+- Dots can appear in nameplates
+- Wrestlers can shake or jitter during gameplay
+- Frame-rate drops can occur during entrances
 
 Near-term plan: stabilize the public Windows test package, improve native audio and commentary coverage, and continue
 the native-renderer investigation without regressing the working paraLLEl-GS path.

@@ -16,5 +16,4 @@ run scripts are intentionally kept out of the public repository.
 - Boot, menus, Create-a-Moveset, Season, entrances, and exhibition matches are operational in the native test path.
 - Memory-card behavior is being presented as PC user-data storage rather than a PCSX2 memory-card image.
 - ParaLLEl-GS remains the working graphics backend while native-renderer work continues separately.
-- Known limitations include match frame-rate variation, occasional intro/movie timing issues, audio-channel timing,
-  and remaining shadow/material artifacts.
+- Current known issues are dots in nameplates, wrestler shaking/jitter, and frame-rate drops during entrances.
