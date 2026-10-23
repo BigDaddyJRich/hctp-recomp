@@ -6,20 +6,24 @@ compiled on your PC. The PS2 graphics chip is drawn on the GPU with Vulkan throu
 [paraLLEl-GS](https://github.com/Arntzen-Software/parallel-gs), and the IOP (sound / disc processor) runs the game's
 own IRX modules.
 
-This project is built on **[Def Jam Vendetta Recompiled](https://github.com/jcsix694/def-jam-vendetta-recomp)** by
-jcsix694 (its original README: [README_VENDETTA.md](README_VENDETTA.md)), adapted for HCTP.
+The runtime uses upstream PS2Recomp components and the paraLLEl-GS backend. HCTP-specific code and configuration live
+in the HCTP-named directories in this repository.
 
 **No game files or game code are in this repository.** You need your own copy of the game; everything generated from
 it (the recompiled C++ in `PS2Recomp/ps2xRuntime/src/runner/` and `generated/`) stays on your PC and is never committed.
 
-## Status (October 2026)
+## Current status (October 2026)
 
 Working:
 - Boot, ATTENTION / memory-card screens, real Sofdec movies (intro, menus) with ADX audio
 - All menus, character select, Create-a-Moveset, Season mode (cutscenes, locker room, backstage)
 - Entrances and matches in the ring (exhibition, season, attract-mode demo)
 - Music, commentary/crowd audio, **menu and in-game sound effects** (native libsdr -> the game's real sdrdrv IRX)
-- Memory card: existing save data is detected and offered for loading (saving not fully tested yet)
+- Memory-card screens and save/load paths are working in the native test path; saves are stored in the PC runtime's
+  user-data area rather than requiring a PCSX2 card image.
+- A Windows test package is produced separately from this source repository. It contains the launcher, native runner,
+  optional media/mod content, and setup instructions; copyrighted game files and commentary source audio are never
+  redistributed.
 
 Fixed since the first release (Oct 13-14):
 - Garbled in-match HUD / season dialogue text (PSMT4HH/PSMT8H upload sizes)
@@ -29,16 +33,15 @@ Fixed since the first release (Oct 13-14):
 - Frame rate: demo match ~10 fps -> 32-44 (VU1 throughput mode, on by default; `HCTP_VU1_FAST=0` = exact)
 - Optional native music (`run_hctp_native_audio.bat`, `HCTP_NATIVE_ADX=1`): ADX streams decoded on the PC
 
-Known issues (being worked on):
+Known limitations:
 - Frame rate: not yet a steady 60 in matches
 - Intro movie hangs at boot now and then (press START to skip the intro)
-- ADX music can stop after several minutes on the emulated IOP path (native music path being tested)
+- ADX music can stop after several minutes on the emulated IOP path; the native music path is still being tested
 - Right audio channel late / weak stereo separation; weak rumble
 - Shadows under the wrestlers show lines / visible triangles
 
-Plan: a **true native PC renderer** (Direct3D 11): the game's VU1 vertex programs translated to native code and
-drawn directly, instead of emulating the PS2's VU1 and GS. In progress on a separate branch (first model program
-already drawn natively and verified against the original); then native audio for all sounds.
+Near-term plan: stabilize the public Windows test package, improve native audio and commentary coverage, and continue
+the native-renderer investigation without regressing the working paraLLEl-GS path.
 
 ## Layout
 
@@ -52,7 +55,7 @@ already drawn natively and verified against the original); then native audio for
 
 ## Building
 
-Same toolchain as Def Jam Vendetta Recompiled (Visual Studio 2022+/MSVC x64, CMake, Ninja, Python, Vulkan-capable GPU):
+Toolchain: Visual Studio 2022+/MSVC x64, CMake, Ninja, Python, and a Vulkan-capable GPU:
 1. Put your own unmodified `SLUS_207.87` and the disc files in a folder.
 2. Recompile it with `PS2Recomp` using `config_hctp/hctp.toml` (generates the runner C++ locally).
 3. `HCTP_VU1_RANGES="0x44c6e4:0x44eb70,0x4526a4:0x452d08" python -I tools/vu1_recomp.py SLUS_207.87 generated/vu1_compiled.cpp`
@@ -62,7 +65,7 @@ Same toolchain as Def Jam Vendetta Recompiled (Visual Studio 2022+/MSVC x64, CMa
 ## Credits
 
 - [ran-j/PS2Recomp](https://github.com/ran-j/PS2Recomp) — the recompiler and runtime this is built on
-- [jcsix694/def-jam-vendetta-recomp](https://github.com/jcsix694/def-jam-vendetta-recomp) — the base project (IOP emulation, paraLLEl-GS integration, VU1 compiler, tools)
+- upstream PS2Recomp components — recompiler, runtime, IOP/SIF support, and related tooling
 - [paraLLEl-GS](https://github.com/Arntzen-Software/parallel-gs) — GS on Vulkan
 - [PCSX2](https://github.com/PCSX2/pcsx2) — hardware behaviour reference
 - BT3-Recomp, Ace Combat 5 static recompilation, NBA Street V3 recomp — techniques and references
