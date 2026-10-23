@@ -51,7 +51,8 @@ the native-renderer investigation without regressing the working paraLLEl-GS pat
 | `overrides_hctp/` | HCTP-specific runtime overrides (heap, CD search, movie hooks, native libsdr hookup, profiler) |
 | `config_hctp/` | recompiler configuration for SLUS_207.87 (function names / stub lists only) |
 | `tools/` | `vu1_recomp.py` (VU1 microcode -> C++), `autotest.ps1` (automated boot + attract-demo test with screenshots and audio dump), `audio_check.py` (stereo offset / click analysis) |
-| `run_hctp.bat` | launcher with the usual diagnostics |
+| `run_hctp.bat` | normal HCTP developer runner |
+| `developer/runs/` | optional cycle-exact, field-inversion, native-audio, and slow-VU1 diagnostic runners |
 
 ## Building
 
