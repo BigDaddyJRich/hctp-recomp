@@ -18,6 +18,14 @@ inline bool apply(uint8_t *record, const uint8_t *original, const MediaDefault &
         changed |= record[0x15e] != choice.video;
         record[0x15e] = static_cast<uint8_t>(choice.video);
     }
+    // CEventBGM::StartDoramock 0x2b6190 plays the winner's music from record+0x15b (prop+0x17b), a
+    // separate victory-music byte. Follow the entrance choice only where stock keeps the two equal.
+    if (choice.music >= 0 && choice.music <= 255 && original[0x15b] == original[0x15f] &&
+        record[0x15b] == original[0x15b])
+    {
+        changed |= record[0x15b] != choice.music;
+        record[0x15b] = static_cast<uint8_t>(choice.music);
+    }
     return changed;
 }
 }

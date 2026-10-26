@@ -25,6 +25,13 @@ void mediaDefaultPropertyCtor(uint8_t *ram,R5900Context *ctx,PS2Runtime *runtime
     if (!self || self>0x2000000u-0x190u || !character || character>0x2000000u-0x34u) return;
     uint32_t code;std::memcpy(&code,ram+character+0x30,4);
     applyMediaDefaults(ram,self+0x20u,code);
+    static unsigned logged=0;
+    if(code<8600u && logged++<40)
+    {
+        const uint8_t *orig=ram+0x4c0f54u+(code/100u)*0x170u, *rec=ram+self+0x20u;
+        std::fprintf(stderr,"[hctp] media prop %u stock win %u music %u video %u -> win %u music %u video %u%c",
+                     code,orig[0x15b],orig[0x15f],orig[0x15e],rec[0x15b],rec[0x15f],rec[0x15e],10);
+    }
 }
 
 void mediaDefaultEntranceCtor(uint8_t *ram,R5900Context *ctx,PS2Runtime *runtime)
