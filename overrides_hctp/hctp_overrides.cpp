@@ -139,6 +139,50 @@ namespace
         g_origCharDraw(rdram, ctx, runtime);
         std::memcpy(rdram + 0x40F33Cu, &saved, 4);
     }
+    // Native-model bridge probe: capture only a bounded identity record for a live
+    // CSkinModel.  This stays observational; the original VIF/VU/GS draw remains
+    // authoritative until a fingerprinted model has a verified native replacement.
+    PS2Runtime::RecompiledFunction g_origSkinModelDraw = nullptr;
+    uint32_t nativeModelFingerprint(const uint8_t *rdram, uint32_t address, uint32_t bytes)
+    {
+        if (!rdram || address > PS2_RAM_SIZE || bytes > PS2_RAM_SIZE - address)
+            return 0u;
+        uint32_t hash = 2166136261u; // FNV-1a: identity only, never a content validator.
+        for (uint32_t i = 0; i < bytes; ++i)
+            hash = (hash ^ rdram[address + i]) * 16777619u;
+        return hash;
+    }
+    void skinModelDrawDiagnostics(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t model = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_MASK;
+        if (model <= PS2_RAM_SIZE - 0xccu)
+        {
+            uint32_t skinData = 0u;
+            std::memcpy(&skinData, rdram + model + 0xc8u, sizeof(skinData));
+            skinData &= PS2_RAM_MASK;
+            if (skinData != 0u && skinData <= PS2_RAM_SIZE - 0x40u)
+            {
+                static std::array<uint32_t, 32> seen = {};
+                static size_t seenCount = 0u;
+                const auto end = seen.begin() + seenCount;
+                if (std::find(seen.begin(), end, skinData) == end && seenCount < seen.size())
+                {
+                    seen[seenCount++] = skinData;
+                    uint32_t boneCount = 0u, meta18 = 0u, meta1c = 0u, boneNames = 0u;
+                    std::memcpy(&boneCount, rdram + skinData + 0x14u, sizeof(boneCount));
+                    std::memcpy(&meta18, rdram + skinData + 0x18u, sizeof(meta18));
+                    std::memcpy(&meta1c, rdram + skinData + 0x1cu, sizeof(meta1c));
+                    std::memcpy(&boneNames, rdram + skinData + 0x20u, sizeof(boneNames));
+                    std::fprintf(stderr,
+                                 "[native-skin] model=0x%08x ymp=0x%08x bones=%u meta18=0x%08x "
+                                 "meta1c=0x%08x names=0x%08x fp40=0x%08x%c",
+                                 model, skinData, boneCount, meta18, meta1c, boneNames,
+                                 nativeModelFingerprint(rdram, skinData, 0x40u), 10);
+                }
+            }
+        }
+        g_origSkinModelDraw(rdram, ctx, runtime);
+    }
     // Select screen: MenuWrestler::Draw 0x243540 (this+0x68 = its CChar) / thunk 0x244620 (this-8: +0x60) call DrawChar
     // themselves while the model fades in/out (fully shown it goes through CChar::Draw above).
     PS2Runtime::RecompiledFunction g_origMenuWrDraw[2] = {nullptr, nullptr};
@@ -2977,6 +3021,13 @@ namespace
         }
         if (!std::getenv("HCTP_FULL_GLOSS") && (g_origCharDraw = runtime.lookupFunction(0x1bb200u)) != nullptr)
             runtime.replaceFunction(0x1bb200u, charDrawReducedGloss);
+        if (std::getenv("HCTP_NATIVE_MODEL_DIAG") &&
+            (g_origSkinModelDraw = runtime.lookupFunction(0x155dc0u)) != nullptr)
+        {
+            const bool installed = runtime.replaceFunction(0x155dc0u, skinModelDrawDiagnostics);
+            std::cerr << "[hctp] native CSkinModel identity diagnostic "
+                      << (installed ? "on" : "NOT found") << " at 0x155dc0" << std::endl;
+        }
         if (!std::getenv("HCTP_FULL_GLOSS"))
         {
             if ((g_origMenuWrDraw[0] = runtime.lookupFunction(0x243540u)) != nullptr)
