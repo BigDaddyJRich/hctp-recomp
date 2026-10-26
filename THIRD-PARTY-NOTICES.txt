@@ -1,13 +1,12 @@
-Def Jam Vendetta Recompiled
-Copyright (C) 2026 jcsix694 (@jcsix on X)
+HCTP recompilation
+Copyright (C) 2026 HCTP recompilation contributors
 
 This program is free software: you can redistribute it and/or modify it under the terms of the GNU General Public
 License version 3 (the file LICENSE). It is distributed WITHOUT ANY WARRANTY; without even the implied warranty of
 MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the GNU General Public License for more details.
 
-Def Jam Vendetta is (c) its owners. This project includes none of its files or code: each player builds the game from
-their own disc. Its name, logo and the artwork based on it (settings-app\Assets) belong to their owners and are not
-covered by this project's licence.
+WWE SmackDown! Here Comes the Pain is copyrighted by its owners. This project includes none of its game files or
+code; each player supplies their own legally obtained game copy.
 
 
 THIRD-PARTY PARTS
@@ -75,8 +74,8 @@ FFmpeg (the game's movies), the LGPL build from https://github.com/System233/ffm
   OpenEXR / Imath), each under its own licence.
 
 
-Def Jam Vendetta Recompiled Settings (the settings program)
-----------------------------------------
+Launcher/settings components
+-----------------------------
 
 Avalonia - Copyright (c) .NET Foundation and Contributors - MIT - https://github.com/AvaloniaUI/Avalonia
 .NET runtime - Copyright (c) .NET Foundation and Contributors - MIT - https://github.com/dotnet/runtime

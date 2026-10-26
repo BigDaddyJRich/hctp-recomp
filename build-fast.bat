@@ -1,5 +1,5 @@
 @echo off
-rem Builds the recompiled Vendetta WITHOUT link-time optimisation (out\fast): optimised per file, quick to relink,
+rem Builds the recompiled HCTP runner WITHOUT link-time optimisation (out\fast): optimised per file, quick to relink,
 rem so fix-and-retry rounds take minutes. build-runtime.bat = the full-speed (LTCG) build, ~20 min link.
 rem /DEBUG gives the exe a PDB (function names for the VENDETTA_HOSTPROF=2 code-address profiler); /OPT:REF /OPT:ICF as without it.
 call "C:\Program Files\Microsoft Visual Studio\18\Community\VC\Auxiliary\Build\vcvars64.bat" >nul

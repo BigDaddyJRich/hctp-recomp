@@ -15,7 +15,7 @@ SLUS_*
 # mods: animations and other content converted from games (yours, never committed)
 /mods/
 
-# generated config (tools/make_config.py) — the inputs in config/ are committed
+# generated config (tools/make_config.py) — generated files are local-only
 config/vendetta.toml
 config/vendetta_functions.csv
 
@@ -34,5 +34,5 @@ __pycache__/
 # OS
 Thumbs.db
 .DS_Store
-# release zips (make-release.bat)
+# release zips and local test packages
 /dist/
