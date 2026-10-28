@@ -11,7 +11,9 @@ First public build of HCTP Recompiled: bring your own USA disc (SLUS-20787); the
 - D3D11 renderer with 1-6x sharper picture, native title movies, 60 fps matches and entrances.
 - Fixed: wrestler/referee shaking, nameplate holes, rope shadows, pyro slowdowns (HBK, Goldberg, Triple H),
   CAW forehead band, THQ logo hang.
-- New: PPV mode (create a card of up to 5 matches and play it back to back), restored menu options.
+- PPV MODE and ONLINE are on the main menu as early proofs of concept only - neither works as a real mode yet.
+  PPV mode is further along (a test card of matches can be made and played) but is unfinished and may crash;
+  ONLINE does nothing yet.
 - Optional content and commentary packs are shared separately (Discord).
 
 Known issues: HBK ice-cave entrance slowdown, Demo -> Start black screen, see-through hair on some models.
