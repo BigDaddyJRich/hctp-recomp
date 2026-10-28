@@ -18,13 +18,13 @@ public sealed class GameFolder
     public string Data { get; }
     public string SettingsPath => Path.Combine(Data, "game", "settings.toml"); // the game reads it beside ps2EntryRunner.exe
     public string ElfPath => Path.Combine(Data, "game", "SLUS_207.87");
-    public string SavesPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "HERE COMES THE PAIN", "Saves");
+    public string SavesPath => Path.Combine(Environment.GetEnvironmentVariable("USERPROFILE") ?? "", "Documents", "HCTP"); // where the game writes (ps2_runtime mcRoot)
     public string LogsPath => Path.Combine(Data, "logs");
     public bool HasGame => File.Exists(ElfPath);
     // optional Discord packs, unzipped into game\ (tools\make_discord_packs.py); the game picks them up on its own
     public bool HasContentPack => File.Exists(Path.Combine(Data, "game", "HOST_MEDIA.txt")) && Directory.Exists(Path.Combine(Data, "game", "MODS"));
     public bool HasCommentaryPack => File.Exists(Path.Combine(Data, "game", "BGM", "FINKEL.afs"));
-    public bool HasSave => Directory.Exists(Path.Combine(SavesPath, "BASLUS-20787GAMEDATA"));
+    public bool HasSave => Directory.Exists(Path.Combine(SavesPath, "BASLUS-20787SD5"));
 
     /// <summary>The game program: the newest of the places a build puts it (a player's install: in <c>files\</c>).</summary>
     public string? GameExe =>
