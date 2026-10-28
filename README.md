@@ -38,7 +38,8 @@ Working in the native Windows build:
   than requiring a PCSX2 memory-card image.
 - The release zip holds the launcher, this source and a portable Python; the game is built from your disc on your PC.
   Copyrighted game files and commentary source audio are never redistributed.
-- PPV MODE and ONLINE are on the main menu as early proofs of concept only - neither works yet (PPV is further along).
+- PPV MODE and ONLINE are on the main menu but do not work yet: ONLINE is only a proof of concept for now, and
+  PPV MODE is in active development and does not function correctly yet.
 - PS2 modders: see [`docs/COMMENTARY_PS2_PORTING.md`](docs/COMMENTARY_PS2_PORTING.md) for the documented pack format,
   hook addresses, and the remaining ELF code-cave work needed for original-hardware commentary.
 
