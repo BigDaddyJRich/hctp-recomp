@@ -2,12 +2,17 @@
 
 A static recompilation of **WWE SmackDown! Here Comes the Pain** (PlayStation 2, NTSC-U, **SLUS-20787**) into a native
 Windows program. The game's MIPS code is translated to C++ with [PS2Recomp](https://github.com/ran-j/PS2Recomp) and
-compiled on your PC. The PS2 graphics chip is drawn on the GPU with Vulkan through
-[paraLLEl-GS](https://github.com/Arntzen-Software/parallel-gs), and the IOP (sound / disc processor) runs the game's
-own IRX modules.
+compiled on your PC. The PS2 graphics chip is drawn on the GPU by a native Direct3D 11 renderer, and the IOP
+(sound / disc processor) runs the game's own IRX modules.
 
-The runtime uses upstream PS2Recomp components and the paraLLEl-GS backend. HCTP-specific code and configuration live
-in the HCTP-named directories in this repository.
+HCTP-specific code and configuration live in the HCTP-named directories in this repository.
+
+## Download and play
+
+Get **HCTP-Recompiled-Windows.zip** from the [latest release](https://github.com/BigDaddyJRich/hctp-recomp/releases/latest),
+unzip it to a short path (e.g. `C:\Games\HCTP`) and open **HCTP Recompiled Settings.exe**. It asks for your own USA disc
+(.iso / .chd or its files), builds the game on your PC (30-90 minutes the first time), then gives you PLAY, settings
+and updates. Optional content and commentary packs are shared on Discord.
 
 **No game files or game code are in this repository.** You need your own copy of the game; everything generated from
 it (the recompiled C++ in `PS2Recomp/ps2xRuntime/src/runner/` and `generated/`) stays on your PC and is never committed.
@@ -16,13 +21,14 @@ it (the recompiled C++ in `PS2Recomp/ps2xRuntime/src/runner/` and `generated/`) 
 
 Working in the native Windows build:
 
-- The recompiled game runs natively on Windows. The game code is recompiled C++, the graphics path is GPU-backed
-  through paraLLEl-GS, and the audio path runs through the native runtime/IOP integration rather than PCSX2.
+- The recompiled game runs natively on Windows. The game code is recompiled C++, the graphics path is a native
+  Direct3D 11 renderer (1-6x the PS2's resolution), and the audio path runs through the native runtime/IOP integration rather than PCSX2.
 - Native video playback works for the game's Sofdec movies, with the game's ADX audio path available alongside the
   native music option.
 - Native game audio works across music, commentary, crowd audio, menu sound effects, and in-match sound effects.
 - Gameplay runs at 60 FPS in matches, menus and full-arena entrances on the tested configuration (D3D11 native
   renderer, RTX 3060).
+- Exhibition and Season work. Season has not been tested yet with the restored cut wrestlers or NPCs.
 - Boot, loading, menus, character selection, Create-a-Moveset, Season mode, cutscenes, locker-room/backstage scenes,
   entrances, exhibition matches, and attract-mode demonstrations are functional.
 - Commentary is playable in matches, including the HCTP commentary restoration path. The public setup plan supports
@@ -30,9 +36,9 @@ Working in the native Windows build:
   supplements.
 - Memory-card screens and save/load paths work in the native test path. PC builds use a user-data save location rather
   than requiring a PCSX2 memory-card image.
-- A Windows test package is produced separately from this source repository. It contains the launcher, native runner,
-  optional media/mod content, and setup instructions; copyrighted game files and commentary source audio are never
-  redistributed.
+- The release zip holds the launcher, this source and a portable Python; the game is built from your disc on your PC.
+  Copyrighted game files and commentary source audio are never redistributed.
+- PPV MODE and ONLINE are on the main menu as early proofs of concept only - neither works yet (PPV is further along).
 - PS2 modders: see [`docs/COMMENTARY_PS2_PORTING.md`](docs/COMMENTARY_PS2_PORTING.md) for the documented pack format,
   hook addresses, and the remaining ELF code-cave work needed for original-hardware commentary.
 
@@ -54,13 +60,23 @@ Fixed Oct 26:
 - Entrance frame-rate drops (per-read GPU depth stalls in the flare visibility test)
 - Holes in the entrance nameplate (depth readback overwrote the texture stored in the Z buffer's top byte)
 
-Known limitations:
-- Rope shadows sit too high
-- Leaving the attract-mode demo with Start can leave a black screen (title movie does not restart)
-- Hulk Hogan's modern entrance (restored content) is still being finished
+Fixed Oct 26-27:
+- Rope shadows sitting too high
+- Hulk Hogan's modern entrance with his shirt tear (restored content)
+- Pyro slowdowns and wrong spark sprites (HBK, Goldberg, Triple H), HBK's head particles
+- THQ logo hang, CAW forehead band, entrance-load hang
 
-Near-term plan: stabilize the public Windows test package, improve native audio and commentary coverage, and continue
-the native-renderer investigation without regressing the working paraLLEl-GS path.
+Known limitations:
+- HBK's entrance slows down when he does his pyro in the ring
+- Leaving the attract-mode demo with Start can leave a black screen (title movie does not restart)
+- Random crashes or hangs are possible in parts we haven't tested yet
+- Commentary is mostly tested but not completely
+
+Near-term plan: roster expansion (new wrestler slots) over the following weeks, finished together with Nero's 3X mod;
+a fuller launcher with a mod manager, along the lines of the SvR 2011 recomp's; then PPV mode and online.
+
+Found a bug? Write down exactly what you did and what happened, and send it to jrich102948@gmail.com,
+[Discord](https://discord.com/users/531701434597638165) or [GitHub Issues](https://github.com/BigDaddyJRich/hctp-recomp/issues).
 
 ## Layout
 
@@ -75,7 +91,7 @@ the native-renderer investigation without regressing the working paraLLEl-GS pat
 
 ## Building
 
-Toolchain: Visual Studio 2022+/MSVC x64, CMake, Ninja, Python, and a Vulkan-capable GPU:
+Players: use the release zip above. Developers - toolchain: Visual Studio 2022+/MSVC x64, CMake, Ninja, Python, a Direct3D 11 GPU:
 1. Put your own unmodified `SLUS_207.87` and the disc files in a folder.
 2. Recompile it with `PS2Recomp` using `config_hctp/hctp.toml` (generates the runner C++ locally).
 3. `HCTP_VU1_RANGES="0x44c6e4:0x44eb70,0x4526a4:0x452d08" python -I tools/vu1_recomp.py SLUS_207.87 generated/vu1_compiled.cpp`
@@ -86,7 +102,7 @@ Toolchain: Visual Studio 2022+/MSVC x64, CMake, Ninja, Python, and a Vulkan-capa
 
 - [ran-j/PS2Recomp](https://github.com/ran-j/PS2Recomp) — the recompiler and runtime this is built on
 - upstream PS2Recomp components — recompiler, runtime, IOP/SIF support, and related tooling
-- [paraLLEl-GS](https://github.com/Arntzen-Software/parallel-gs) — GS on Vulkan
+- [paraLLEl-GS](https://github.com/Arntzen-Software/parallel-gs) — GS on Vulkan (the earlier renderer; reference)
 - [PCSX2](https://github.com/PCSX2/pcsx2) — hardware behaviour reference
 - BT3-Recomp, Ace Combat 5 static recompilation, NBA Street V3 recomp — techniques and references
 
