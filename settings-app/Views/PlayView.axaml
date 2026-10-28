@@ -44,7 +44,7 @@
                 <StackPanel>
                     <TextBlock Classes="cap" Text="YOUR GAME" />
                     <Border Classes="capline" Margin="0,8,0,8" />
-                    <Grid ColumnDefinitions="130,*" RowDefinitions="Auto,Auto,Auto" RowSpacing="8">
+                    <Grid ColumnDefinitions="130,*" RowDefinitions="Auto,Auto,Auto,Auto,Auto,Auto" RowSpacing="8">
                         <TextBlock Classes="key" Text="Game" />
                         <TextBlock Grid.Column="1" Classes="mono" Text="{Binding DiscTitle}" />
                         <TextBlock Grid.Row="1" Classes="key" Text="Serial" />
@@ -54,6 +54,12 @@
                         </StackPanel>
                         <TextBlock Grid.Row="2" Classes="key" Text="Save data" />
                         <TextBlock Grid.Row="2" Grid.Column="1" Classes="mono" Text="{Binding SaveLine}" />
+                        <TextBlock Grid.Row="3" Classes="key" Text="Content Pack" />
+                        <TextBlock Grid.Row="3" Grid.Column="1" Classes="mono" Text="{Binding ContentPackLine}" />
+                        <TextBlock Grid.Row="4" Classes="key" Text="Commentary Pack" />
+                        <TextBlock Grid.Row="4" Grid.Column="1" Classes="mono" Text="{Binding CommentaryPackLine}" />
+                        <Button Grid.Row="5" Grid.Column="1" Classes="outline" Content="Get the packs on Discord"
+                                IsVisible="{Binding PacksMissing}" Command="{Binding OpenPacksCommand}" />
                     </Grid>
                 </StackPanel>
                 <StackPanel Grid.Column="1">

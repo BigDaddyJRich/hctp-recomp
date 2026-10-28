@@ -21,6 +21,9 @@ public sealed class GameFolder
     public string SavesPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "HERE COMES THE PAIN", "Saves");
     public string LogsPath => Path.Combine(Data, "logs");
     public bool HasGame => File.Exists(ElfPath);
+    // optional Discord packs, unzipped into game\ (tools\make_discord_packs.py); the game picks them up on its own
+    public bool HasContentPack => File.Exists(Path.Combine(Data, "game", "HOST_MEDIA.txt")) && Directory.Exists(Path.Combine(Data, "game", "MODS"));
+    public bool HasCommentaryPack => File.Exists(Path.Combine(Data, "game", "BGM", "FINKEL.afs"));
     public bool HasSave => Directory.Exists(Path.Combine(SavesPath, "BASLUS-20787GAMEDATA"));
 
     /// <summary>The game program: the newest of the places a build puts it (a player's install: in <c>files\</c>).</summary>
