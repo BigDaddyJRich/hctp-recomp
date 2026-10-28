@@ -3,6 +3,10 @@
 This file records HCTP-specific changes only. Local experiments, extracted game assets, emulator dumps, and temporary
 run scripts are intentionally kept out of the public repository.
 
+## 0.3.4
+
+- Launcher finds your save data (Documents\HCTP) instead of always showing "No save yet". Saving itself was fine.
+
 ## 0.3.3
 
 - Launcher Play page shows whether the optional Content Pack and Commentary Pack are installed, with a link to get them.
