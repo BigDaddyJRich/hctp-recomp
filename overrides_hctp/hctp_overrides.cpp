@@ -92,7 +92,8 @@ namespace
         {54, 0, {9, 8, 14, 10, 8}, 22, 1, "Jonathan Coachman", 3022},
         {55, 4, {6, 7, 14, 10, 7}, 20, 1, "Linda McMahon", 3020},
         {65, 0, {17, 20, 13, 16, 19}, 18, 1, "Tazz", 3071},
-        // Al Snow: key 6300 is now his loose SYM model (MODS\PAC\CH2\6300); stock 6300 was a pads-off Rock stand-in.
+        // Al Snow: stock 6300 is a pads-off Rock stand-in; his SYM model is the Content Pack's MODS\PAC\EMD2\6300,
+        // so his slot stays hidden without it (scanCutRosterModels).
         {0x3F, 0, {14, 13, 14, 13, 15}, 0x17, 1, "Al Snow", 3071},
     };
     constexpr size_t kCutCount = sizeof(kCutRoster) / sizeof(kCutRoster[0]);
@@ -107,6 +108,9 @@ namespace
         for (size_t i = 0; i < kCutCount; ++i)
         {
             const uint8_t id = kCutRoster[i].id;
+            std::error_code ec;
+            if (id == 0x3F && !std::filesystem::exists("MODS/PAC/EMD2/6300", ec))
+                continue; // no Content Pack: the stock key is a Rock stand-in
             std::ifstream f(id < 30 ? "pac/ch.pac" : "pac/ch2.pac", std::ios::binary);
             uint8_t dir[0x4000] = {};
             if (!f.read(reinterpret_cast<char *>(dir), sizeof(dir)))

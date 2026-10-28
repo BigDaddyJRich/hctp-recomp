@@ -3,6 +3,15 @@
 This file records HCTP-specific changes only. Local experiments, extracted game assets, emulator dumps, and temporary
 run scripts are intentionally kept out of the public repository.
 
+## 0.3.3
+
+- Launcher Play page shows whether the optional Content Pack and Commentary Pack are installed, with a link to get them.
+- Al Snow only appears on the roster when the Content Pack (his model) is installed.
+- PPV MODE and ONLINE are not working yet: ONLINE is only a proof of concept for now, and PPV MODE is in active
+  development and does not function correctly yet.
+- Content Pack update (Discord): Jimmy Snuka Titantron, DX's own Titantron, Legend Undertaker's Death Valley intro,
+  Al Snow's model.
+
 ## 0.3.2
 
 - Launcher settings now reach the game: window / borderless / fullscreen (screen, resolution, refresh rate),
