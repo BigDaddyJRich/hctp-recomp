@@ -19,6 +19,8 @@ First public build of HCTP Recompiled: bring your own USA disc (SLUS-20787); the
 Roster and content: the final roster and content will be made together with Nero's 3X mod. Roster expansion (new
 wrestler slots beyond the stock roster) is a work in progress and is planned for the following weeks.
 
+Coming next: a fuller launcher with a built-in mod manager, along the lines of the SvR 2011 recomp's launcher.
+
 Known issues (most earlier bugs are fixed; these remain):
 - HBK's entrance slows down badly in the ice-cave part of the stage; short frame dips during his in-ring pyro.
 - HBK's head particles can float or draw as lines.
