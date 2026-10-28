@@ -3,6 +3,19 @@
 This file records HCTP-specific changes only. Local experiments, extracted game assets, emulator dumps, and temporary
 run scripts are intentionally kept out of the public repository.
 
+## 0.3.0
+
+First public build of HCTP Recompiled: bring your own USA disc (SLUS-20787); the game is built on your PC.
+
+- New launcher: HCTP Recompiled Settings.exe sets up the build from your disc, then PLAY, settings and updates.
+- D3D11 renderer with 1-6x sharper picture, native title movies, 60 fps matches and entrances.
+- Fixed: wrestler/referee shaking, nameplate holes, rope shadows, pyro slowdowns (HBK, Goldberg, Triple H),
+  CAW forehead band, THQ logo hang.
+- New: PPV mode (create a card of up to 5 matches and play it back to back), restored menu options.
+- Optional content and commentary packs are shared separately (Discord).
+
+Known issues: HBK ice-cave entrance slowdown, Demo -> Start black screen, see-through hair on some models.
+
 ## Current test build
 
 - Native Windows launcher and runner packaging prepared for community testing.
