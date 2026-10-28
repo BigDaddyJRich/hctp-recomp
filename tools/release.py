@@ -21,12 +21,12 @@ import urllib.request
 import zipfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-GITHUB_REPO = 'jcsix694/def-jam-vendetta-recomp'
+GITHUB_REPO = 'BigDaddyJRich/hctp-recomp'
 CSPROJ = os.path.join(REPO, 'settings-app', 'VendettaSettings.csproj')
 CHANGELOG = os.path.join(REPO, 'CHANGELOG.md')
 DIST = os.path.join(REPO, 'dist')
-ZIP_NAME = 'Def-Jam-Vendetta-Recompiled-Windows.zip'
-TOP = 'Def Jam Vendetta Recompiled'
+ZIP_NAME = 'HCTP-Recompiled-Windows.zip'
+TOP = 'HCTP Recompiled'
 NOTES = os.path.join(DIST, 'release-notes.md')
 # --zip / --notes (testing with a throwaway repository): another file uploaded under the zip's name, other notes
 OPTIONS = {'zip': os.path.join(DIST, ZIP_NAME), 'notes': NOTES}
@@ -114,7 +114,7 @@ def check_zip(version):
         missing = [l.split(' ', 2)[2] for l in listed if f'{TOP}/{l.split(" ", 2)[2]}' not in names]
         if missing:
             raise SystemExit(f'files listed but not in the zip: {missing[:5]}')
-        for needed in (f'{TOP}/Def Jam Vendetta Recompiled Settings.exe', f'{TOP}/READ ME FIRST.txt'):
+        for needed in (f'{TOP}/HCTP Recompiled Settings.exe', f'{TOP}/READ ME FIRST.txt'):
             if needed not in names:
                 raise SystemExit(f'missing: {needed}')
     size = os.path.getsize(path)

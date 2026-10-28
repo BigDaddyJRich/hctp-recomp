@@ -28,6 +28,7 @@ public sealed class GameFolder
         new[]
         {
             Path.Combine(Data, GameExeName),
+            Path.Combine(Data, "game", "ps2EntryRunner.exe"), // where tools\hctp_setup.py puts the build
             Path.Combine(Data, "PS2Recomp", "out", "fast", "ps2xRuntime", "ps2EntryRunner.exe"),
             Path.Combine(Data, "PS2Recomp", "out", "runtime", "ps2xRuntime", "ps2EntryRunner.exe"),
         }
@@ -49,7 +50,7 @@ public sealed class GameFolder
     public string PythonExe =>
         File.Exists(Path.Combine(Data, "python", "python.exe")) ? Path.Combine(Data, "python", "python.exe") : "python";
 
-    public string SetupScript => Path.Combine(SourceRoot, "tools", "setup_game.py");
+    public string SetupScript => Path.Combine(SourceRoot, "tools", "hctp_setup.py");
 
     /// <summary>First run: no game files from a disc yet, or no game program built from them.</summary>
     public bool NeedsSetup => !HasGame || GameExe == null;

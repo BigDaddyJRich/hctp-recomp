@@ -18,11 +18,13 @@ import make_release as base  # noqa: E402
 
 REPO = base.REPO
 DIST = base.DIST
-TOP = 'HCTP Recomp'
-ZIP_NAME = 'HCTP-Recomp-Windows.zip'
+TOP = 'HCTP Recompiled'
+ZIP_NAME = 'HCTP-Recompiled-Windows.zip'
+EXE = 'HCTP Recompiled Settings.exe'  # the launcher (settings-app): first-run setup, PLAY, settings, updates
 FILES = TOP + '/files/'
 SRC = FILES + 'source/'
 base.SRC = SRC  # base.check() strips this prefix
+base.TOP, base.FILES = TOP, FILES  # base.add_manifest() writes files/release-manifest.txt for the updater
 DEPS = {
     'raylib': ('out/native/_deps/raylib-src', ('examples/', 'projects/')),
     'imgui': ('out/native/_deps/imgui-src', ('examples/',)),
@@ -61,6 +63,9 @@ C++ and compiled here, and it never leaves your PC.
 You need: Windows 10/11 64-bit, a CPU with AVX2, a Direct3D 11 graphics card, ~16 GB of RAM, ~15 GB of free space,
 internet for the first build, and your own HCTP disc (USA) as an .iso or .chd, or its files in a folder.
 
+Easiest: open "HCTP Recompiled Settings.exe" - it asks for your disc, builds the game, then PLAY, settings
+(display, renderer, controllers, volume) and updates from GitHub are in the same window. Or by hand:
+
 To build and play:
   1. Unzip this folder somewhere with a SHORT path, e.g. C:\Games\HCTP Recomp (long paths can break the build).
   2. Drag your disc image (.iso / .chd) or your game folder onto "Build HCTP.bat".
@@ -90,9 +95,12 @@ def main():
     os.makedirs(DIST, exist_ok=True)
     out = os.path.join(DIST, ZIP_NAME)
     counts = {}
-    with tempfile.TemporaryDirectory(prefix='hctp-release-'):
+    with tempfile.TemporaryDirectory(prefix='hctp-release-') as work:
+        base.settings_exe(work)
+        exe = os.path.join(work, 'publish', EXE)
         pyzip = base.python_zip()
         with zipfile.ZipFile(out + '.part', 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
+            z.write(exe, TOP + '/' + EXE)
             z.writestr(TOP + '/READ ME FIRST.txt', README.replace('\n', '\r\n'))
             z.writestr(TOP + '/Build HCTP.bat', BUILD_BAT.replace('\r\n', '\n').replace('\n', '\r\n'))
             with zipfile.ZipFile(pyzip) as py:
@@ -116,6 +124,7 @@ def main():
                 if not os.path.isdir(folder):
                     raise SystemExit(f'{folder} is missing: build PS2Recomp here once (build-recomp.bat, build-native.bat)')
                 counts['deps/' + name] = base.add_tree(z, folder, SRC + 'deps/' + name + '/', skip)
+        base.add_manifest(out + '.part')
         os.replace(out + '.part', out)
     print(counts)
 
@@ -125,11 +134,11 @@ def main():
         for i in infos:
             base.check(i.filename)
             low = i.filename.lower()
-            if low.endswith(('.exe', '.dll')) and not low.startswith((FILES + 'python/').lower()):
+            if low.endswith(('.exe', '.dll')) and not low.startswith((FILES + 'python/').lower()) and i.filename != TOP + '/' + EXE:
                 raise SystemExit('a program in the kit: ' + i.filename)
             if '_0x' in os.path.basename(low) or os.path.basename(low) == 'vu1_compiled.cpp':
                 raise SystemExit('game code in ' + i.filename)
-            if i.file_size > 20 * 1024 * 1024:
+            if i.file_size > 20 * 1024 * 1024 and i.filename != TOP + '/' + EXE:
                 raise SystemExit('too big: ' + i.filename)
             if i.filename.endswith('runner/register_functions.cpp'):
                 text = z.read(i).decode('utf-8', 'replace')

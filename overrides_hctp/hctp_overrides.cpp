@@ -8,6 +8,7 @@
 // HCTP_PCPROF=1: every 5 s, where the game thread / GS thread spend their time (host functions = recompiled game
 // functions by name), via ps2_host_profile::samplePc / pcReport (Kernel/HostProfiler.cpp, needs the PDB: build-fast).
 #include "ps2_runtime.h"
+#include "runtime/ee_scheduler.h"
 #include "game_overrides.h"
 #include "runtime/ps2_host_profile.h"
 #include "ps2_host_backend.h"
@@ -16,6 +17,8 @@ extern "C" bool hctpMovieOpen(int ch, const char *path, int fid, bool loop);
 extern "C" void hctpMovieStop(int ch);
 extern "C" void hctpMoviePause(int ch, bool pause);
 extern "C" int hctpMovieStatus(int ch);
+extern thread_local bool t_eeCheckpointHit; // ps2_runtime.cpp (dispatchGuestBranch stub-return guard)
+extern thread_local bool t_eeNoCheckpoint;  // ps2_runtime.cpp (no checkpoint stops while set)
 extern "C" bool hctpMovieFrame(int ch, uint8_t *rgba, int w, int h);
 #include <initializer_list>
 #include <cmath>
@@ -45,6 +48,7 @@ extern "C" void hctpCommentarySetMatchRule(uint32_t rule);
 extern "C" void hctpCommentaryMove(uint32_t chara, uint32_t moveId);
 extern "C" void hctpCommentaryParticipants(const uint32_t *rosterIds, uint32_t count);
 extern "C" void hctpCommentaryArena(int stage);
+extern "C" void hctpCommentaryBrand(int brand);
 extern "C" void hctpCommentaryCharaRoster(uint32_t chara, uint32_t rosterId);
 
 namespace ps2_stubs
@@ -88,7 +92,8 @@ namespace
         {54, 0, {9, 8, 14, 10, 8}, 22, 1, "Jonathan Coachman", 3022},
         {55, 4, {6, 7, 14, 10, 7}, 20, 1, "Linda McMahon", 3020},
         {65, 0, {17, 20, 13, 16, 19}, 18, 1, "Tazz", 3071},
-        // Al Snow 0x3F left out: stock key 6300 is a Rock model (maybe the pads-off People's Elbow); needs his own key.
+        // Al Snow: key 6300 is now his loose SYM model (MODS\PAC\CH2\6300); stock 6300 was a pads-off Rock stand-in.
+        {0x3F, 0, {14, 13, 14, 13, 15}, 0x17, 1, "Al Snow", 3071},
     };
     constexpr size_t kCutCount = sizeof(kCutRoster) / sizeof(kCutRoster[0]);
     bool g_cutRosterHasModel[kCutCount] = {};
@@ -1506,7 +1511,35 @@ namespace
                     ids[n++] = code < 10000u ? id | (code % 100u) << 8 : id; // + attire variant (nWo Hogan)
             }
             const int8_t stage = int8_t(rdram[0x4922C0u]); // GetNowStage 0x1f53d0 (arena / PPV)
-            std::fprintf(stderr, "[hctp-pbp] arena (stage) %d%c", int(stage), 10);
+            // rule byte too: cage / Hell in a Cell / Elimination Chamber have no entrances, so the bell is the only
+            // place their match type is seen (GetRule 0x1f53f0 -> 0x4920C0, first byte)
+            std::fprintf(stderr, "[hctp-pbp] arena (stage) %d, match rule 0x%02X%c", int(stage), rdram[0x4920C0u], 10);
+            // season mode picks the team by the player's brand, not the arena (Jordan). GetMode 0x188ae0
+            // = *(*(0x526628) + 4) in a match. Brand = the Raw/SmackDown roster editor's byte
+            // (CRosterFrame::SetProgram 0x349a80 writes 0/1 to GetCharaGameProp 0x12cec0 record +0x161; regular
+            // records 0x4C0F54 + id*0x170). Which value is SmackDown is unverified: SvR uses 1 = SmackDown;
+            // HCTP_PBP_BRAND_SD=0 flips it. (IsSmackDownEntry's +0x163 != 6 is roster membership, not the brand.)
+            uint32_t ctrl = 0, mode = 0xFFFFFFFFu;
+            std::memcpy(&ctrl, rdram + 0x526628u, 4);
+            if (ctrl != 0u && ctrl < 0x2000000u)
+                std::memcpy(&mode, rdram + ctrl + 4u, 4);
+            static const int sdValue = [] {
+                const char *e = std::getenv("HCTP_PBP_BRAND_SD");
+                return e && e[0] == '0' ? 0 : 1;
+            }();
+            int sd = 0, raw = 0;
+            std::fprintf(stderr, "[hctp-pbp] game mode %d, brand bytes (+0x161):", int(mode));
+            for (uint32_t i = 0; i < n; ++i)
+            {
+                const int8_t b = int8_t(rdram[0x4C0F54u + (ids[i] & 0xFFu) * 0x170u + 0x161u]);
+                std::fprintf(stderr, " 0x%02X=%d", ids[i] & 0xFFu, int(b));
+                if (b == sdValue)
+                    ++sd;
+                else if (b == 1 - sdValue)
+                    ++raw;
+            }
+            std::fprintf(stderr, "%c", 10);
+            hctpCommentaryBrand(sd > raw ? 1 : raw > sd ? 0 : -1);
             hctpCommentaryArena(stage);
             hctpCommentaryParticipants(ids, n);
             hctpCommentaryEvent(1u);
@@ -1589,18 +1622,46 @@ namespace
         // value earlier, so use that captured value when the live slot has already become empty.
         if (order == 0)
         {
+            // count distinct wrestlers only: the referee's cast (Hebner 5100 / Chioda 4900) sits in the table too,
+            // which made every singles match a "tag team contest" (log: participants 0x20 0x12C 0xA33)
             uint32_t present = 0;
+            std::array<uint32_t, 8> seen{};
             for (uint32_t i = 0; i < 8u; ++i)
             {
                 uint16_t candidate = 0;
                 std::memcpy(&candidate, rdram + 0x4921CAu + i * 0x20u, 2);
                 if (candidate >= 25500u)
                     candidate = g_entranceCast[i];
-                if (candidate < 25500u)
-                    ++present;
+                if (candidate >= 25500u)
+                    continue;
+                const uint32_t id = candidate >= 10000u ? 0x100u + (candidate - 10000u) / 100u : candidate / 100u;
+                if (id == 0x31u || id == 0x33u || std::find(seen.begin(), seen.begin() + present, id) != seen.begin() + present)
+                    continue;
+                seen[present++] = id;
             }
-            hctpCommentarySetTagMatch(present > 2u ? 1u : 0u);
-            hctpCommentarySetTeamSize(present >= 6u ? 3u : 2u);
+            // tag vs multi-man comes from the game's own rule table (0x45AF60 + rule*0x20: +1 cast count, +0xC 6 x
+            // {slot, team, role}; role 0/1 = wrestler, 2 = special referee, 3 = lumberjack). Counting wrestlers made
+            // every 3+ man match (triple threat, fatal 4-way, battle royal, lumberjack) a "tag team contest".
+            const uint8_t ruleType = rdram[0x4920C0u];
+            bool tag = present > 2u;
+            uint32_t teamSize = present >= 6u ? 3u : 2u;
+            if (ruleType < 0x56u)
+            {
+                const uint8_t *const rt = rdram + 0x45AF60u + uint32_t(ruleType) * 0x20u;
+                uint32_t sizes[6] = {};
+                for (uint32_t k = 0; k < rt[1] && k < 6u; ++k)
+                    if (rt[0xC + 3 * k + 2] < 2u && rt[0xC + 3 * k + 1] < 6u)
+                        ++sizes[rt[0xC + 3 * k + 1]];
+                uint32_t maxTeam = 0, minTeam = 99;
+                for (uint32_t s : sizes)
+                    if (s)
+                        maxTeam = std::max(maxTeam, s), minTeam = std::min(minTeam, s);
+                tag = maxTeam >= 2u && minTeam == maxTeam; // equal teams of 2+; handicap = singles-style intros
+                teamSize = maxTeam >= 3u ? 3u : 2u;
+            }
+            std::fprintf(stderr, "[hctp-pbp] entrance wrestlers %u rule 0x%02X -> %s%c", present, ruleType, tag ? "tag" : "singles", 10);
+            hctpCommentarySetTagMatch(tag ? 1u : 0u);
+            hctpCommentarySetTeamSize(teamSize);
             // GetRule() returns the live HCTP match-rule object at 0x4920C0;
             // its first byte is the eRuleType used by the game's rule helpers.
             hctpCommentarySetMatchRule(rdram[0x4920C0u]);
@@ -2182,6 +2243,415 @@ namespace
         skRet(ctx, 0u);
     }
 
+    // TEMP diag, part of HCTP_BONE_JITTER: CSkinModel::Update 0x150be0 calls owner->vfunc (owner = *(model+0),
+    // fn = *(*(owner+0x98)+0x20)) for the bone at (model+0xE8)+0x44, after copying +0x40 into +0x44, then inverts the
+    // (model+0xE8) matrix in place. Per frame for the 92-bone CAM model: fn address, the two indices and a hash of the
+    // object's first 0x40 bytes before and after Update (logged on change, first 300 lines).
+    PS2Runtime::RecompiledFunction g_skinUpdateOrig = nullptr, g_skinFastUpdateOrig = nullptr;
+    // MulMatrixN2 0x1510c0 (a0 skin out, a1 scratchpad chain, a2 inverse binds, a3 count, t0 world out), called by
+    // FastUpdate: for the watched model (HCTP_IKWATCH_MODEL, default c40110), the foot's (bone 89) scratchpad matrix
+    // it copies to the world array, plus the scratchpad root (a1 - 0x40) and the foot's parent, in the ikring timeline.
+    PS2Runtime::RecompiledFunction g_mulN2Orig = nullptr;
+    struct MulN2Rec { int64_t ns; float spr89[3], spr88[3], root[3], wld89[3]; uint32_t a1, n, pcAfter, sp; };
+    std::vector<MulN2Rec> g_mulN2Ring(60);
+    uint64_t g_mulN2N = 0;
+    void mulN2Logged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t a1 = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5]));
+        const uint32_t n = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[7]));
+        const uint32_t t0 = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[8])) & 0x1FFFFFFu;
+        static const uint32_t s_model = []
+        {
+            const char *v = std::getenv("HCTP_IKWATCH_MODEL");
+            return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 16)) : 0xc40110u;
+        }();
+        uint32_t world = 0;
+        std::memcpy(&world, rdram + s_model + 0xD0u, 4);
+        const bool watched = (world & 0x1FFFFFFu) == t0 && (a1 & 0xF0000000u) == 0x70000000u && n > 89u;
+        MulN2Rec rec{};
+        if (watched)
+        {
+            const uint8_t *spr = runtime->memory().getScratchpad();
+            const uint32_t off = a1 & 0x3FFFu;
+            rec.ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+            rec.a1 = a1;
+            rec.n = n;
+            if (off + 90u * 64u <= 0x4000u && off >= 0x40u)
+            {
+                std::memcpy(rec.spr89, spr + off + 89u * 64u + 0x30u, 12);
+                std::memcpy(rec.spr88, spr + off + 88u * 64u + 0x30u, 12);
+                std::memcpy(rec.root, spr + off - 0x40u + 0x30u, 12);
+            }
+        }
+        g_mulN2Orig(rdram, ctx, runtime);
+        if (!watched)
+            return;
+        std::memcpy(rec.wld89, rdram + t0 + 89u * 64u + 0x30u, 12);
+        rec.pcAfter = ctx->pc;
+        rec.sp = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[29]));
+        g_mulN2Ring[g_mulN2N++ % g_mulN2Ring.size()] = rec;
+        if (FILE *go = std::fopen("mulring.go", "rb"))
+        {
+            std::fclose(go);
+            std::remove("mulring.go");
+            for (uint64_t i = g_mulN2N > g_mulN2Ring.size() ? g_mulN2N - g_mulN2Ring.size() : 0; i < g_mulN2N; ++i)
+            {
+                const MulN2Rec &q = g_mulN2Ring[i % g_mulN2Ring.size()];
+                std::fprintf(stderr, "[mulring] t %lld a1 %08x n %u pcAfter %06x sp %08x | spr root row3 %.3f %.3f %.3f | spr88 %.3f %.3f %.3f | spr89 %.3f %.3f %.3f | world89 after %.3f %.3f %.3f%c",
+                             static_cast<long long>(q.ns), q.a1, q.n, q.pcAfter, q.sp, q.root[0], q.root[1], q.root[2], q.spr88[0], q.spr88[1], q.spr88[2], q.spr89[0],
+                             q.spr89[1], q.spr89[2], q.wld89[0], q.wld89[1], q.wld89[2], 10);
+            }
+            std::fflush(stderr);
+        }
+    }
+    void skinUpdateCommon(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, PS2Runtime::RecompiledFunction orig)
+    {
+        const uint32_t model = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        auto rd = [&](uint32_t a) -> uint32_t { uint32_t v = 0; a &= 0x1FFFFFFu; if (a >= 0x100000u && a < 0x1FFFFFCu) std::memcpy(&v, rdram + a, 4); return v; };
+        uint32_t ymp = rd(model + 0xC8u), bones = ymp ? rd(ymp + 0x14u) : 0u;
+        const uint32_t obj = rd(model + 0xE8u) & 0x1FFFFFFu;
+        if (bones != 92u)
+        {
+            orig(rdram, ctx, runtime);
+            return;
+        }
+        // Bone 89 (l_ashi, the worst shaker): its local (model+0xCC) and world (model+0xD0) matrices around the call,
+        // and its parent's (bone entry +0x30 = parent index, as Update 0x150c54 reads it). Kept in a ring of 120 calls;
+        // dumped when the file skinupd.go appears in the game folder (deleted after).
+        constexpr uint32_t kBone = 89u;
+        const uint32_t loc = rd(model + 0xCCu) & 0x1FFFFFFu, wld = rd(model + 0xD0u) & 0x1FFFFFFu;
+        const uint32_t table = rd(ymp + 0x20u) & 0x1FFFFFFu;
+        const int32_t parent = static_cast<int32_t>(rd(table + kBone * 80u + 0x30u));
+        struct Rec { uint64_t call; int64_t ns; float locB[16], wldB[16], wldA[16], parA[16]; int32_t parent; uint32_t obj, ra, sp, model, ec, f0; };
+        static std::vector<Rec> ring(120);
+        static uint64_t calls = 0;
+        Rec &r = ring[calls % ring.size()];
+        r.call = calls++;
+        r.ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        r.parent = parent;
+        r.obj = obj;
+        r.model = model;
+        r.ec = rd(model + 0xECu);
+        r.f0 = rd(model + 0xF0u) & 0x1FFFFFFu;
+        r.ra = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
+        r.sp = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[29]));
+        std::memcpy(r.locB, rdram + loc + kBone * 64u, 64);
+        std::memcpy(r.wldB, rdram + wld + kBone * 64u, 64);
+        orig(rdram, ctx, runtime);
+        std::memcpy(r.wldA, rdram + wld + kBone * 64u, 64);
+        std::memset(r.parA, 0, 64);
+        if (parent >= 0 && parent < 92)
+            std::memcpy(r.parA, rdram + wld + static_cast<uint32_t>(parent) * 64u, 64);
+        static uint32_t check = 0;
+        if ((++check & 31u) != 0u)
+            return;
+        if (FILE *go = std::fopen("skinupd.go", "rb"))
+        {
+            std::fclose(go);
+            std::remove("skinupd.go");
+            for (uint64_t i = calls > ring.size() ? calls - ring.size() : 0; i < calls; ++i)
+            {
+                const Rec &q = ring[i % ring.size()];
+                std::fprintf(stderr, "[skinupd] t %lld %s call %llu model %06x ec %u f0 %06x ra %06x sp %08x parent %d | local row0 %.4f %.4f %.4f row3 %.3f %.3f %.3f | world before row3 %.3f %.3f %.3f after row0 %.4f %.4f %.4f row3 %.3f %.3f %.3f | parent world row3 %.3f %.3f %.3f%c",
+                             static_cast<long long>(q.ns), orig == g_skinFastUpdateOrig ? "fast" : "full", static_cast<unsigned long long>(q.call), q.model, q.ec, q.f0, q.ra, q.sp, q.parent, q.locB[0], q.locB[1], q.locB[2], q.locB[12], q.locB[13],
+                             q.locB[14], q.wldB[12], q.wldB[13], q.wldB[14], q.wldA[0], q.wldA[1], q.wldA[2], q.wldA[12], q.wldA[13],
+                             q.wldA[14], q.parA[12], q.parA[13], q.parA[14], 10);
+            }
+            std::fflush(stderr);
+        }
+    }
+
+    // TEMP diag HCTP_BONE_JITTER=1 (wrestler shake): before every CSkinModel::DrawChar 0x155dc0, the model's world
+    // bone matrices (GetWorldMatrix 0x157050: CSkinModel+0xD0, 64 bytes a bone; GetBoneNum 0x157140: count at
+    // (CSkinModel+0xC8)+0x14). Per bone, how far its position lands off the straight line through its previous two
+    // frames (|p - 2*p1 + p2|): smooth motion stays near 0, a shake does not. Every 2 s per model: the 6 worst bones,
+    // their spike counts and the axis lengths of the worst matrix (a broken rotation shows as non-unit axes).
+    PS2Runtime::RecompiledFunction g_boneJitterOrig = nullptr, g_hantenOrig = nullptr, g_setBoneDataOrig = nullptr;
+    std::atomic<uint32_t> g_hantenCalls{0u}, g_setBoneDataCalls{0u};
+    struct BoneJitterModel
+    {
+        uint32_t bones = 0, frames = 0, ymp = 0;
+        std::vector<float> p1, p2, last; // positions: 1 and 2 frames ago, and the latest
+        std::vector<float> worst, axes;  // per bone: worst jump, and |x| |y| |z| axis lengths at it
+        std::vector<uint32_t> spikes;
+    };
+    std::map<uint32_t, BoneJitterModel> g_boneJitter;
+    void boneJitterLogged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t model = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        if (model >= 0x100000u && model < 0x1FFFE00u)
+        {
+            uint32_t ymp = 0, bones = 0, world = 0;
+            std::memcpy(&ymp, rdram + model + 0xC8u, 4);
+            std::memcpy(&world, rdram + model + 0xD0u, 4);
+            ymp &= 0x1FFFFFFu;
+            world &= 0x1FFFFFFu;
+            if (ymp >= 0x100000u && ymp < 0x1FFFFF0u)
+                std::memcpy(&bones, rdram + ymp + 0x14u, 4);
+            if (bones > 0u && bones <= 256u && world >= 0x100000u && world + bones * 64u < 0x2000000u)
+            {
+                BoneJitterModel &m = g_boneJitter[model];
+                if (m.bones != bones)
+                {
+                    m = BoneJitterModel{};
+                    m.bones = bones;
+                    m.p1.assign(bones * 3u, 0.0f);
+                    m.p2.assign(bones * 3u, 0.0f);
+                    m.last.assign(bones * 3u, 0.0f);
+                    m.worst.assign(bones, 0.0f);
+                    m.axes.assign(bones * 3u, 0.0f);
+                    m.spikes.assign(bones, 0u);
+                }
+                m.ymp = ymp;
+                // DrawChar can run more than once a frame for one model (shadow, reflections): only a changed pose counts.
+                bool changed = false;
+                std::vector<float> now(bones * 3u);
+                for (uint32_t b = 0; b < bones; ++b)
+                {
+                    std::memcpy(&now[b * 3u], rdram + world + b * 64u + 0x30u, 12);
+                    changed |= std::memcmp(&now[b * 3u], &m.last[b * 3u], 12) != 0;
+                }
+                if (changed)
+                {
+                    if (m.frames >= 2u)
+                        for (uint32_t b = 0; b < bones; ++b)
+                        {
+                            float d2 = 0.0f;
+                            for (int k = 0; k < 3; ++k)
+                            {
+                                const float a = now[b * 3u + k] - 2.0f * m.p1[b * 3u + k] + m.p2[b * 3u + k];
+                                d2 += a * a;
+                            }
+                            const float jump = std::sqrt(d2);
+                            if (jump > 0.5f)
+                                ++m.spikes[b];
+                            if (jump > m.worst[b])
+                            {
+                                m.worst[b] = jump;
+                                for (int k = 0; k < 3; ++k)
+                                {
+                                    float row[3];
+                                    std::memcpy(row, rdram + world + b * 64u + k * 16u, 12);
+                                    m.axes[b * 3u + k] = std::sqrt(row[0] * row[0] + row[1] * row[1] + row[2] * row[2]);
+                                }
+                            }
+                        }
+                    m.p2 = m.p1;
+                    m.p1 = now;
+                    m.last = now;
+                    ++m.frames;
+                    // Which memory flips A, B, A, B with the bones: 1 MB around the model (CSkinModel, its matrices
+                    // and the CChar/motion objects allocated near it), word by word, on every new pose.
+                    static uint32_t scanBase = 0;
+                    static std::vector<uint32_t> s1, s2, alt;
+                    static uint32_t scanFrames = 0;
+                    // One model only (several are drawn each frame; HCTP_ALTSCAN_BONES, default 92 = the CAM model)
+                    static const uint32_t scanBones = [] { const char *v = std::getenv("HCTP_ALTSCAN_BONES"); return v ? uint32_t(std::atoi(v)) : 92u; }();
+                    if (bones == scanBones)
+                    {
+                    const uint32_t base = (model > 0x180000u ? model - 0x80000u : 0x100000u) & ~0xFFFu;
+                    constexpr uint32_t kScanWords = 0x100000u / 4u;
+                    if (base != scanBase || s1.size() != kScanWords || base + 0x100000u > 0x2000000u)
+                    {
+                        scanBase = base + 0x100000u <= 0x2000000u ? base : 0x1F00000u;
+                        s1.assign(kScanWords, 0u);
+                        s2.assign(kScanWords, 0u);
+                        alt.assign(kScanWords, 0u);
+                        scanFrames = 0;
+                    }
+                    const uint32_t *mem = reinterpret_cast<const uint32_t *>(rdram + scanBase);
+                    for (uint32_t i = 0; i < kScanWords; ++i)
+                    {
+                        const uint32_t v = mem[i];
+                        // An oscillation around a moving value: as floats, the step from the previous frame reverses
+                        // the step before it, and is not tiny against the value.
+                        if (scanFrames >= 2u && v != s1[i])
+                        {
+                            float fv, f1, f2;
+                            std::memcpy(&fv, &v, 4);
+                            std::memcpy(&f1, &s1[i], 4);
+                            std::memcpy(&f2, &s2[i], 4);
+                            const float d1 = fv - f1, d0 = f1 - f2;
+                            if (std::isfinite(fv) && std::isfinite(f1) && std::isfinite(f2) && d1 * d0 < 0.0f &&
+                                std::fabs(d1) > 1e-3f * (std::fabs(fv) + 1e-3f) && std::fabs(fv) < 1e7f)
+                                ++alt[i];
+                        }
+                        s2[i] = s1[i];
+                        s1[i] = v;
+                    }
+                    ++scanFrames;
+                    if (scanFrames >= 122u)
+                    {
+                        // Report runs of words that alternated on most frames (only while the bones shake hard).
+                        uint32_t top = 0;
+                        for (uint32_t b = 0; b < bones; ++b)
+                            top = std::max(top, m.spikes[b]);
+                        if (top > 60u || true) // always (the spike counter is reset by the 2 s bone report)
+                        {
+                            uint32_t world0 = 0;
+                            std::memcpy(&world0, rdram + model + 0xD0u, 4);
+                            std::fprintf(stderr, "[altscan] model %06x world %06x ymp %06x base %06x:", model, world0 & 0x1FFFFFFu,
+                                         m.ymp, scanBase);
+                            uint32_t runs = 0;
+                            for (uint32_t i = 0; i < kScanWords && runs < 40u;)
+                            {
+                                if (alt[i] < 90u)
+                                {
+                                    ++i;
+                                    continue;
+                                }
+                                uint32_t j = i;
+                                while (j < kScanWords && (alt[j] >= 90u || (j + 1u < kScanWords && alt[j + 1u] >= 90u)))
+                                    ++j;
+                                float a, b2;
+                                std::memcpy(&a, &s1[i], 4);
+                                std::memcpy(&b2, &s2[i], 4);
+                                std::fprintf(stderr, " %06x+%x(%g|%g)", scanBase + i * 4u, (j - i) * 4u, a, b2);
+                                ++runs;
+                                i = j + 1u;
+                            }
+                            std::fprintf(stderr, "%c", 10);
+                        }
+                        std::fill(alt.begin(), alt.end(), 0u);
+                        scanFrames = 2u;
+                    }
+                    }
+                }
+            }
+        }
+        g_boneJitterOrig(rdram, ctx, runtime);
+        static auto lastReport = std::chrono::steady_clock::now();
+        const auto t = std::chrono::steady_clock::now();
+        if (t - lastReport < std::chrono::seconds(2))
+            return;
+        lastReport = t;
+        for (auto &[addr, m] : g_boneJitter)
+        {
+            if (m.frames < 3u)
+                continue;
+            std::vector<uint32_t> order(m.bones);
+            for (uint32_t b = 0; b < m.bones; ++b)
+                order[b] = b;
+            std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) { return m.worst[a] > m.worst[b]; });
+            std::fprintf(stderr, "[bonejit] model %06x bones %u frames %u (Hanten %u, SetBoneData %u calls):", addr, m.bones,
+                         m.frames, g_hantenCalls.exchange(0u), g_setBoneDataCalls.exchange(0u));
+            uint32_t boneTable = 0;
+            if (m.ymp >= 0x100000u && m.ymp < 0x1FFFFF0u)
+                std::memcpy(&boneTable, rdram + m.ymp + 0x20u, 4);
+            boneTable &= 0x1FFFFFFu;
+            for (uint32_t i = 0; i < 6u && i < m.bones; ++i)
+            {
+                const uint32_t b = order[i];
+                // FindBone 0x150b10: a bone's name is the first 16 bytes of its 80-byte entry
+                char name[17] = "?";
+                if (boneTable >= 0x100000u && boneTable + (b + 1u) * 80u < 0x2000000u)
+                {
+                    std::memcpy(name, rdram + boneTable + b * 80u, 16);
+                    name[16] = 0;
+                }
+                std::fprintf(stderr, " b%u %s jump %.2f spikes %u axes %.3f/%.3f/%.3f;", b, name, m.worst[b], m.spikes[b],
+                             m.axes[b * 3u], m.axes[b * 3u + 1u], m.axes[b * 3u + 2u]);
+            }
+            std::fprintf(stderr, "%c", 10);
+            std::fill(m.worst.begin(), m.worst.end(), 0.0f);
+            std::fill(m.spikes.begin(), m.spikes.end(), 0u);
+            m.frames = 2u;
+        }
+    }
+
+    // TEMP diag, part of HCTP_BONE_JITTER: the shaking bones are the IK limbs (l/r_ashi, l/r_sune, r_te, r_kote_x) and
+    // they alternate between two poses every frame. After each CCharIK::ActionLink 0x1b8860 call, the first 0x200
+    // bytes of its object; a word that goes A, B, A, B on consecutive calls is counted. Every 2 s: the words that
+    // alternated on most calls, with both values (as float and hex).
+    PS2Runtime::RecompiledFunction g_ikAltOrig = nullptr;
+    struct IkAltState
+    {
+        std::array<uint32_t, 128> s1{}, s2{};
+        std::array<uint32_t, 128> alt{};
+        uint32_t calls = 0;
+    };
+    std::map<uint32_t, IkAltState> g_ikAlt;
+    void ikAltLogged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t ik = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        // Foot (bone 89) of the watched model (HCTP_IKWATCH_MODEL, hex, default c40110 = the shaking CAM model):
+        // local and world matrices right before and after every IK call, in a timestamped ring of 120, dumped when
+        // ikring.go appears in the game folder.
+        static const uint32_t s_model = []
+        {
+            const char *v = std::getenv("HCTP_IKWATCH_MODEL");
+            return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 16)) : 0xc40110u;
+        }();
+        auto rdw = [&](uint32_t a) -> uint32_t { uint32_t v = 0; a &= 0x1FFFFFFu; if (a >= 0x100000u && a < 0x1FFFFFCu) std::memcpy(&v, rdram + a, 4); return v; };
+        const uint32_t footLoc = (rdw(s_model + 0xCCu) & 0x1FFFFFFu) + 89u * 64u, footWld = (rdw(s_model + 0xD0u) & 0x1FFFFFFu) + 89u * 64u;
+        struct IkRec { int64_t ns; uint32_t ik, sp; float locB[16], locA[16], wldB[3], wldA[3]; };
+        static std::vector<IkRec> ikRing(120);
+        static uint64_t ikN = 0;
+        IkRec &rec = ikRing[ikN++ % ikRing.size()];
+        rec.ns = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now().time_since_epoch()).count();
+        rec.ik = ik;
+        rec.sp = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[29]));
+        const bool footOk = footLoc > 0x100000u + 89u * 64u && footWld > 0x100000u + 89u * 64u && footLoc < 0x1FFFF00u && footWld < 0x1FFFF00u;
+        if (footOk)
+        {
+            std::memcpy(rec.locB, rdram + footLoc, 64);
+            std::memcpy(rec.wldB, rdram + footWld + 0x30u, 12);
+        }
+        g_ikAltOrig(rdram, ctx, runtime);
+        if (footOk)
+        {
+            std::memcpy(rec.locA, rdram + footLoc, 64);
+            std::memcpy(rec.wldA, rdram + footWld + 0x30u, 12);
+        }
+        if ((ikN & 31u) == 0u)
+            if (FILE *go = std::fopen("ikring.go", "rb"))
+            {
+                std::fclose(go);
+                std::remove("ikring.go");
+                for (uint64_t i = ikN > ikRing.size() ? ikN - ikRing.size() : 0; i < ikN; ++i)
+                {
+                    const IkRec &q = ikRing[i % ikRing.size()];
+                    std::fprintf(stderr, "[ikring] t %lld ik %06x sp %08x | foot local row0 %.4f %.4f %.4f -> %.4f %.4f %.4f row3 %.3f %.3f %.3f -> %.3f %.3f %.3f | world row3 %.3f %.3f %.3f -> %.3f %.3f %.3f%c",
+                                 static_cast<long long>(q.ns), q.ik, q.sp, q.locB[0], q.locB[1], q.locB[2], q.locA[0], q.locA[1], q.locA[2], q.locB[12],
+                                 q.locB[13], q.locB[14], q.locA[12], q.locA[13], q.locA[14], q.wldB[0], q.wldB[1], q.wldB[2], q.wldA[0], q.wldA[1],
+                                 q.wldA[2], 10);
+                }
+                std::fflush(stderr);
+            }
+        if (ik < 0x100000u || ik > 0x1FFFE00u)
+            return;
+        IkAltState &s = g_ikAlt[ik];
+        std::array<uint32_t, 128> now;
+        std::memcpy(now.data(), rdram + ik, 0x200);
+        if (s.calls >= 2u)
+            for (uint32_t i = 0; i < 128u; ++i)
+                if (now[i] == s.s2[i] && now[i] != s.s1[i])
+                    ++s.alt[i];
+        s.s2 = s.s1;
+        s.s1 = now;
+        ++s.calls;
+        static auto lastReport = std::chrono::steady_clock::now();
+        const auto t = std::chrono::steady_clock::now();
+        if (t - lastReport < std::chrono::seconds(2))
+            return;
+        lastReport = t;
+        for (auto &[addr, st] : g_ikAlt)
+        {
+            std::fprintf(stderr, "[ikalt] ik %06x calls %u:", addr, st.calls);
+            for (uint32_t i = 0; i < 128u; ++i)
+                if (st.calls > 20u && st.alt[i] * 2u > st.calls)
+                {
+                    float a, b;
+                    std::memcpy(&a, &st.s1[i], 4);
+                    std::memcpy(&b, &st.s2[i], 4);
+                    std::fprintf(stderr, " +%03x %g|%g (%08x|%08x) x%u;", i * 4u, a, b, st.s1[i], st.s2[i], st.alt[i]);
+                }
+            std::fprintf(stderr, "%c", 10);
+            st.alt.fill(0u);
+            st.calls = 2u;
+        }
+    }
+
     // TEMP diag HCTP_IKFLIP=1 (leg twitch): CCharIK::ActionLink 0x1b8860 restarts a 9-frame target ease when a limb's
     // bone-tip index (+0x88+i*4) differs from +0x9c+i*4. Logs every change of those per IK object.
     PS2Runtime::RecompiledFunction g_ikFlipOrig = nullptr;
@@ -2539,11 +3009,31 @@ namespace
     constexpr uint32_t kSfdInfo = 0x525140u, kSfdStride = 0x1ecu;
     bool g_movieNative[4] = {};
     bool g_movieNativeImportedOnly = false;
+    uint64_t g_movieLastStaleDrawTick[4] = {};
+    bool g_movieHasStaleDrawTick[4] = {};
+    std::chrono::steady_clock::time_point g_movieLastStatusPoll[4] = {};
+    bool g_movieEndReported[4] = {};
     PS2Runtime::RecompiledFunction g_mvOrigPlayAfs, g_mvOrigPlayName, g_mvOrigStop, g_mvOrigPause, g_mvOrigContinue,
         g_mvOrigGetStat, g_mvOrigLoadImage;
 
+    bool nativeMovieDrawDue(PS2Runtime *runtime, uint32_t ch)
+    {
+        const uint64_t tick = runtime->eeScheduler().currentVSyncTick();
+        ch &= 3u;
+        if (g_movieHasStaleDrawTick[ch] && g_movieLastStaleDrawTick[ch] == tick)
+            return false;
+        g_movieLastStaleDrawTick[ch] = tick;
+        g_movieHasStaleDrawTick[ch] = true;
+        return true;
+    }
+
     uint32_t guestCall(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t addr, std::initializer_list<uint32_t> args)
     {
+        // A back-edge checkpoint inside the guest callee sets t_eeCheckpointHit; leaking it out of this native stub made
+        // dispatchGuestBranch treat the stub's normal return (pc == entry) as a paused loop and call it again forever
+        // (THQ logo: LoadImage repeated millions of times, the title sequence never advanced). Keep the caller's value.
+        const bool savedHit = t_eeCheckpointHit;
+        struct RestoreHit { bool v; ~RestoreHit() { t_eeCheckpointHit = v; } } restoreHit{savedHit};
         const R5900Context saved = *ctx;
         int r = 4;
         for (uint32_t a : args)
@@ -2553,6 +3043,447 @@ namespace
         const uint32_t ret = optArg(ctx, 2);
         *ctx = saved;
         return ret;
+    }
+    // A guest call from native code that runs to the end: no EE checkpoint may stop the callee part way (the native
+    // caller cannot resume it - the CREDITS plate was left half built / never hidden or unregistered, then a hang).
+    uint32_t ppvCall(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t addr, std::initializer_list<uint32_t> args)
+    {
+        const bool saved = t_eeNoCheckpoint;
+        t_eeNoCheckpoint = true;
+        const uint32_t ret = guestCall(rdram, ctx, runtime, addr, args);
+        t_eeNoCheckpoint = saved;
+        return ret;
+    }
+    // Pay-Per-View slice 1 (Oct 27): main menu EXHIBITION / CREATE / SEASON / PPV MODE / ONLINE / OPTIONS / CREDITS.
+    // TopMenu (0x2a0 bytes; ctor 0x138950, SimpleSelectFrame: table +0x1c, count +0x20, select +0x24) keeps 5 plate
+    // pointers at +0x284 and a "decided on Exhibition" byte at +0x298; plates 5-6 go in +0x298/+0x29c, so plate 5 is
+    // 256-aligned (that byte writes 0 into its low byte). The stock ChangeIntroduction builds plates 0-4 from the fixed
+    // table 0x40EFB0, so its entries 3-4 show PPV MODE / ONLINE while a TopMenu lives (dtor restores); plates 5-6
+    // (OPTIONS, CREDITS with its lock flag) are owned here. Their blocks are zeroed before the ctor: TopMenuPlate leaves
+    // many fields unset (stock plates sit on fresh zeroed page memory), and recycled bytes there made SetAnimKey(1)
+    // decompress from a garbage source (CBpe::Expand ran off the end of RAM).
+    // The stock TopMenu methods can stop at an EE checkpoint part way (the scheduler resumes them later), e.g. inside a
+    // stock plate's SetAnimKey -> CBpe::Expand, which works on shared state: guest calls of ours made then broke the
+    // paused Expand (it ran off the end of RAM when resumed). So ours run only once the hooked original has returned
+    // (pc == ra), or on the next fresh hook entry.
+    // PPV MODE reuses CreateMenu (4 items, strings 87-90 shown as the PPV strings while g_ppvMenu) under
+    // CreateTopMenuSequence, whose LoopEndAct 0x186fa0 is routed here. Play sample / Create / Play your PPV are stubs
+    // (submenu reopens); BACK or cancel -> main menu. ONLINE is a stub that reopens the main menu.
+    // RCstrID table: 830 entries at 0x40DF70 (GetRCString 0x12fd60); ids 830+ are ours. The menu font has no '-'.
+    PS2Runtime::RecompiledFunction g_origGetRCString = nullptr, g_origTopMenuCtor = nullptr, g_origTopMenuIntro = nullptr,
+                                   g_origTopMenuDecision = nullptr, g_origTopMenuAnimEnd = nullptr, g_origTopMenuDtor = nullptr,
+                                   g_origTopSeqLoopEnd = nullptr, g_origCreateSeqLoopEnd = nullptr;
+    constexpr uint32_t kPpvStrBase = 830u; // 830 PPV MODE, 831-834 submenu items, 835 ONLINE
+    const char *const kPpvStrings[] = {"PPV MODE", "PLAY SAMPLE PPV", "CREATE A PPV", "PLAY YOUR PPV", "BACK", "ONLINE"};
+    constexpr uint32_t kPpvStrCount = 6u;
+    constexpr uint32_t kTopItems = 7u, kHostPlates = 2u;
+    constexpr uint32_t kPlateSize = 0xd0u; // ChangeIntroduction's operator new size
+    uint32_t g_ppvStrAddr[kPpvStrCount] = {};
+    uint32_t g_ppvTopTable = 0u, g_ppvPlates[kHostPlates] = {}, g_ppvPlateRaw[kHostPlates] = {}, g_ppvPlateOwner = 0u;
+    uint32_t g_ppvCreditsFlag = 0u;
+    bool g_ppvMenu = false, g_ppvHidePending = false;
+    enum class PpvMode { None, Create, Play }; // PPV cards (slice 2, below)
+    PpvMode g_ppvMode = PpvMode::None;
+    bool g_ppvForceExhibition = false; // making a card: the next main menu decides EXHIBITION at once
+    // the hooked original ran to its return (not stopped at a checkpoint)
+    bool ppvOrigDone(R5900Context *ctx, uint32_t ra) { return ctx->pc == ra; }
+    void ppvReturn(R5900Context *ctx, uint32_t v0)
+    {
+        SET_GPR_U32(ctx, 2, v0);
+        ctx->pc = optArg(ctx, 31);
+    }
+    uint32_t ppvVirtual(uint8_t *rdram, uint32_t obj, uint32_t vtblOff, uint32_t off)
+    {
+        return optR32(rdram, optR32(rdram, obj + vtblOff) + off);
+    }
+    void ppvGetRCString(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        uint32_t id = optArg(ctx, 4);
+        if (g_ppvMenu && id >= 87u && id <= 90u)
+            id = kPpvStrBase + 1u + (id - 87u);
+        if (id < kPpvStrBase || id >= kPpvStrBase + kPpvStrCount)
+            return g_origGetRCString(rdram, ctx, runtime);
+        uint32_t &addr = g_ppvStrAddr[id - kPpvStrBase];
+        if (!addr)
+        {
+            const char *s = kPpvStrings[id - kPpvStrBase];
+            addr = runtime->guestMalloc(static_cast<uint32_t>(std::strlen(s)) + 1u);
+            std::memcpy(optP(rdram, addr), s, std::strlen(s) + 1u);
+        }
+        ppvReturn(ctx, addr);
+    }
+    void ppvTopMenuCtor(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = optArg(ctx, 4);
+        g_origTopMenuCtor(rdram, ctx, runtime);
+        if (!g_ppvTopTable)
+            g_ppvTopTable = runtime->guestMalloc(kTopItems * 8u);
+        const uint32_t stock = optR32(rdram, self + 0x1cu);
+        g_ppvCreditsFlag = optR32(rdram, stock + 32u);
+        // 3 PPV MODE, 4 ONLINE (stock plates 3-4), 5 OPTIONS, 6 CREDITS (host plates)
+        const uint32_t extra[4][2] = {{0u, kPpvStrBase}, {0u, kPpvStrBase + 5u}, {0u, 5u}, {g_ppvCreditsFlag, 6u}};
+        std::memcpy(optP(rdram, g_ppvTopTable), optP(rdram, stock), 3u * 8u);
+        for (uint32_t i = 0; i < 4u; ++i)
+        {
+            optW32(rdram, g_ppvTopTable + (3u + i) * 8u, extra[i][0]);
+            optW32(rdram, g_ppvTopTable + (3u + i) * 8u + 4u, extra[i][1]);
+        }
+        for (uint32_t i = 0; i < 2u; ++i)
+        {
+            optW32(rdram, 0x40EFB0u + (3u + i) * 8u, 0u);
+            optW32(rdram, 0x40EFB0u + (3u + i) * 8u + 4u, extra[i][1]);
+        }
+        optW32(rdram, self + 0x1cu, g_ppvTopTable);
+        optW32(rdram, self + 0x20u, kTopItems);
+        optW32(rdram, self + 0x298u, 0u);
+        if (g_ppvMode == PpvMode::Create && !g_ppvForceExhibition) // left Exhibition while making a card: card done
+            g_ppvMode = PpvMode::None;
+        g_ppvMenu = false;
+    }
+    // Builds plate 5 and lays out all 6 once the stock 5 exist. ChangeIntroduction can be paused at a loop checkpoint
+    // and resumed later, so this also runs from IsAnimEnd (IntroductionAction polls it every frame).
+    void ppvTopMenuLayout(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t self)
+    {
+        if (g_ppvPlateOwner == self)
+            return;
+        for (uint32_t i = 0; i < 5u; ++i)
+            if (!optR32(rdram, self + 0x284u + i * 4u))
+                return;
+        const uint32_t first = optR32(rdram, self + 0x284u);
+        const uint32_t ids[kHostPlates] = {5u, 6u}; // OPTIONS, CREDITS
+        for (uint32_t k = 0; k < kHostPlates; ++k)
+        {
+            // the game's operator new on the current ymem page, like the stock plates (a host-heap plate made the next
+            // screen's load crash); plate 5 rounded up to 256 (see above), the raw block kept for delete
+            const uint32_t raw = ppvCall(rdram, ctx, runtime, 0x1001e0u, {k ? kPlateSize : kPlateSize + 0x100u});
+            if (!raw)
+                return;
+            const uint32_t plate = k ? raw : (raw + 0xffu) & ~0xffu;
+            std::memset(optP(rdram, plate), 0, kPlateSize);
+            g_ppvPlateRaw[k] = raw;
+            // TopMenuPlate(CFontDraw *, RCstrID, munuPacNoAnim 0x2712, munuPacNoTim 2) as ChangeIntroduction does
+            ppvCall(rdram, ctx, runtime, 0x138450u, {plate, optR32(rdram, self + 0x7cu), ids[k], 0x2712u, 2u});
+            rdram[plate + 0xc8u] = static_cast<uint8_t>(k ? g_ppvCreditsFlag : 0u);
+            optW32(rdram, plate + 0x60u, optR32(rdram, first + 0x60u));
+            optW32(rdram, plate + 0x68u, optR32(rdram, first + 0x68u));
+            optW32(rdram, plate + 0x6cu, optR32(rdram, first + 0x6cu));
+            g_ppvPlates[k] = plate;
+            optW32(rdram, self + 0x298u + k * 4u, plate);
+        }
+        g_ppvPlateOwner = self;
+        // stock y = 58 + 78*i for 5 plates; 7 plates 56 apart, ending where the 5th did
+        for (uint32_t i = 0; i < kTopItems; ++i)
+        {
+            const float y = 34.0f + 56.0f * static_cast<float>(i);
+            std::memcpy(optP(rdram, optR32(rdram, self + 0x284u + i * 4u) + 0x64u), &y, 4);
+        }
+        for (uint32_t plate : g_ppvPlates)
+            ppvCall(rdram, ctx, runtime, ppvVirtual(rdram, plate, 0u, 0x34u), {plate, 0u});
+    }
+    // TopMenuCursor::ChangeTarget 0x138900 (this, CBaseDraw *, RCstrID): TopMenu passes the stock table 0x40EFB0
+    // entry [select], so selects 5-6 read past it (ids 0-1 = PRESS START / NOW LOADING in the green highlight)
+    PS2Runtime::RecompiledFunction g_origCursorTarget = nullptr;
+    void ppvCursorTarget(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (g_ppvPlateOwner && g_ppvTopTable)
+        {
+            const uint32_t sel = optR32(rdram, g_ppvPlateOwner + 0x24u);
+            if (sel < kTopItems)
+                SET_GPR_U32(ctx, 6, optR32(rdram, g_ppvTopTable + sel * 8u + 4u));
+        }
+        g_origCursorTarget(rdram, ctx, runtime);
+    }
+    void ppvTopMenuIntro(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = optArg(ctx, 4), ra = optArg(ctx, 31);
+        g_origTopMenuIntro(rdram, ctx, runtime);
+        if (ppvOrigDone(ctx, ra))
+            ppvTopMenuLayout(rdram, ctx, runtime, self);
+    }
+    void ppvHidePlates(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (!g_ppvHidePending || !g_ppvPlateOwner)
+            return;
+        g_ppvHidePending = false;
+        for (uint32_t plate : g_ppvPlates)
+            ppvCall(rdram, ctx, runtime, ppvVirtual(rdram, plate, 0u, 0x34u), {plate, 1u});
+    }
+    void ppvTopMenuDecision(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = optArg(ctx, 4);
+        const uint32_t ra = optArg(ctx, 31);
+        g_origTopMenuDecision(rdram, ctx, runtime);
+        if (g_ppvPlateOwner != self)
+            return;
+        g_ppvHidePending = true;
+        if (ppvOrigDone(ctx, ra))
+            ppvHidePlates(rdram, ctx, runtime);
+    }
+    void ppvTopMenuAnimEnd(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = optArg(ctx, 4);
+        ppvTopMenuLayout(rdram, ctx, runtime, self);
+        ppvHidePlates(rdram, ctx, runtime);
+        const uint32_t ra = optArg(ctx, 31);
+        g_origTopMenuAnimEnd(rdram, ctx, runtime);
+        // the stock check loops over plates 0-4 only; wait for ours too (+0x89 = anim end) so OPTIONS / CREDITS finish
+        // their decision fade before the next screen
+        if (g_ppvPlateOwner == self && ppvOrigDone(ctx, ra) && (optArg(ctx, 2) & 0xffu))
+            for (uint32_t plate : g_ppvPlates)
+                if (!rdram[plate + 0x89u])
+                    SET_GPR_U32(ctx, 2, 0u);
+    }
+    void ppvTopMenuDtor(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = optArg(ctx, 4);
+        if (self && g_ppvPlateOwner == self)
+        {
+            g_ppvPlateOwner = 0u;
+            g_ppvHidePending = false;
+            optW32(rdram, self + 0x298u, 0u);
+            optW32(rdram, self + 0x29cu, 0u);
+            optW32(rdram, 0x40EFB0u + 24u, 0u);
+            optW32(rdram, 0x40EFB0u + 28u, 5u);
+            optW32(rdram, 0x40EFB0u + 32u, g_ppvCreditsFlag);
+            optW32(rdram, 0x40EFB0u + 36u, 6u);
+            for (uint32_t k = 0; k < kHostPlates; ++k)
+            {
+                uint32_t &plate = g_ppvPlates[k];
+                if (!plate)
+                    continue;
+                ppvCall(rdram, ctx, runtime, ppvVirtual(rdram, plate, 0u, 8u), {plate, 0u});
+                ppvCall(rdram, ctx, runtime, 0x100200u, {g_ppvPlateRaw[k]}); // operator delete
+                plate = 0u;
+            }
+        }
+        g_origTopMenuDtor(rdram, ctx, runtime);
+    }
+    // Ends a sequence and its menu the way the stock LoopEndActs do, then starts `ctor` (size 0x10 sequences).
+    void ppvNextSequence(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t self, uint32_t menu, uint32_t ctor,
+                         uint32_t size = 0x10u)
+    {
+        ppvCall(rdram, ctx, runtime, ppvVirtual(rdram, menu, 0u, 8u), {menu, 1u});
+        optW32(rdram, self + 0xcu, 0u);
+        ppvCall(rdram, ctx, runtime, ppvVirtual(rdram, self, 8u, 8u), {self, 1u});
+        const uint32_t page = optR32(rdram, 0x500f00u);
+        ppvCall(rdram, ctx, runtime, 0x140be0u, {1u}); // ymemChangePage
+        const uint32_t next = ppvCall(rdram, ctx, runtime, 0x1001e0u, {size});
+        if (next)
+            ppvCall(rdram, ctx, runtime, ctor, {next});
+        ppvCall(rdram, ctx, runtime, 0x140be0u, {page});
+        ppvReturn(ctx, 0u);
+    }
+    // TopMenuSequence::LoopEndAct 0x1381d0: item 3 PPV MODE -> CreateTopMenuSequence (result 1) in PPV mode, item 4
+    // ONLINE (stub) -> main menu again, items 5-6 -> the stock OPTIONS / CREDITS results 3-4
+    void ppvTopSeqLoopEnd(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = optArg(ctx, 4);
+        const uint32_t menu = optR32(rdram, self + 0xcu);
+        if (g_ppvForceExhibition && menu)
+        {
+            g_ppvForceExhibition = false;
+            optW32(rdram, menu + 8u, 5u);     // MenuFrame state: ended
+            rdram[menu + 0xcu] = 1u;          // decided
+            optW32(rdram, menu + 0x24u, 0u);  // EXHIBITION
+            return g_origTopSeqLoopEnd(rdram, ctx, runtime);
+        }
+        if (menu && optR32(rdram, menu + 8u) == 5u && rdram[menu + 0xcu])
+        {
+            const uint32_t sel = optR32(rdram, menu + 0x24u);
+            if (sel == 3u)
+            {
+                g_ppvMenu = true;
+                optW32(rdram, menu + 0x24u, 1u);
+            }
+            else if (sel == 4u)
+            {
+                if (!(ppvCall(rdram, ctx, runtime, 0x378bc0u, {}) & 0xffu) || // caOutGame::IsAllEnd
+                    !(ppvCall(rdram, ctx, runtime, 0x3aa380u, {}) & 0xffu))   // CrowdSignRead::CanUse
+                    return ppvReturn(ctx, 0u);
+                return ppvNextSequence(rdram, ctx, runtime, self, menu, 0x138030u); // TopMenuSequence
+            }
+            else if (sel >= 5u)
+                optW32(rdram, menu + 0x24u, sel - 2u); // OPTIONS 3, CREDITS 4
+        }
+        g_origTopSeqLoopEnd(rdram, ctx, runtime);
+    }
+    // PPV slice 2: cards. A card is up to 5 snapshots of the global match setup block (rule 0x4920C0, cast slots
+    // 0x4921C0 + n*0x20, stage/game state 0x4922C0; dense code refs 0x492040..0x492440). CREATE A PPV runs the stock
+    // Exhibition flow per match; GoGameFromMenu 0x1a8f80 (called by ExshibitionMenuSequence::LoopEndAct after it deleted
+    // itself, on page 1) snapshots instead of starting and opens Exhibition again (PPV submenu after 5). PLAY plays
+    // match 1 through GoGameFromMenu with the snapshot put back after OutPutRuleParam 0x181e70 (options -> rule);
+    // ReturnMenuFromGame 0x1a9020 starts the next one, the last returns as usual. Cards: ppv_card.bin /
+    // ppv_sample.bin in the game folder ("PPV1", u32 count, count * 0x400 bytes). See notes\PPV_MODE_DESIGN.md.
+    constexpr uint32_t kPpvSetup = 0x492040u, kPpvSetupSize = 0x400u, kPpvMaxMatches = 5u;
+    std::vector<std::vector<uint8_t>> g_ppvCard;
+    size_t g_ppvPlayIdx = 0;
+    PS2Runtime::RecompiledFunction g_origGoGame = nullptr, g_origOutPutRule = nullptr, g_origReturnFromGame = nullptr;
+    // Guest tail call: heavy game functions (GoGameFromMenu) run as guest code with EE checkpoints, not in ppvCall
+    // (no checkpoints there), returning straight to the hook's caller.
+    void ppvTail(R5900Context *ctx, uint32_t fn)
+    {
+        ctx->pc = fn;
+    }
+    bool ppvSaveCard(const char *path)
+    {
+        std::ofstream f(path, std::ios::binary);
+        if (!f)
+            return false;
+        const uint32_t count = static_cast<uint32_t>(g_ppvCard.size());
+        f.write("PPV1", 4);
+        f.write(reinterpret_cast<const char *>(&count), 4);
+        for (const auto &m : g_ppvCard)
+            f.write(reinterpret_cast<const char *>(m.data()), kPpvSetupSize);
+        return static_cast<bool>(f);
+    }
+    bool ppvLoadCard(const char *path)
+    {
+        g_ppvCard.clear();
+        std::ifstream f(path, std::ios::binary);
+        char magic[4] = {};
+        uint32_t count = 0;
+        if (!f.read(magic, 4) || std::memcmp(magic, "PPV1", 4) != 0 || !f.read(reinterpret_cast<char *>(&count), 4))
+            return false;
+        for (uint32_t i = 0; i < count && i < kPpvMaxMatches; ++i)
+        {
+            std::vector<uint8_t> m(kPpvSetupSize);
+            if (!f.read(reinterpret_cast<char *>(m.data()), kPpvSetupSize))
+                break;
+            g_ppvCard.push_back(std::move(m));
+        }
+        return !g_ppvCard.empty();
+    }
+    void ppvGoGame(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (g_ppvMode != PpvMode::Create)
+            return g_origGoGame(rdram, ctx, runtime);
+        ppvCall(rdram, ctx, runtime, 0x181e70u, {}); // OutPutRuleParam, as GoGameFromMenu does first
+        g_ppvCard.emplace_back(optP(rdram, kPpvSetup), optP(rdram, kPpvSetup) + kPpvSetupSize);
+        ppvSaveCard("ppv_card.bin");
+        std::cerr << "[ppv] card match " << g_ppvCard.size() << " saved (rule 0x" << std::hex
+                  << optR32(rdram, 0x4920C0u) << " stage " << static_cast<int>(rdram[0x4922C0u]) << std::dec << ")"
+                  << std::endl;
+        // next match: the main-menu sequence with EXHIBITION forced (an ExshibitionMenuSequence built here or from the
+        // PPV submenu misses the main menu's context: a zero-vtable sub-object crashed CObjControl::AllAction);
+        // card full: the PPV submenu
+        const bool more = g_ppvCard.size() < kPpvMaxMatches;
+        if (more)
+            g_ppvForceExhibition = true;
+        else
+        {
+            g_ppvMode = PpvMode::None;
+            g_ppvMenu = true;
+        }
+        const uint32_t page = optR32(rdram, 0x500f00u);
+        ppvCall(rdram, ctx, runtime, 0x140be0u, {1u}); // ymemChangePage
+        const uint32_t next = ppvCall(rdram, ctx, runtime, 0x1001e0u, {0x10u});
+        if (next)
+            ppvCall(rdram, ctx, runtime, more ? 0x138030u : 0x186e50u, {next}); // TopMenuSequence / CreateTopMenuSequence
+        ppvCall(rdram, ctx, runtime, 0x140be0u, {page});
+        ppvReturn(ctx, 0u);
+    }
+    // while playing a card the snapshot (taken after OutPutRuleParam) replaces it; acting after a hooked original
+    // is unsafe (it can pause at an EE checkpoint and resume later)
+    void ppvOutPutRule(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (g_ppvMode != PpvMode::Play || g_ppvPlayIdx >= g_ppvCard.size())
+            return g_origOutPutRule(rdram, ctx, runtime);
+        std::memcpy(optP(rdram, kPpvSetup), g_ppvCard[g_ppvPlayIdx].data(), kPpvSetupSize);
+        ppvReturn(ctx, 0u);
+    }
+    void ppvReturnFromGame(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (g_ppvMode == PpvMode::Play && ++g_ppvPlayIdx < g_ppvCard.size())
+        {
+            std::cerr << "[ppv] next match " << g_ppvPlayIdx + 1 << "/" << g_ppvCard.size() << std::endl;
+            return ppvTail(ctx, 0x1a8f80u); // GoGameFromMenu (ppvGoGame -> stock, snapshot restored)
+        }
+        if (g_ppvMode == PpvMode::Play)
+            std::cerr << "[ppv] card finished" << std::endl;
+        g_ppvMode = PpvMode::None;
+        g_origReturnFromGame(rdram, ctx, runtime);
+    }
+    // PPV submenu: start playing the loaded card (teardown as ppvNextSequence, then the first match)
+    // PPV submenu: start playing the loaded card. Launching in the same frame crashed in a CChar dtor (the menu
+    // wrestler still alive / half torn down when the event manager's ChangeLevel clears all objects, with or
+    // without the snapshot): end MenuWrestlerCtrl and the menu now, keep the sequence for kPpvLaunchFrames
+    // (ppvCreateSeqLoopEnd counts down), then delete it and run GoGameFromMenu as guest code.
+    constexpr int kPpvLaunchFrames = 10;
+    int g_ppvLaunchDelay = 0;
+    void ppvStartPlay(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t self, uint32_t menu)
+    {
+        g_ppvMode = PpvMode::Play;
+        g_ppvPlayIdx = 0;
+        std::cerr << "[ppv] playing card, " << g_ppvCard.size() << " matches" << std::endl;
+        ppvCall(rdram, ctx, runtime, ppvVirtual(rdram, menu, 0u, 8u), {menu, 1u});
+        optW32(rdram, self + 0xcu, 0u);
+        ppvCall(rdram, ctx, runtime, 0x2440a0u, {}); // MenuWrestlerCtrl::End
+        g_ppvLaunchDelay = kPpvLaunchFrames;
+        ppvReturn(ctx, 0u);
+    }
+    // CreateTopMenuSequence::LoopEndAct 0x186fa0 while it shows the PPV submenu (same waits as the original)
+    void ppvCreateSeqLoopEnd(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (!g_ppvMenu)
+            return g_origCreateSeqLoopEnd(rdram, ctx, runtime);
+        const uint32_t self = optArg(ctx, 4);
+        const uint32_t menu = optR32(rdram, self + 0xcu);
+        if (!menu && g_ppvLaunchDelay > 0 && --g_ppvLaunchDelay == 0) // ppvStartPlay: the menu wrestler is gone now
+        {
+            g_ppvMenu = false;
+            ppvCall(rdram, ctx, runtime, ppvVirtual(rdram, self, 8u, 8u), {self, 1u});
+            return ppvTail(ctx, 0x1a8f80u); // GoGameFromMenu
+        }
+        if (!menu || optR32(rdram, menu + 8u) != 5u)
+            return ppvReturn(ctx, 0u);
+        const uint32_t sel = optR32(rdram, menu + 0x24u);
+        const bool decided = rdram[menu + 0xcu] != 0u;
+        if (decided && !(ppvCall(rdram, ctx, runtime, 0x378bc0u, {}) & 0xffu)) // caOutGame::IsAllEnd
+            return ppvReturn(ctx, 0u);
+        if (!(ppvCall(rdram, ctx, runtime, 0x3aa380u, {}) & 0xffu)) // CrowdSignRead::CanUse
+            return ppvReturn(ctx, 0u);
+        if (!decided || sel >= 3u)
+        {
+            g_ppvMenu = false;
+            return ppvNextSequence(rdram, ctx, runtime, self, menu, 0x138030u); // TopMenuSequence
+        }
+        if (sel == 1u) // CREATE A PPV: new card, one Exhibition run per match
+        {
+            std::cerr << "[ppv] creating a card" << std::endl;
+            g_ppvCard.clear();
+            g_ppvMode = PpvMode::Create;
+            g_ppvMenu = false;
+            g_ppvForceExhibition = true; // the main menu picks EXHIBITION by itself (see ppvTopSeqLoopEnd)
+            return ppvNextSequence(rdram, ctx, runtime, self, menu, 0x138030u); // TopMenuSequence
+        }
+        if (ppvLoadCard(sel == 0u ? "ppv_sample.bin" : "ppv_card.bin"))
+            return ppvStartPlay(rdram, ctx, runtime, self, menu);
+        std::cerr << "[ppv] no " << (sel == 0u ? "sample" : "saved") << " card" << std::endl;
+        ppvNextSequence(rdram, ctx, runtime, self, menu, 0x186e50u); // CreateTopMenuSequence again (PPV submenu)
+    }
+    void installPpvMenu(PS2Runtime &runtime)
+    {
+        struct Hook { uint32_t addr; PS2Runtime::RecompiledFunction *orig; PS2Runtime::RecompiledFunction fn; };
+        const Hook hooks[] = {{0x12fd60u, &g_origGetRCString, ppvGetRCString},
+                              {0x138950u, &g_origTopMenuCtor, ppvTopMenuCtor},
+                              {0x138c70u, &g_origTopMenuIntro, ppvTopMenuIntro},
+                              {0x138f40u, &g_origTopMenuDecision, ppvTopMenuDecision},
+                              {0x139400u, &g_origTopMenuAnimEnd, ppvTopMenuAnimEnd},
+                              {0x138a30u, &g_origTopMenuDtor, ppvTopMenuDtor},
+                              {0x1381d0u, &g_origTopSeqLoopEnd, ppvTopSeqLoopEnd},
+                              {0x186fa0u, &g_origCreateSeqLoopEnd, ppvCreateSeqLoopEnd},
+                              {0x138900u, &g_origCursorTarget, ppvCursorTarget},
+                              {0x1a8f80u, &g_origGoGame, ppvGoGame},
+                              {0x181e70u, &g_origOutPutRule, ppvOutPutRule},
+                              {0x1a9020u, &g_origReturnFromGame, ppvReturnFromGame}};
+        for (const Hook &h : hooks)
+            if (!(*h.orig = runtime.lookupFunction(h.addr)))
+                return;
+        for (const Hook &h : hooks)
+            runtime.replaceFunction(h.addr, h.fn);
+
+        std::cerr << "[ppv] main menu PPV MODE entry installed" << std::endl;
+
     }
     uint32_t sfdInfo(uint32_t ch) { return kSfdInfo + ch * kSfdStride; }
     void makePath3Tag(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t ch)
@@ -2564,6 +3495,9 @@ namespace
     void movieStarted(uint8_t *rdram, uint32_t ch)
     {
         g_movieNative[ch] = true;
+        g_movieHasStaleDrawTick[ch] = false;
+        g_movieLastStatusPoll[ch] = {};
+        g_movieEndReported[ch] = false;
         optW32(rdram, sfdInfo(ch) + 0xb4u, 2u);
         *optP(rdram, sfdInfo(ch) + 0x1e8u) = 0u;
     }
@@ -2718,13 +3652,28 @@ namespace
             return;
         }
         const uint32_t info = sfdInfo(ch);
+        // The title's tight LoadImage loop stops polling GetStat after playback starts.
+        // Publish the host player's end state here so the guest can leave the final logo.
+        const auto now = std::chrono::steady_clock::now();
+        auto &lastPoll = g_movieLastStatusPoll[ch];
+        if (lastPoll.time_since_epoch().count() == 0 || now - lastPoll >= std::chrono::milliseconds(16))
+        {
+            lastPoll = now;
+            const int stat = hctpMovieStatus(static_cast<int>(ch));
+            optW32(rdram, info + 0xb4u, static_cast<uint32_t>(stat));
+            if (stat == 3 && !g_movieEndReported[ch])
+            {
+                g_movieEndReported[ch] = true;
+                std::fprintf(stderr, "[nmovie] ch %u end published from LoadImage%c", ch, 10);
+            }
+        }
         const uint32_t w = optR32(rdram, info + 8u), h = optR32(rdram, info + 0xcu), buf = optR32(rdram, info + 0xccu);
         const uint32_t mode = optR32(rdram, info + 0xb8u), gsWord = optR32(rdram, info + 0x84u);
         const uint32_t pkt = optR32(rdram, info + 0xbcu), usr = optR32(rdram, info + 0xc4u);
         const bool fresh = w && h && buf && hctpMovieFrame(static_cast<int>(ch), optP(rdram, buf), static_cast<int>(w), static_cast<int>(h));
         if (!fresh)
         {
-            if (mode == 1u && *optP(rdram, info + 0x1e8u))
+            if (mode == 1u && *optP(rdram, info + 0x1e8u) && nativeMovieDrawDue(runtime, ch))
                 guestCall(rdram, ctx, runtime, 0x3666c0u, {usr}); // UsrDrawMv: keep showing the last frame
             return;
         }
@@ -2740,6 +3689,8 @@ namespace
         {
             guestCall(rdram, ctx, runtime, 0x3665f0u, {pkt, usr, buf, w, h, color, gsWord}); // UsrLoadMvFrm
             guestCall(rdram, ctx, runtime, 0x3666c0u, {usr});                                 // UsrDrawMv
+            if (runtime->chain().async())
+                runtime->chain().fence(ChainFence::GifStat);
             *optP(rdram, info + 0x1e8u) = 1u;
         }
         else if (gsWord && pkt)
@@ -2749,6 +3700,8 @@ namespace
             const uint32_t dmaCh = guestCall(rdram, ctx, runtime, 0x102df0u, {2u}); // sceDmaGetChan(GIF)
             guestCall(rdram, ctx, runtime, 0x101770u, {0u, 0u});                  // sceGsSyncPath
             guestCall(rdram, ctx, runtime, 0x103120u, {dmaCh, pkt});              // sceDmaSend
+            if (runtime->chain().async())
+                runtime->chain().fence(ChainFence::GifStat);
         }
     }
     void installNativeMovies(PS2Runtime &runtime, bool importedOnly = false)
@@ -2875,6 +3828,34 @@ namespace
 #undef HCTP_VU0_PUT
             std::cerr << "[vu0recomp] " << n << " libvu0 functions back to the recompiled game code" << std::endl;
         }
+        if (std::getenv("HCTP_BONE_JITTER"))
+        {
+            g_boneJitterOrig = runtime.lookupFunction(0x155dc0u);
+            if (!g_boneJitterOrig || !runtime.replaceFunction(0x155dc0u, boneJitterLogged))
+                std::cerr << "[bonejit] hook FAILED" << std::endl;
+            // Same probe on both world-matrix writers: CSkinModel::Update 0x150be0 and FastUpdate 0x151160
+            g_mulN2Orig = runtime.lookupFunction(0x1510c0u);
+            if (!g_mulN2Orig || !runtime.replaceFunction(0x1510c0u, mulN2Logged))
+                std::cerr << "[mulring] hook FAILED" << std::endl;
+            g_skinUpdateOrig = runtime.lookupFunction(0x150be0u);
+            g_skinFastUpdateOrig = runtime.lookupFunction(0x151160u);
+            if (!g_skinUpdateOrig || !runtime.replaceFunction(0x150be0u, [](uint8_t *r, R5900Context *c, PS2Runtime *p)
+                                                              { skinUpdateCommon(r, c, p, g_skinUpdateOrig); }))
+                std::cerr << "[skinupd] hook FAILED Update" << std::endl;
+            if (!g_skinFastUpdateOrig || !runtime.replaceFunction(0x151160u, [](uint8_t *r, R5900Context *c, PS2Runtime *p)
+                                                                  { skinUpdateCommon(r, c, p, g_skinFastUpdateOrig); }))
+                std::cerr << "[skinupd] hook FAILED FastUpdate" << std::endl;
+            g_ikAltOrig = runtime.lookupFunction(0x1b8860u);
+            if (!g_ikAltOrig || !runtime.replaceFunction(0x1b8860u, ikAltLogged))
+                std::cerr << "[ikalt] hook FAILED" << std::endl;
+            // CMotionData::Hanten 0x1b6de0 (mirrors motion data in place) and its caller SetBoneData 0x1b6660: counted
+            g_hantenOrig = runtime.lookupFunction(0x1b6de0u);
+            g_setBoneDataOrig = runtime.lookupFunction(0x1b6660u);
+            if (g_hantenOrig)
+                runtime.replaceFunction(0x1b6de0u, [](uint8_t *r, R5900Context *c, PS2Runtime *p) { ++g_hantenCalls; g_hantenOrig(r, c, p); });
+            if (g_setBoneDataOrig)
+                runtime.replaceFunction(0x1b6660u, [](uint8_t *r, R5900Context *c, PS2Runtime *p) { ++g_setBoneDataCalls; g_setBoneDataOrig(r, c, p); });
+        }
         if (std::getenv("HCTP_IKFLIP"))
         {
             g_ikFlipOrig = runtime.lookupFunction(0x1b8860u);
@@ -2930,6 +3911,8 @@ namespace
         startPcProfiler();
         runtime.replaceFunction(0x11d810u, cdLayerSearchFile);
         installLooseEntrances(runtime);
+        if (std::getenv("HCTP_NO_PPV") == nullptr)
+            installPpvMenu(runtime);
         // native libsdr: sceSdRemote as SIF RPC to the real sdrdrv IRX (sound effects); the game's client data at
         // 0x48F240 and command buffer at 0x48F200 (from its sceSdRemoteInit / sceSdRemote). HCTP_SDR_STUB=1 = stand-in.
         if (std::getenv("HCTP_SDR_STUB") == nullptr)
