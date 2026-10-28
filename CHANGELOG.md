@@ -24,8 +24,10 @@ wrestler slots beyond the stock roster) is a work in progress and is planned for
 Coming next: a fuller launcher with a built-in mod manager, along the lines of the SvR 2011 recomp's launcher.
 
 Testing: please write down exactly what you did and what happened for anything you test (mode, wrestlers,
-match type, arena, what you pressed, what went wrong, a screenshot if you can). Send notes to:
-https://github.com/BigDaddyJRich/hctp-recomp/issues
+match type, arena, what you pressed, what went wrong, a screenshot if you can). Send notes to any of:
+- Email: jrich102948@gmail.com
+- Discord: https://discord.com/users/531701434597638165
+- GitHub Issues: https://github.com/BigDaddyJRich/hctp-recomp/issues
 
 Known issues (most earlier bugs are fixed; these remain):
 - HBK's entrance slows down when he does his pyro in the ring.
