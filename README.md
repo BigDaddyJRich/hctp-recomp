@@ -1,4 +1,4 @@
-# WWE SmackDown! Here Comes the Pain — PC recompilation (work in progress)
+# WWE SmackDown! Here Comes the Pain — PC recompilation (test build)
 
 A static recompilation of **WWE SmackDown! Here Comes the Pain** (PlayStation 2, NTSC-U, **SLUS-20787**) into a native
 Windows program. The game's MIPS code is translated to C++ with [PS2Recomp](https://github.com/ran-j/PS2Recomp) and
@@ -74,14 +74,6 @@ Known limitations:
 
 Near-term plan: roster expansion (new wrestler slots) over the following weeks, finished together with Nero's 3X mod;
 a fuller launcher with a mod manager, along the lines of the SvR 2011 recomp's; then PPV mode and online.
-
-**This is a TEST BUILD.** Please report what you find.
-
-How to report a test result:
-1. What you did, step by step (mode, match type, wrestlers, arena, menu screen).
-2. What happened, and what you expected instead. A screenshot or short video helps a lot.
-3. Your launcher settings (renderer scale, window mode, widescreen) and your PC (CPU, GPU, Windows version).
-4. The newest log files from the game folder's `logs` folder, if there are any.
 
 Found a bug? Write down exactly what you did and what happened, and send it to jrich102948@gmail.com,
 [Discord](https://discord.com/users/531701434597638165) or [GitHub Issues](https://github.com/BigDaddyJRich/hctp-recomp/issues).
