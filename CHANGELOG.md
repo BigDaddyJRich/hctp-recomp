@@ -31,6 +31,8 @@ match type, arena, what you pressed, what went wrong, a screenshot if you can). 
 
 Known issues (most earlier bugs are fixed):
 - HBK's entrance slows down when he does his pyro in the ring.
+- Commentary (optional pack) is mostly tested but not completely: wrong, missing or mismatched calls (names, match
+  types, titles, tag/multi-man matches) - please send what you hear and in which match.
 - There can be random crashes and random hangs in things we haven't tested yet. If you hit one, write down what
   you were doing and send it in (see Testing above).
 
