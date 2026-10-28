@@ -29,12 +29,10 @@ match type, arena, what you pressed, what went wrong, a screenshot if you can). 
 - Discord: https://discord.com/users/531701434597638165
 - GitHub Issues: https://github.com/BigDaddyJRich/hctp-recomp/issues
 
-Known issues (most earlier bugs are fixed; these remain):
+Known issues (most earlier bugs are fixed):
 - HBK's entrance slows down when he does his pyro in the ring.
-- Letting the attract demo play and then pressing Start gives a black screen (restart the game).
-- Some hair looks see-through (HBK's matches PCSX2, so partly how the model was made).
-- OPTIONS and CREDITS menu plates don't fade out when picked; they vanish on the next screen.
-- Create-a-Moveset entrance preview: some modded entrances show without their attire (fine in matches).
+- There can be random crashes and random hangs in things we haven't tested yet. If you hit one, write down what
+  you were doing and send it in (see Testing above).
 
 ## Current test build
 
