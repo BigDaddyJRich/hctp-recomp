@@ -19,7 +19,7 @@ public partial class SettingsViewModel : ObservableObject
     // the properties that are settings (a change is saved); the others are worked out from them
     private static readonly HashSet<string> Saved = new()
     {
-        nameof(ModeIndex), nameof(Screen), nameof(Maximised), nameof(Resolution), nameof(Refresh), nameof(VsyncIndex),
+        nameof(ModeIndex), nameof(Screen), nameof(Maximised), nameof(Resolution), nameof(Refresh), nameof(VsyncIndex), nameof(ShowFps),
         nameof(ShapeIndex), nameof(RendererIndex), nameof(ScaleIndex), nameof(FilterIndex), nameof(Sharpening),
         nameof(Volume), nameof(Reverb), nameof(Multitap), nameof(Vibration1), nameof(Vibration2), nameof(Vibration3),
         nameof(Vibration4), nameof(HighPoly), nameof(Sharp2D), nameof(KeyboardIndex), nameof(CheckUpdates), nameof(CameraIndex),
@@ -90,7 +90,7 @@ public partial class SettingsViewModel : ObservableObject
 
     public string SummaryPicture =>
         (ShapeIndex switch { 1 => "4:3", 2 => "Stretched", _ => "Widescreen" }) + " · " +
-        (RendererIndex == 0 ? $"graphics card · {new[] { 1, 2, 4, 5, 6 }[Math.Clamp(ScaleIndex, 0, 4)]}×" : "CPU");
+        (RendererIndex == 0 ? $"graphics card · {new[] { "1×", "2×", "3×", "4×", "auto" }[Math.Clamp(ScaleIndex, 0, 4)]}" : "CPU");
 
     public string SummaryPlayers =>
         (Multitap ? "Up to 4" : "2") + " · vibration " +
@@ -117,6 +117,7 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private List<Choice> _refreshChoices = new();
     [ObservableProperty] private Choice? _refresh;
     [ObservableProperty] private int _vsyncIndex;
+    [ObservableProperty] private bool _showFps;
     [ObservableProperty] private int _shapeIndex;
     // Graphics
     [ObservableProperty] private int _rendererIndex;
@@ -215,13 +216,13 @@ public partial class SettingsViewModel : ObservableObject
 
     public string RendererHint => RendererIndex == 0 ? "Default: sharp and fast" : "The old way, for checking: 1× only";
 
-    public string ScaleHint => RendererIndex == 1 ? "The CPU draws at 1×" : ScaleIndex switch
+    public string ScaleHint => ScaleIndex switch
     {
         0 => "As sharp as the PS2",
         1 => "A little sharper",
         2 => "Sharp",
-        3 => "Very sharp",
-        _ => "Default: sharpest (6x the PS2)",
+        3 => "Very sharp, heavier on the graphics card",
+        _ => "Default: picked from your screen (1080p 3×, 1440p 4×, 4K 6×)",
     };
 
     public string FilterHint => FilterIndex switch
@@ -246,7 +247,7 @@ public partial class SettingsViewModel : ObservableObject
                 2 => $"Fullscreen · {ChosenRate} Hz",
                 _ => Maximised ? "Maximised" : "Window",
             };
-            var renderer = RendererIndex == 0 ? $"graphics card · {new[] { 1, 2, 4, 5, 6 }[Math.Clamp(ScaleIndex, 0, 4)]}×" : "CPU";
+            var renderer = RendererIndex == 0 ? $"graphics card · {new[] { "1×", "2×", "3×", "4×", "auto" }[Math.Clamp(ScaleIndex, 0, 4)]}" : "CPU";
             return $"{mode} · {renderer}";
         }
     }
@@ -295,6 +296,7 @@ public partial class SettingsViewModel : ObservableObject
             Maximised = s.Maximised;
             RebuildChoices(s.FullscreenWidth, s.FullscreenHeight, s.RefreshRate);
             VsyncIndex = s.Vsync ? 1 : 0;
+            ShowFps = s.ShowFps;
             ShapeIndex = s.Shape == "4:3" ? 1 : s.Shape == "stretch" ? 2 : 0; // 0 widescreen (the default), 1 4:3, 2 stretched
             RendererIndex = s.Renderer == "cpu" ? 1 : 0;
             ScaleIndex = Math.Max(0, Array.IndexOf(Scales, s.Scale));
@@ -387,6 +389,7 @@ public partial class SettingsViewModel : ObservableObject
         FullscreenHeight = Resolution?.Value2 ?? 0,
         RefreshRate = Refresh?.Value ?? GameSettings.RefreshAutomatic,
         Vsync = VsyncIndex == 1,
+        ShowFps = ShowFps,
         Shape = ShapeIndex switch { 1 => "4:3", 2 => "stretch", _ => "widescreen" },
         Renderer = RendererIndex == 1 ? "cpu" : "gpu",
         Scale = Scales[Math.Clamp(ScaleIndex, 0, 4)],

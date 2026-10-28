@@ -624,6 +624,15 @@ namespace
         ctx->pc = gprU32(ctx, 31);
     }
     // GetSelectRoster 0x26fb90 (leaf replacement)
+    // settings.toml unlock_all (the launcher's "Unlock everything", VENDETTA_UNLOCKALL=1): HideCtrl::IsHideOpen
+    // (0x306060), the one check for every shop / hidden item (legends, attires, arenas, movies), answers "open".
+    // The save is not changed: buying or opening still writes the stock flags.
+    void isHideOpenUnlockAll(uint8_t *, R5900Context *ctx, PS2Runtime *)
+    {
+        SET_GPR_U32(ctx, 2, 1u);
+        ctx->pc = gprU32(ctx, 31);
+    }
+
     void getSelectRosterSelectList(uint8_t *, R5900Context *ctx, PS2Runtime *)
     {
         const uint32_t ra = gprU32(ctx, 31);
@@ -650,6 +659,11 @@ namespace
             runtime.replaceFunction(0x24da10u, frameDtorSelectList);
         if (ok && (g_origEasyDtor = runtime.lookupFunction(0x2fd460u)) != nullptr)
             runtime.replaceFunction(0x2fd460u, easyDtorSelectList);
+        if (const char *u = std::getenv("VENDETTA_UNLOCKALL"); u && *u == '1')
+        {
+            runtime.replaceFunction(0x306060u, isHideOpenUnlockAll);
+            std::fprintf(stderr, "[hctp] unlock all: every hidden item open (HideCtrl::IsHideOpen)%c", 10);
+        }
         if (ok && (g_origIsSmackDownEntry = runtime.lookupFunction(0x12cfd0u)) != nullptr)
             runtime.replaceFunction(0x12cfd0u, isSmackDownEntrySSList);
         if (ok && (g_origIsRosterHidden = runtime.lookupFunction(0x12d160u)) != nullptr)

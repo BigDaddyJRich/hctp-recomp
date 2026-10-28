@@ -3,6 +3,15 @@
 This file records HCTP-specific changes only. Local experiments, extracted game assets, emulator dumps, and temporary
 run scripts are intentionally kept out of the public repository.
 
+## 0.3.2
+
+- Launcher settings now reach the game: window / borderless / fullscreen (screen, resolution, refresh rate),
+  start maximised, VSync and stretch all work with the Direct3D 11 renderer.
+- Unlock everything (Gameplay page): every legend, attire, arena and movie is open; your save is not changed.
+- Show frame rate switch (Gameplay page); F1 still toggles it in the game.
+- Scale defaults to Auto (picked from your screen), which fixes frame-time hitches in some entrances.
+- Fixed stray coloured dots along the right / bottom edge of the picture.
+
 ## 0.3.1
 
 - Widescreen 16:9 works: set Picture shape to Widescreen in the launcher (based on ElHecht's PCSX2 widescreen patch).

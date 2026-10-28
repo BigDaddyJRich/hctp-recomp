@@ -145,9 +145,9 @@
                             <ListBox Grid.Column="1" Classes="seg" SelectedIndex="{Binding ScaleIndex}">
                                 <ListBoxItem Content="1×" />
                                 <ListBoxItem Content="2×" />
+                                <ListBoxItem Content="3×" />
                                 <ListBoxItem Content="4×" />
-                                <ListBoxItem Content="5×" />
-                                <ListBoxItem Content="6×" />
+                                <ListBoxItem Content="Auto" />
                             </ListBox>
                         </Grid>
                     </Border>
@@ -488,6 +488,19 @@
         <ScrollViewer HorizontalScrollBarVisibility="Disabled" IsVisible="{Binding IsGameplayTab}">
             <StackPanel Margin="26,22" Spacing="20">
                 <TextBlock Classes="h1" Text="Gameplay" />
+                <StackPanel>
+                    <TextBlock Classes="cap" Text="ON SCREEN" />
+                    <Border Classes="capline" />
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Classes="label" Text="Show frame rate" />
+                                <TextBlock Classes="hint" Text="The FPS counter in the top-left corner (F1 in the game turns it on or off)" />
+                            </StackPanel>
+                            <ToggleSwitch Grid.Column="1" OnContent="" OffContent="" VerticalAlignment="Center" IsChecked="{Binding ShowFps}" />
+                        </Grid>
+                    </Border>
+                </StackPanel>
                 <StackPanel IsVisible="False"> 
                     <TextBlock Classes="cap" Text="CAMERA" />
                     <Border Classes="capline" />
@@ -506,7 +519,7 @@
                         </Grid>
                     </Border>
                 </StackPanel>
-                <StackPanel IsVisible="False">
+                <StackPanel>
                     <TextBlock Classes="cap" Text="UNLOCKS" />
                     <Border Classes="capline" />
                     <Border Classes="row">

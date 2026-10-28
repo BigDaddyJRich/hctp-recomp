@@ -19,6 +19,7 @@ public sealed class GameSettings
     public int FullscreenHeight;
     public int RefreshRate = RefreshAutomatic; // the default
     public bool Vsync = true;
+    public bool ShowFps = false;   // the frame-rate counter in the corner
     public string Shape = "widescreen";     // widescreen (the default) | 4:3 | stretch
     // [graphics]
     public string Renderer = "gpu";         // gpu | cpu
@@ -55,6 +56,7 @@ public sealed class GameSettings
         "                         # second, else the smoothest rate it has), \"smoothest\" (the highest multiple of 60 Hz),\n" +
         "                         # 0 = the screen's own (no switch), or a number such as 60 or 120\n" +
         "vsync = true             # wait for the screen before showing each picture (no tearing)\n" +
+        "show_fps = false         # the frame-rate counter in the top-left corner (F1 in the game toggles it)\n" +
         "shape = \"widescreen\"     # \"widescreen\" (matches at 16:9 with more of the arena; menus and movies 4:3),\n" +
         "                         # \"4:3\" (as on the PS2, bars at the sides) or \"stretch\" (fill the window)\n" +
         "\n" +
@@ -108,6 +110,7 @@ public sealed class GameSettings
                         : Int(value, s.RefreshRate, 0, 1000);
                     break;
                 case "display.vsync": s.Vsync = Bool(value, s.Vsync); break;
+                case "display.show_fps": s.ShowFps = Bool(value, s.ShowFps); break;
                 case "display.shape": s.Shape = OneOf(value, s.Shape, "4:3", "stretch", "widescreen"); break;
                 case "graphics.renderer": s.Renderer = OneOf(value, s.Renderer, "gpu", "cpu"); break;
                 case "graphics.scale":
@@ -151,6 +154,7 @@ public sealed class GameSettings
             ("display", "refresh_rate", RefreshRate == RefreshSmoothest ? Quote("smoothest")
                 : RefreshRate == RefreshAutomatic ? Quote("automatic") : RefreshRate.ToString(CultureInfo.InvariantCulture)),
             ("display", "vsync", Vsync ? "true" : "false"),
+            ("display", "show_fps", ShowFps ? "true" : "false"),
             ("display", "shape", Quote(Shape)),
             ("graphics", "renderer", Quote(Renderer)),
             ("graphics", "scale", Scale.ToString(CultureInfo.InvariantCulture)),
