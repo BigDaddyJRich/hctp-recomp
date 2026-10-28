@@ -1,6 +1,6 @@
 using Avalonia;
 
-namespace VendettaSettings;
+namespace HctpSettings;
 
 internal static class Program
 {
@@ -21,7 +21,7 @@ internal static class Program
             Console.WriteLine(Services.GameFolder.Find().CreateShortcuts(desktop, args[1]) ?? "made");
             return;
         }
-        // Dev: an update without the window (VENDETTA_ROOT = a test install, VENDETTA_UPDATE_URL = a test server)
+        // Dev: an update without the window (HCTP_LAUNCHER_ROOT = a test install, HCTP_UPDATE_URL = a test server)
         if (args.Length >= 1 && args[0] == "--selftest-update")
         {
             Environment.ExitCode = Shot.SelfTestUpdate().GetAwaiter().GetResult();
@@ -35,7 +35,7 @@ internal static class Program
                 Console.WriteLine(shown);
             return;
         }
-        // Dev: the saving checked on a scratch folder (VENDETTA_ROOT): --selftest [play]
+        // Dev: the saving checked on a scratch folder (HCTP_LAUNCHER_ROOT): --selftest [play]
         if (args.Length >= 1 && args[0] == "--selftest")
         {
             Shot.SelfTest(args.Length >= 2 && args[1] == "play");

@@ -1,7 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:vm="using:VendettaSettings.ViewModels"
-             x:Class="VendettaSettings.Views.SettingsView"
+             xmlns:vm="using:HctpSettings.ViewModels"
+             x:Class="HctpSettings.Views.SettingsView"
              x:DataType="vm:SettingsViewModel">
     <UserControl.Resources>
         <DataTemplate x:Key="ChoiceItem" x:DataType="vm:Choice">
@@ -124,7 +124,7 @@
                 <StackPanel>
                     <TextBlock Classes="cap" Text="DRAWING" />
                     <Border Classes="capline" />
-                    <Border Classes="row">
+                    <Border Classes="row" IsVisible="False">
                         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
                             <StackPanel VerticalAlignment="Center" Spacing="2">
                                 <TextBlock Classes="label" Text="Drawn by" />
@@ -146,12 +146,12 @@
                                 <ListBoxItem Content="1×" />
                                 <ListBoxItem Content="2×" />
                                 <ListBoxItem Content="4×" />
-                                <ListBoxItem Content="8×" />
-                                <ListBoxItem Content="16×" />
+                                <ListBoxItem Content="5×" />
+                                <ListBoxItem Content="6×" />
                             </ListBox>
                         </Grid>
                     </Border>
-                    <Border Classes="row">
+                    <Border Classes="row" IsVisible="False">
                         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
                             <StackPanel VerticalAlignment="Center" Spacing="2">
                                 <TextBlock Classes="label" Text="Sharp 2D" />
@@ -163,7 +163,7 @@
                         </Grid>
                     </Border>
                 </StackPanel>
-                <StackPanel>
+                <StackPanel IsVisible="False">
                     <TextBlock Classes="cap" Text="SCALING TO THE WINDOW" />
                     <Border Classes="capline" />
                     <Border Classes="row">
@@ -194,7 +194,7 @@
                         </Grid>
                     </Border>
                 </StackPanel>
-                <StackPanel>
+                <StackPanel IsVisible="False">
                     <TextBlock Classes="cap" Text="MODELS" />
                     <Border Classes="capline" />
                     <Border Classes="row">
@@ -230,7 +230,7 @@
                             </StackPanel>
                         </Grid>
                     </Border>
-                    <Border Classes="row">
+                    <Border Classes="row" IsVisible="False">
                         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
                             <StackPanel VerticalAlignment="Center" Spacing="2">
                                 <TextBlock Classes="label" Text="Arena reverb" />
@@ -488,7 +488,7 @@
         <ScrollViewer HorizontalScrollBarVisibility="Disabled" IsVisible="{Binding IsGameplayTab}">
             <StackPanel Margin="26,22" Spacing="20">
                 <TextBlock Classes="h1" Text="Gameplay" />
-                <StackPanel>
+                <StackPanel IsVisible="False"> 
                     <TextBlock Classes="cap" Text="CAMERA" />
                     <Border Classes="capline" />
                     <Border Classes="row">
@@ -506,7 +506,7 @@
                         </Grid>
                     </Border>
                 </StackPanel>
-                <StackPanel>
+                <StackPanel IsVisible="False">
                     <TextBlock Classes="cap" Text="UNLOCKS" />
                     <Border Classes="capline" />
                     <Border Classes="row">

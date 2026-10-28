@@ -1,11 +1,11 @@
 using Avalonia;
 using Avalonia.Headless;
 using Avalonia.Threading;
-using VendettaSettings.Services;
-using VendettaSettings.ViewModels;
-using VendettaSettings.Views;
+using HctpSettings.Services;
+using HctpSettings.ViewModels;
+using HctpSettings.Views;
 
-namespace VendettaSettings;
+namespace HctpSettings;
 
 /// <summary>Dev only: draws the window on one page to a PNG (1120 × 700 unless asked), headless (no screen, no DPI). Settings are read
 /// but never written.</summary>
@@ -32,14 +32,14 @@ internal static class Shot
         Console.WriteLine($"shot {page} -> {path}");
     }
 
-    /// <summary>Dev only (--selftest, with VENDETTA_ROOT = a scratch copy of the folder): changes settings the way the
+    /// <summary>Dev only (--selftest, with HCTP_LAUNCHER_ROOT = a scratch copy of the folder): changes settings the way the
     /// pages do, prints settings.toml after each, and with "play" starts the game as PLAY does.</summary>
     public static void SelfTest(bool play)
     {
         // it changes and saves settings: only ever on a scratch copy, never the real settings.toml
-        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("VENDETTA_ROOT")))
+        if (string.IsNullOrEmpty(Environment.GetEnvironmentVariable("HCTP_LAUNCHER_ROOT")))
         {
-            Console.WriteLine("--selftest changes and saves settings: set VENDETTA_ROOT to a scratch copy of the folder first");
+            Console.WriteLine("--selftest changes and saves settings: set HCTP_LAUNCHER_ROOT to a scratch copy of the folder first");
             return;
         }
         var folder = GameFolder.Find();
@@ -70,7 +70,7 @@ internal static class Shot
         Console.Write(File.ReadAllText(folder.SettingsPath));
     }
 
-    /// <summary>Dev only (--selftest-update, with VENDETTA_ROOT = a test install and VENDETTA_UPDATE_URL = a test
+    /// <summary>Dev only (--selftest-update, with HCTP_LAUNCHER_ROOT = a test install and HCTP_UPDATE_URL = a test
     /// server): an update's steps without the window: check, download and check it, put it in place, rebuild (the
     /// install's tools\setup_game.py), then finish, or undo it all when the rebuild fails.</summary>
     public static async Task<int> SelfTestUpdate()

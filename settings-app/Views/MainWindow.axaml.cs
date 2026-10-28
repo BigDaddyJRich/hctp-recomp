@@ -1,7 +1,7 @@
 using Avalonia.Controls;
-using VendettaSettings.ViewModels;
+using HctpSettings.ViewModels;
 
-namespace VendettaSettings.Views;
+namespace HctpSettings.Views;
 
 public partial class MainWindow : Window
 {

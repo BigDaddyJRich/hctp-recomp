@@ -1,7 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:vm="using:VendettaSettings.ViewModels"
-             x:Class="VendettaSettings.Views.SetupView"
+             xmlns:vm="using:HctpSettings.ViewModels"
+             x:Class="HctpSettings.Views.SetupView"
              x:DataType="vm:SetupViewModel">
     <!-- the first launch: the page (the setup's steps are in the page list's place, MainWindow) -->
     <Panel>

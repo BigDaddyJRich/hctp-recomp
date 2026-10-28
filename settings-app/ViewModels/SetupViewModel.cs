@@ -4,9 +4,9 @@ using System.Globalization;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using VendettaSettings.Services;
+using HctpSettings.Services;
 
-namespace VendettaSettings.ViewModels;
+namespace HctpSettings.ViewModels;
 
 /// <summary>One line of the build's step list.</summary>
 public partial class SetupStep : ObservableObject

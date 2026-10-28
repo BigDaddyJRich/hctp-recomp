@@ -5,7 +5,7 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text.Json;
 
-namespace VendettaSettings.Services;
+namespace HctpSettings.Services;
 
 /// <summary>A release on GitHub: its version, its notes and the zip a player downloads.</summary>
 public sealed record Release(Version Version, string Tag, string Notes, string PageUrl, string ZipUrl, long ZipSize, string? Sha256);
@@ -61,10 +61,10 @@ public static class Updater
 
     public static string CurrentText => Current.ToString(3);
 
-    /// <summary>Where the newest release is asked for. VENDETTA_UPDATE_URL (testing): another address answering the same
+    /// <summary>Where the newest release is asked for. HCTP_UPDATE_URL (testing): another address answering the same
     /// way, such as a server on this PC.</summary>
     private static string LatestUrl =>
-        Environment.GetEnvironmentVariable("VENDETTA_UPDATE_URL") is { Length: > 0 } url
+        Environment.GetEnvironmentVariable("HCTP_UPDATE_URL") is { Length: > 0 } url
             ? url
             : $"https://api.github.com/repos/{Repo}/releases/latest";
 

@@ -1,7 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:vm="using:VendettaSettings.ViewModels"
-             x:Class="VendettaSettings.Views.AboutView"
+             xmlns:vm="using:HctpSettings.ViewModels"
+             x:Class="HctpSettings.Views.AboutView"
              x:DataType="vm:MainViewModel">
     <!-- flat sections, one label column (150) in every one so their rows line up -->
     <ScrollViewer HorizontalScrollBarVisibility="Disabled">
@@ -108,7 +108,7 @@
             </StackPanel>
 
             <TextBlock Classes="hint" LineHeight="18"
-                       Text="Free software under the GNU GPL version 3. Not made by or affiliated with Electronic Arts or Def Jam. No game files come with this program: the game is built on your PC from your own disc." />
+                       Text="Free software under the GNU GPL version 3. Not made by or affiliated with WWE, THQ, Yuke's or Jakks Pacific. No game files come with this program: the game is built on your PC from your own disc." />
         </StackPanel>
     </ScrollViewer>
 </UserControl>

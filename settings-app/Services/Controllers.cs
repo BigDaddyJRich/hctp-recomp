@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace VendettaSettings.Services;
+namespace HctpSettings.Services;
 
 /// <summary>Which Xbox-style (XInput) controllers are plugged in, in XInput's order — the order the game gives them
 /// out (player 1 the first, …). Other controllers (DirectInput) aren't seen here.</summary>

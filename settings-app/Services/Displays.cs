@@ -1,6 +1,6 @@
 using System.Runtime.InteropServices;
 
-namespace VendettaSettings.Services;
+namespace HctpSettings.Services;
 
 /// <summary>The PC's screens and the modes each has, from Windows (the same list the game's fullscreen chooses from).
 /// Ordered as the game numbers them: the main screen first.</summary>

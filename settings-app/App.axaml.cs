@@ -1,11 +1,11 @@
 using Avalonia;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
-using VendettaSettings.Services;
-using VendettaSettings.ViewModels;
-using VendettaSettings.Views;
+using HctpSettings.Services;
+using HctpSettings.ViewModels;
+using HctpSettings.Views;
 
-namespace VendettaSettings;
+namespace HctpSettings;
 
 public partial class App : Application
 {

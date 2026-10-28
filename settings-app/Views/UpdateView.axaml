@@ -1,7 +1,7 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:vm="using:VendettaSettings.ViewModels"
-             x:Class="VendettaSettings.Views.UpdateView"
+             xmlns:vm="using:HctpSettings.ViewModels"
+             x:Class="HctpSettings.Views.UpdateView"
              x:DataType="vm:UpdateViewModel">
     <!-- an update's pages (its steps are in the page list's place, MainWindow): what's new, updating, updated, couldn't finish -->
     <Panel>

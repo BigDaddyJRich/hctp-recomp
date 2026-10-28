@@ -2,9 +2,9 @@ using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Interactivity;
 using Avalonia.Platform.Storage;
-using VendettaSettings.ViewModels;
+using HctpSettings.ViewModels;
 
-namespace VendettaSettings.Views;
+namespace HctpSettings.Views;
 
 public partial class SetupView : UserControl
 {

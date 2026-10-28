@@ -4,9 +4,9 @@ using System.Globalization;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using VendettaSettings.Services;
+using HctpSettings.Services;
 
-namespace VendettaSettings.ViewModels;
+namespace HctpSettings.ViewModels;
 
 /// <summary>One line of a release's notes: a heading, a point, or plain text.</summary>
 public sealed record NoteLine(string Text, bool IsHeading, bool IsBullet)
@@ -646,8 +646,8 @@ public partial class UpdateViewModel : ObservableObject
             "## 0.1.1\n\n### Fixed\n- [Example] The fullscreen start goes straight to black.\n- [Example] The hit sounds play as on the PS2.\n\n" +
             "### Good to know\n- [Example] The update rebuilds the game on your PC in a few minutes.",
             Updater.ReleasesUrl, "", 88_300_000, null);
-        // VENDETTA_SAMPLE_NOTES=<file>: a real release's notes in the pictures
-        if (Environment.GetEnvironmentVariable("VENDETTA_SAMPLE_NOTES") is { Length: > 0 } notesFile && File.Exists(notesFile))
+        // HCTP_SAMPLE_NOTES=<file>: a real release's notes in the pictures
+        if (Environment.GetEnvironmentVariable("HCTP_SAMPLE_NOTES") is { Length: > 0 } notesFile && File.Exists(notesFile))
         {
             var notes = File.ReadAllText(notesFile);
             var heading = System.Text.RegularExpressions.Regex.Match(notes, @"^## (\d+\.\d+\.\d+)", System.Text.RegularExpressions.RegexOptions.Multiline);

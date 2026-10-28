@@ -5,9 +5,9 @@ using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Threading;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using VendettaSettings.Services;
+using HctpSettings.Services;
 
-namespace VendettaSettings.ViewModels;
+namespace HctpSettings.ViewModels;
 
 public partial class MainViewModel : ObservableObject
 {

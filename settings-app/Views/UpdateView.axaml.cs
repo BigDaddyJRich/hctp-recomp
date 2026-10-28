@@ -1,6 +1,6 @@
 using Avalonia.Controls;
 
-namespace VendettaSettings.Views;
+namespace HctpSettings.Views;
 
 public partial class UpdateView : UserControl
 {

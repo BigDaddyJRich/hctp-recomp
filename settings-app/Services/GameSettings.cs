@@ -1,7 +1,7 @@
 using System.Globalization;
 using System.Text;
 
-namespace VendettaSettings.Services;
+namespace HctpSettings.Services;
 
 /// <summary>The game's settings, as in <c>settings.toml</c> (the game reads it at start; each line is explained in the
 /// file). Saving changes only the values, in place: comments and lines added by hand stay.</summary>
@@ -43,7 +43,7 @@ public sealed class GameSettings
     /// <summary>The same file the game writes when there is none.</summary>
     public const string DefaultFile =
         "# The game's settings. A settings program writes this file; you can also edit it by hand.\n" +
-        "# A VENDETTA_* switch set in the environment wins over a line here.\n" +
+        "# A switch set in the environment wins over a line here.\n" +
         "\n" +
         "[display]\n" +
         "mode = \"fullscreen\"      # \"window\", \"borderless\" (a frameless window the size of the screen) or \"fullscreen\"\n" +

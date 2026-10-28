@@ -1,9 +1,9 @@
 using System.ComponentModel;
 using CommunityToolkit.Mvvm.ComponentModel;
 using CommunityToolkit.Mvvm.Input;
-using VendettaSettings.Services;
+using HctpSettings.Services;
 
-namespace VendettaSettings.ViewModels;
+namespace HctpSettings.ViewModels;
 
 /// <summary>One entry of a drop-down list.</summary>
 public sealed record Choice(string Label, int Value, int Value2 = 0);
@@ -90,7 +90,7 @@ public partial class SettingsViewModel : ObservableObject
 
     public string SummaryPicture =>
         (ShapeIndex switch { 1 => "4:3", 2 => "Stretched", _ => "Widescreen" }) + " · " +
-        (RendererIndex == 0 ? $"graphics card · {Scales[Math.Clamp(ScaleIndex, 0, 4)]}×" : "CPU");
+        (RendererIndex == 0 ? $"graphics card · {new[] { 1, 2, 4, 5, 6 }[Math.Clamp(ScaleIndex, 0, 4)]}×" : "CPU");
 
     public string SummaryPlayers =>
         (Multitap ? "Up to 4" : "2") + " · vibration " +
@@ -220,8 +220,8 @@ public partial class SettingsViewModel : ObservableObject
         0 => "As sharp as the PS2",
         1 => "A little sharper",
         2 => "Sharp",
-        3 => "Very sharp, lighter on the graphics card",
-        _ => "Default: sharpest, four times the PS2's detail",
+        3 => "Very sharp",
+        _ => "Default: sharpest (6x the PS2)",
     };
 
     public string FilterHint => FilterIndex switch
@@ -246,7 +246,7 @@ public partial class SettingsViewModel : ObservableObject
                 2 => $"Fullscreen · {ChosenRate} Hz",
                 _ => Maximised ? "Maximised" : "Window",
             };
-            var renderer = RendererIndex == 0 ? $"graphics card · {Scales[Math.Clamp(ScaleIndex, 0, 4)]}×" : "CPU";
+            var renderer = RendererIndex == 0 ? $"graphics card · {new[] { 1, 2, 4, 5, 6 }[Math.Clamp(ScaleIndex, 0, 4)]}×" : "CPU";
             return $"{mode} · {renderer}";
         }
     }

@@ -1,8 +1,8 @@
 <Window xmlns="https://github.com/avaloniaui"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        xmlns:vm="using:VendettaSettings.ViewModels"
-        xmlns:v="using:VendettaSettings.Views"
-        x:Class="VendettaSettings.Views.MainWindow"
+        xmlns:vm="using:HctpSettings.ViewModels"
+        xmlns:v="using:HctpSettings.Views"
+        x:Class="HctpSettings.Views.MainWindow"
         x:DataType="vm:MainViewModel"
         Title="HCTP Recompiled Settings | @jcsix on X | jcsix694 on GitHub"
         Width="1280" Height="800" MinWidth="1080" MinHeight="680"
@@ -23,7 +23,7 @@
         <!-- the header: the program left; the status, a grey button and PLAY right -->
         <Border DockPanel.Dock="Top" Height="56" Padding="14,0" BorderBrush="{StaticResource VRowLine}" BorderThickness="0,0,0,1">
             <Grid ColumnDefinitions="Auto,Auto,*,Auto,Auto,Auto" ColumnSpacing="14">
-                <Image Source="/Assets/name.png" Height="38" VerticalAlignment="Center" />
+                <Image Source="/Assets/name.png" Height="48" VerticalAlignment="Center" />
                 <Border Grid.Column="1" Classes="tag"><TextBlock Text="{Binding Version}" /></Border>
                 <StackPanel Grid.Column="3" Orientation="Horizontal" Spacing="7" VerticalAlignment="Center">
                     <Ellipse Classes="dot" Classes.warn="{Binding StatusWarn}" Classes.bad="{Binding StatusBad}"

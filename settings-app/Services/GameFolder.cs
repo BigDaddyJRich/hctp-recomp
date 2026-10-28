@@ -1,13 +1,13 @@
 using System.Diagnostics;
 
-namespace VendettaSettings.Services;
+namespace HctpSettings.Services;
 
 /// <summary>Where everything is. <see cref="Root"/> = the install folder (this program and the read-me);
 /// <see cref="Data"/> = where the rest lives: the game program, the game's files from the disc (<c>game\SLUS_207.87</c>),
 /// its PC save folder (<c>Documents\HERE COMES THE PAIN\Saves</c>), <c>settings.toml</c>, <c>logs\</c> and the build kit. A player's install keeps
 /// those in <c>files\</c> so the top of the folder stays simple; in the repository (a developer build, this program
 /// deep in <c>settings-app\bin\…</c>) both are its root. Found by looking up from this program's folder;
-/// VENDETTA_ROOT=&lt;folder&gt; picks it by hand.</summary>
+/// HCTP_LAUNCHER_ROOT=&lt;folder&gt; picks it by hand.</summary>
 public sealed class GameFolder
 {
     public const string Serial = "SLUS-20787";
@@ -16,7 +16,7 @@ public sealed class GameFolder
 
     public string Root { get; }
     public string Data { get; }
-    public string SettingsPath => Path.Combine(Data, "settings.toml");
+    public string SettingsPath => Path.Combine(Data, "game", "settings.toml"); // the game reads it beside ps2EntryRunner.exe
     public string ElfPath => Path.Combine(Data, "game", "SLUS_207.87");
     public string SavesPath => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "HERE COMES THE PAIN", "Saves");
     public string LogsPath => Path.Combine(Data, "logs");
@@ -180,7 +180,7 @@ public sealed class GameFolder
 
     public static GameFolder Find()
     {
-        var chosen = Environment.GetEnvironmentVariable("VENDETTA_ROOT");
+        var chosen = Environment.GetEnvironmentVariable("HCTP_LAUNCHER_ROOT");
         if (!string.IsNullOrEmpty(chosen) && Directory.Exists(chosen))
             return At(Path.GetFullPath(chosen));
         for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir != null; dir = dir.Parent)

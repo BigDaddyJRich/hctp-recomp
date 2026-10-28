@@ -1,6 +1,6 @@
 <Application xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             x:Class="VendettaSettings.App"
+             x:Class="HctpSettings.App"
              RequestedThemeVariant="Dark">
 
     <!-- adjmk's look (its palette, type sizes and flat sections), so the two programs feel like one family -->

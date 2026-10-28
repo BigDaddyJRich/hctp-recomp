@@ -1,10 +1,13 @@
 <UserControl xmlns="https://github.com/avaloniaui"
              xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-             xmlns:vm="using:VendettaSettings.ViewModels"
-             x:Class="VendettaSettings.Views.PlayView"
+             xmlns:vm="using:HctpSettings.ViewModels"
+             x:Class="HctpSettings.Views.PlayView"
              x:DataType="vm:MainViewModel">
     <ScrollViewer HorizontalScrollBarVisibility="Disabled">
         <StackPanel Margin="26,22" Spacing="18">
+            <Border CornerRadius="8" ClipToBounds="True" Background="#000000">
+                <Image Source="/Assets/background.jpg" Stretch="Uniform" MaxHeight="300" />
+            </Border>
             <TextBlock Classes="h1" Text="Play" />
 
             <!-- a newer version on GitHub -->

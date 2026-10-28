@@ -22,7 +22,7 @@ import zipfile
 
 REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 GITHUB_REPO = 'BigDaddyJRich/hctp-recomp'
-CSPROJ = os.path.join(REPO, 'settings-app', 'VendettaSettings.csproj')
+CSPROJ = os.path.join(REPO, 'settings-app', 'HctpSettings.csproj')
 CHANGELOG = os.path.join(REPO, 'CHANGELOG.md')
 DIST = os.path.join(REPO, 'dist')
 ZIP_NAME = 'HCTP-Recompiled-Windows.zip'
