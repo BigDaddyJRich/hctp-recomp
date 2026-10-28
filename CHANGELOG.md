@@ -16,7 +16,17 @@ First public build of HCTP Recompiled: bring your own USA disc (SLUS-20787); the
   ONLINE does nothing yet.
 - Optional content and commentary packs are shared separately (Discord).
 
-Known issues: HBK ice-cave entrance slowdown, Demo -> Start black screen, see-through hair on some models.
+Roster and content: the final roster and content will be made together with Nero's 3X mod. Roster expansion (new
+wrestler slots beyond the stock roster) is a work in progress and is planned for the following weeks.
+
+Known issues (most earlier bugs are fixed; these remain):
+- HBK's entrance slows down badly in the ice-cave part of the stage; short frame dips during his in-ring pyro.
+- HBK's head particles can float or draw as lines.
+- Letting the attract demo play and then pressing Start gives a black screen (restart the game).
+- Some hair looks see-through (HBK's matches PCSX2, so partly how the model was made).
+- OPTIONS and CREDITS menu plates don't fade out when picked; they vanish on the next screen.
+- Create-a-Wrestler base model screen: a teal band across both models' foreheads.
+- Create-a-Moveset entrance preview: some modded entrances show without their attire (fine in matches).
 
 ## Current test build
 
