@@ -11,6 +11,8 @@ First public build of HCTP Recompiled: bring your own USA disc (SLUS-20787); the
 - D3D11 renderer with 1-6x sharper picture, native title movies, 60 fps matches and entrances.
 - Fixed: wrestler/referee shaking, nameplate holes, rope shadows, pyro slowdowns (HBK, Goldberg, Triple H),
   CAW forehead band, THQ logo hang.
+- Working: Exhibition and Season. Season has NOT been tested yet with the restored cut wrestlers or NPCs - if you
+  try it, tell us what happens.
 - PPV MODE and ONLINE are on the main menu as early proofs of concept only - neither works as a real mode yet.
   PPV mode is further along (a test card of matches can be made and played) but is unfinished and may crash;
   ONLINE does nothing yet.
@@ -21,13 +23,15 @@ wrestler slots beyond the stock roster) is a work in progress and is planned for
 
 Coming next: a fuller launcher with a built-in mod manager, along the lines of the SvR 2011 recomp's launcher.
 
+Testing: please write down exactly what you did and what happened for anything you test (mode, wrestlers,
+match type, arena, what you pressed, what went wrong, a screenshot if you can). Send notes to:
+https://github.com/BigDaddyJRich/hctp-recomp/issues
+
 Known issues (most earlier bugs are fixed; these remain):
-- HBK's entrance slows down badly in the ice-cave part of the stage; short frame dips during his in-ring pyro.
-- HBK's head particles can float or draw as lines.
+- HBK's entrance slows down when he does his pyro in the ring.
 - Letting the attract demo play and then pressing Start gives a black screen (restart the game).
 - Some hair looks see-through (HBK's matches PCSX2, so partly how the model was made).
 - OPTIONS and CREDITS menu plates don't fade out when picked; they vanish on the next screen.
-- Create-a-Wrestler base model screen: a teal band across both models' foreheads.
 - Create-a-Moveset entrance preview: some modded entrances show without their attire (fine in matches).
 
 ## Current test build
