@@ -9,8 +9,8 @@ run scripts are intentionally kept out of the public repository.
 - Al Snow only appears on the roster when the Content Pack (his model) is installed.
 - PPV MODE and ONLINE are not working yet: ONLINE is only a proof of concept for now, and PPV MODE is in active
   development and does not function correctly yet.
-- Content Pack update (Discord): Jimmy Snuka Titantron, DX's own Titantron, Legend Undertaker's Death Valley intro,
-  Al Snow's model.
+- Content Pack update (Discord): Jimmy Snuka Titantron, DX's own Titantron, Al Snow's model.
+- Commentary: Legend Undertaker's Death Valley intro comes with the next Commentary Pack update.
 
 ## 0.3.2
 
