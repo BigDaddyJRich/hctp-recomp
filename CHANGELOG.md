@@ -3,6 +3,12 @@
 This file records HCTP-specific changes only. Local experiments, extracted game assets, emulator dumps, and temporary
 run scripts are intentionally kept out of the public repository.
 
+## 0.3.1
+
+- Widescreen 16:9 works: set Picture shape to Widescreen in the launcher (based on ElHecht's PCSX2 widescreen patch).
+  Matches show more of the arena; menus, HUD and movies are stretched to 16:9, as with the PCSX2 patch.
+- Launcher Scale now sets the renderer's sharpness (1x-6x).
+
 ## 0.3.0
 
 First public build of HCTP Recompiled: bring your own USA disc (SLUS-20787); the game is built on your PC.
