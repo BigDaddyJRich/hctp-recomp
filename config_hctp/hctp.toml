@@ -358,3 +358,11 @@ game_code = [
 untracked_stubs = [
 ]
 skip = []
+
+# Patches to apply during recompilation
+[patches]
+instructions = [
+  # widescreen: CCamGame5::Action's camera width 1.0 (lui v0,0x3F80) -> lw v0,0x7F00(zero); the runtime puts 1.0 there,
+  # or 0.53125 when PS2X_WIDESCREEN=1 (ElHecht's PCSX2 16:9 patch; its FOV half is in the sceVu0ViewScreenMatrix stub)
+  { address = "0x206a5c", value = "0x8c027f00" },
+]
