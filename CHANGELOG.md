@@ -3,6 +3,17 @@
 This file records HCTP-specific changes only. Local experiments, extracted game assets, emulator dumps, and temporary
 run scripts are intentionally kept out of the public repository.
 
+## 0.3.5
+
+- Building the game needs far less memory: peak ~5 GB for the whole build (one step used to need 27 GB, so 8-16 GB
+  PCs ran out). The build also runs at lower priority so the PC stays usable. Update in the launcher; it rebuilds.
+- Runtime from Nov 2-4: six-man / Royal Rumble crash and black-layer fixes, 60 fps six-man (renderer on its own
+  thread, GPU characters), 5x entrance-start stutter fix, lighter depth reads. Players' builds now use the same
+  performance settings as the developer build (GPU stage-1 off).
+- Restored wrestlers (Hogan, Legend Hogan, Warrior, Jeff, Regal, Kidman ...) now appear with stock pac files plus the
+  Content Pack (their models load as loose MODS\PAC\EMD / EMD2 files). Needs this build and the Nov 4 Content Pack.
+- Loose mod files no longer run out of file slots in long sessions (oldest slot is reused).
+
 ## 0.3.4
 
 - Launcher finds your save data (Documents\HCTP) instead of always showing "No save yet". Saving itself was fine.

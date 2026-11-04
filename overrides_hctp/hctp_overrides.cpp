@@ -27,6 +27,7 @@ extern "C" bool hctpMovieFrame(int ch, uint8_t *rgba, int w, int h);
 #include <algorithm>
 #include <chrono>
 #include <map>
+#include <deque>
 #include <set>
 #include <string>
 #include <vector>
@@ -41,15 +42,35 @@ extern "C" bool hctpMovieFrame(int ch, uint8_t *rgba, int w, int h);
 
 extern "C" void hctpCommentaryEvent(uint32_t event); // ps2xRuntime/src/lib/hctp_commentary.cpp
 extern "C" void hctpCommentaryEntrance(uint32_t rosterId);
+extern "C" void hctpCommentaryEntranceGroup(const uint32_t *rosterIds, uint32_t count);
+extern "C" void hctpCommentarySetTitleMatch(uint32_t belt);
 extern "C" void hctpCommentaryResetEntrances();
 extern "C" void hctpCommentarySetTagMatch(uint32_t tag);
 extern "C" void hctpCommentarySetTeamSize(uint32_t size);
 extern "C" void hctpCommentarySetMatchRule(uint32_t rule);
+extern "C" void hctpCommentaryBellRule(uint32_t rule, uint32_t braPanties);
 extern "C" void hctpCommentaryMove(uint32_t chara, uint32_t moveId);
 extern "C" void hctpCommentaryParticipants(const uint32_t *rosterIds, uint32_t count);
 extern "C" void hctpCommentaryArena(int stage);
 extern "C" void hctpCommentaryBrand(int brand);
 extern "C" void hctpCommentaryCharaRoster(uint32_t chara, uint32_t rosterId);
+extern "C" void hctpCommentaryRumbleEntrant(uint32_t rosterId);
+
+// Royal Rumble entrant (called from the hand-edited Draw__9CGameSyncFv_0x1f5c50.cpp right after CGameSync::Draw stores the
+// slot popped from the entry queue 0x527A90 into 0x527AB8, store at 0x1f65c0). Host code only, no guest calls.
+// The slot's CChar = *(0x526EA0 + slot*4) (Draw reads it the same way at 0x1f6410); CChar+0x30 = cast code.
+void hctpRumbleSpawn(uint8_t *rdram, uint32_t slot)
+{
+    uint32_t chara = 0;
+    uint16_t cast = 0xFFFFu;
+    if (slot < 8u)
+        std::memcpy(&chara, rdram + 0x526EA0u + slot * 4u, 4);
+    if (chara >= 0x100000u && chara < 0x2000000u)
+        std::memcpy(&cast, rdram + chara + 0x30u, 2);
+    std::fprintf(stderr, "[hctp-pbp] rumble spawn: slot %u chara 0x%X cast %u%c", slot, chara, cast, 10);
+    if (cast < 10000u)
+        hctpCommentaryRumbleEntrant(cast / 100u);
+}
 
 namespace ps2_stubs
 {
@@ -100,8 +121,9 @@ namespace
     bool g_cutRosterHasModel[kCutCount] = {};
     std::set<uint16_t> g_cutEntranceCodes; // decimal cast codes of restored entrance attires (e.g. 3204, 3214)
     // A slot is only un-hidden when its attire-1 model (key BCD(id) << 8) is in pac/CH.PAC (ids < 30) or pac/CH2.PAC
-    // (DPAC directory at 0x800: tag, u16 count | 0x8000, then u16 key + u16 sectors per entry), so stock archives
-    // keep the vanilla roster. Returns the number of slots enabled.
+    // (DPAC directory at 0x800: tag, u16 count | 0x8000, then u16 key + u16 sectors per entry), or is a loose member
+    // MODS/PAC/EMD/<key> / MODS/PAC/EMD2/<key> (the game asks "/EMD/%04d" / "/EMD2/%04d"; testers have stock PACs and
+    // the Content Pack's loose models), so stock archives keep the vanilla roster. Returns the number of slots enabled.
     int scanCutRosterModels()
     {
         int enabled = 0;
@@ -111,18 +133,31 @@ namespace
             std::error_code ec;
             if (id == 0x3F && !std::filesystem::exists("MODS/PAC/EMD2/6300", ec))
                 continue; // no Content Pack: the stock key is a Rock stand-in
+            std::vector<uint16_t> keys;
             std::ifstream f(id < 30 ? "pac/ch.pac" : "pac/ch2.pac", std::ios::binary);
             uint8_t dir[0x4000] = {};
-            if (!f.read(reinterpret_cast<char *>(dir), sizeof(dir)))
-                continue;
-            uint16_t n;
-            std::memcpy(&n, dir + 0x804, 2);
-            n &= 0x7FFFu;
-            const uint16_t key = static_cast<uint16_t>(((id / 10) << 12) | ((id % 10) << 8));
-            for (uint32_t e = 0; e < n && 0x808u + e * 4u + 2u <= sizeof(dir); ++e)
+            if (f.read(reinterpret_cast<char *>(dir), sizeof(dir)))
             {
-                uint16_t k;
-                std::memcpy(&k, dir + 0x808 + e * 4, 2);
+                uint16_t n;
+                std::memcpy(&n, dir + 0x804, 2);
+                n &= 0x7FFFu;
+                for (uint32_t e = 0; e < n && 0x808u + e * 4u + 2u <= sizeof(dir); ++e)
+                {
+                    uint16_t k;
+                    std::memcpy(&k, dir + 0x808 + e * 4, 2);
+                    keys.push_back(k);
+                }
+            }
+            for (const auto &e : std::filesystem::directory_iterator(id < 30 ? "MODS/PAC/EMD" : "MODS/PAC/EMD2", ec))
+            {
+                const std::string name = e.path().filename().string();
+                if (name.size() == 4 && e.is_regular_file(ec) && e.file_size(ec) != 0 &&
+                    name.find_first_not_of("0123456789") == std::string::npos)
+                    keys.push_back(static_cast<uint16_t>(std::stoul(name, nullptr, 16))); // decimal digits = BCD key
+            }
+            const uint16_t key = static_cast<uint16_t>(((id / 10) << 12) | ((id % 10) << 8));
+            for (const uint16_t k : keys)
+            {
                 if (k == key && !g_cutRosterHasModel[i])
                 {
                     g_cutRosterHasModel[i] = true;
@@ -364,8 +399,46 @@ namespace
         g_origIsSeasonEntry(rdram, ctx, runtime);
         // The commentator/NPC profiles have no Season story/player data. Exposing them here reaches the match loader
         // and hangs on a black screen (verified with Jerry Lawler). Keep them in Exhibition/CAM but not Season.
-        if (id == 50u || id == 52u || id == 53u || id == 54u || id == 55u || id == 65u)
-            SET_GPR_U32(ctx, 2, 0u);
+        // Jordan Oct 28: every restored slot crashed when picked in Season (Jeff, both Hogans, Lawler), not only NPCs.
+        for (size_t i = 0; i < kCutCount; ++i)
+            if (kCutRoster[i].id == id)
+                SET_GPR_U32(ctx, 2, 0u);
+    }
+    // CSeasonCharaFrame ctor 0x316ba0 (a0 this): builds its pickable roster (u16 list at +0x88, count +0x1EC) from
+    // GetCharaGameProp types, which restoreCutRoster made valid for the restored slots. Season has no story data for
+    // them -> drop them from the list after the stock ctor returns.
+    PS2Runtime::RecompiledFunction g_origSeasonCharaFrameCtor = nullptr;
+    void seasonCharaFrameCtorCutRoster(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])), ra = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
+        g_origSeasonCharaFrameCtor(rdram, ctx, runtime);
+        if (ctx->pc != ra)
+        {
+            std::fprintf(stderr, "[season] chara frame ctor paused, list not filtered%c", 10);
+            return;
+        }
+        uint32_t count = 0;
+        std::memcpy(&count, rdram + self + 0x1ECu, 4);
+        if (count > (0x1ECu - 0x88u) / 2u)
+            return;
+        uint32_t out = 0;
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            uint16_t id = 0;
+            std::memcpy(&id, rdram + self + 0x88u + i * 2u, 2);
+            bool cut = false;
+            for (size_t c = 0; c < kCutCount; ++c)
+                cut = cut || kCutRoster[c].id == id;
+            if (!cut)
+                std::memcpy(rdram + self + 0x88u + (out++) * 2u, &id, 2);
+        }
+        for (uint32_t i = out; i < count; ++i)
+        {
+            const uint16_t none = 0x76;
+            std::memcpy(rdram + self + 0x88u + i * 2u, &none, 2);
+        }
+        std::memcpy(rdram + self + 0x1ECu, &out, 4);
+        std::fprintf(stderr, "[season] chara list %u -> %u (restored slots removed)%c", count, out, 10);
     }
 
     // Select-list expansion. The character select list is MENU/CHSL: kStockSelect 0x80-byte records (+2 s16 roster id,
@@ -1374,6 +1447,14 @@ namespace
         return true;
     }
 
+    // ADXT_Stop(adxt) as the hook's tail call: it returns to the hook's caller itself (or pauses there cleanly)
+    void adxTailStop(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t adxt, uint32_t ra)
+    {
+        ctx->r[4] = _mm_set_epi64x(0, static_cast<int64_t>(adxt));
+        ctx->r[31] = _mm_set_epi64x(0, static_cast<int64_t>(ra));
+        g_origAdxtStop(rdram, ctx, runtime);
+    }
+
     void nativeStartMemCommon(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, bool indexed)
     {
         const uint32_t adxt = regU(ctx, 4), a1 = regU(ctx, 5), a2 = regU(ctx, 6);
@@ -1398,17 +1479,15 @@ namespace
         if (ok && be16(data.data()) == 0x8000u)
         {
             adxStopNative(adxt);
-            g_origAdxtStop(rdram, ctx, runtime);
-            ctx->r[4] = _mm_set_epi64x(0, static_cast<int64_t>(adxt));
-            ctx->r[31] = _mm_set_epi64x(0, static_cast<int64_t>(ra));
-            ctx->pc = ra;
-            std::lock_guard<std::mutex> alloc(g_adxAlloc);
+            // Native player first, the library's ADXT_Stop LAST as a tail call: Stop can pause in SVM_Lock ->
+            // ResumeThread (thread switch); code after it would run on a half-unwound stack (six-man freeze at 0x5260A0).
+            std::unique_lock<std::mutex> alloc(g_adxAlloc);
             for (int i = 0; i < kAdxPlayers; ++i)
             {
                 AdxPlayer &pl = g_adxPlayers[i];
                 if (pl.adxt != 0u)
                     continue;
-                std::lock_guard<std::mutex> lock(pl.m);
+                std::unique_lock<std::mutex> lock(pl.m);
                 char label[64];
                 std::snprintf(label, sizeof(label), "%s %08x[%u]", indexed ? "StartMemIdx" : "StartMem", a1, indexed ? a2 : 0u);
                 if (!adxSetup(pl, std::move(data), label))
@@ -1416,11 +1495,12 @@ namespace
                 adxPlayOn(i, adxt);
                 if (g_nativeAdxLog)
                     std::fprintf(stderr, "[nadx] %s adxt=%x -> player %d%c", label, adxt, i, 10);
+                lock.unlock();
+                alloc.unlock();
+                adxTailStop(rdram, ctx, runtime, adxt, ra);
                 return;
             }
-            // no free player / not plain ADX: the library plays it (its arguments restored)
-            ctx->r[5] = _mm_set_epi64x(0, static_cast<int64_t>(a1));
-            ctx->r[6] = _mm_set_epi64x(0, static_cast<int64_t>(a2));
+            // no free player / not plain ADX: the library plays it (arguments untouched)
         }
         (indexed ? g_origAdxtStartMemIdx : g_origAdxtStartMem)(rdram, ctx, runtime);
     }
@@ -1434,28 +1514,26 @@ namespace
         if (adxPartitionFile(partition))
         {
             adxStopNative(adxt);
-            // the library side must not keep playing an older stream on this handle
-            g_origAdxtStop(rdram, ctx, runtime);
-            ctx->r[4] = _mm_set_epi64x(0, static_cast<int64_t>(adxt));
-            ctx->r[31] = _mm_set_epi64x(0, static_cast<int64_t>(ra));
-            ctx->pc = ra;
-            std::lock_guard<std::mutex> alloc(g_adxAlloc);
+            // native player first; the library's ADXT_Stop (no older stream may keep playing on this handle) runs
+            // LAST as a tail call - it can pause in SVM_Lock -> ResumeThread (see nativeStartMemCommon)
+            std::unique_lock<std::mutex> alloc(g_adxAlloc);
             for (int i = 0; i < kAdxPlayers; ++i)
             {
                 AdxPlayer &pl = g_adxPlayers[i];
                 if (pl.adxt != 0u)
                     continue;
-                std::lock_guard<std::mutex> lock(pl.m);
+                std::unique_lock<std::mutex> lock(pl.m);
                 if (!adxLoad(pl, partition, fid))
                     break;
                 adxPlayOn(i, adxt);
                 if (g_nativeAdxLog)
                     std::fprintf(stderr, "[nadx] StartAfs adxt=%x pt=%u fid=%u -> player %d%c", adxt, partition, fid, i, 10);
+                lock.unlock();
+                alloc.unlock();
+                adxTailStop(rdram, ctx, runtime, adxt, ra);
                 return;
             }
             std::fprintf(stderr, "[nadx] StartAfs adxt=%x pt=%u fid=%u: not played natively%c", adxt, partition, fid, 10);
-            ctx->r[5] = _mm_set_epi64x(0, static_cast<int64_t>(partition));
-            ctx->r[6] = _mm_set_epi64x(0, static_cast<int64_t>(fid));
         }
         g_origAdxtStartAfs(rdram, ctx, runtime);
     }
@@ -1516,14 +1594,16 @@ namespace
         if (index == 0x10u)
         {
             // who is in the match: entrant cast codes (u16 at 0x4921CA + slot * 0x20, roster id * 100)
-            uint32_t ids[4];
+            // all 8 cast slots (six-man / Rumble / Chamber fill more than 4; the old 4-slot loop stopped at the first
+            // empty slot and left the 3-v-3 partners out of the superstar banter and the all-women check)
+            uint32_t ids[8];
             uint32_t n = 0;
-            for (uint32_t slot = 0; slot < 4u; ++slot)
+            for (uint32_t slot = 0; slot < 8u; ++slot)
             {
                 uint16_t code = 0;
                 std::memcpy(&code, rdram + 0x4921CAu + slot * 0x20u, 2);
                 if (code >= 25500u) // empty slot (cast code 0 is The Rock)
-                    break;
+                    continue;
                 const uint32_t id = code >= 10000u ? (code - 10000u) / 100u + 0x56u : code / 100u;
                 if (id < 0x56u)
                     ids[n++] = code < 10000u ? id | (code % 100u) << 8 : id; // + attire variant (nWo Hogan)
@@ -1560,6 +1640,7 @@ namespace
             hctpCommentaryBrand(sd > raw ? 1 : raw > sd ? 0 : -1);
             hctpCommentaryArena(stage);
             hctpCommentaryParticipants(ids, n);
+            hctpCommentaryBellRule(rdram[0x4920C0u], rdram[0x4920E7u]); // B&P = rule +0x27 (MakeKindBit2 0x1d37b0)
             hctpCommentaryEvent(1u);
         } // kPbpBell: match start / match end (debounced in hctp_commentary.cpp)
     }
@@ -1610,6 +1691,11 @@ namespace
     // 10000 + (id - 0x56) * 100 for the created wrestlers. Finkel speaks when the entrance starts playing.
     PS2Runtime::RecompiledFunction g_origSetEvent = nullptr, g_origEventPlay = nullptr;
     std::atomic<int> g_pendingOrder{-1};
+    // the match setup block (rule 0x4920C0, cast team bytes 0x4921C9 + slot*0x20) is valid while SetEntranceEventNo asks
+    // GetEntranceEventNoFromSystem per cast order, but reads 0 by the time the entrance events play (log Nov 2: entrance #0
+    // "rule 0x00 -> singles", bell "rule 0x04") -> cache them there with the cast codes
+    uint8_t g_entranceRule = 0xFFu;
+    std::array<int8_t, 8> g_entranceTeam = {-1, -1, -1, -1, -1, -1, -1, -1};
     std::array<uint16_t, 8> g_entranceCast = {25500u, 25500u, 25500u, 25500u,
                                                25500u, 25500u, 25500u, 25500u};
     void commentarySetEvent(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -1638,7 +1724,7 @@ namespace
             return;
         // Some events clear the live cast table before Play. GetEntranceEventNoFromSystem sees the authoritative
         // value earlier, so use that captured value when the live slot has already become empty.
-        if (order == 0)
+        // every entrance (was #0 only, before the setup snapshot was complete -> "rule 0x00 -> singles" all match)
         {
             // count distinct wrestlers only: the referee's cast (Hebner 5100 / Chioda 4900) sits in the table too,
             // which made every singles match a "tag team contest" (log: participants 0x20 0x12C 0xA33)
@@ -1660,7 +1746,7 @@ namespace
             // tag vs multi-man comes from the game's own rule table (0x45AF60 + rule*0x20: +1 cast count, +0xC 6 x
             // {slot, team, role}; role 0/1 = wrestler, 2 = special referee, 3 = lumberjack). Counting wrestlers made
             // every 3+ man match (triple threat, fatal 4-way, battle royal, lumberjack) a "tag team contest".
-            const uint8_t ruleType = rdram[0x4920C0u];
+            const uint8_t ruleType = g_entranceRule != 0xFFu ? g_entranceRule : rdram[0x4920C0u];
             bool tag = present > 2u;
             uint32_t teamSize = present >= 6u ? 3u : 2u;
             if (ruleType < 0x56u)
@@ -1677,18 +1763,61 @@ namespace
                 tag = maxTeam >= 2u && minTeam == maxTeam; // equal teams of 2+; handicap = singles-style intros
                 teamSize = maxTeam >= 3u ? 3u : 2u;
             }
+            // the cast's own team bytes (what SetEntranceEventNo groups by) beat the rule table when they are known
+            {
+                uint32_t sizes[8] = {}, known = 0;
+                for (uint32_t i = 0; i < 8u; ++i)
+                {
+                    const uint16_t c = g_entranceCast[i];
+                    const uint32_t id = c >= 10000u ? 0x100u : c / 100u;
+                    if (c >= 25500u || id == 0x31u || id == 0x33u || g_entranceTeam[i] < 0 || g_entranceTeam[i] >= 8)
+                        continue;
+                    ++sizes[g_entranceTeam[i]], ++known;
+                }
+                uint32_t maxTeam = 0, minTeam = 99;
+                for (uint32_t sz : sizes)
+                    if (sz)
+                        maxTeam = std::max(maxTeam, sz), minTeam = std::min(minTeam, sz);
+                if (known >= 2u)
+                {
+                    tag = maxTeam >= 2u && minTeam == maxTeam;
+                    teamSize = maxTeam >= 3u ? 3u : 2u;
+                }
+                std::fprintf(stderr, "[hctp-pbp] entrance teams from cast: %u wrestlers, team sizes max %u min %u%c", known, maxTeam,
+                             minTeam == 99 ? 0 : minTeam, 10);
+            }
             std::fprintf(stderr, "[hctp-pbp] entrance wrestlers %u rule 0x%02X -> %s%c", present, ruleType, tag ? "tag" : "singles", 10);
             hctpCommentarySetTagMatch(tag ? 1u : 0u);
             hctpCommentarySetTeamSize(teamSize);
             // GetRule() returns the live HCTP match-rule object at 0x4920C0;
             // its first byte is the eRuleType used by the game's rule helpers.
-            hctpCommentarySetMatchRule(rdram[0x4920C0u]);
+            hctpCommentarySetMatchRule(g_entranceRule != 0xFFu ? g_entranceRule : rdram[0x4920C0u]);
+        }
+        // Entrance #order is NOT cast slot #order: CSd5EventData::SetEntranceEventNo 0x2ace70 walks the cast team by
+        // team (+0x109 team byte) and appends each slot to data+0x728[count]; SetPreEvent 0x2a8360 reads
+        // *(0x52A0B8)+0x728+order*4 back. The cast table is interleaved (A,B,A,B..) so 6-man named the wrong men.
+        uint32_t slot = uint32_t(order);
+        {
+            uint32_t data = 0, mapped = 0xFFFFFFFFu;
+            std::memcpy(&data, rdram + 0x52A0B8u, 4);
+            if (data != 0u && data < 0x2000000u)
+                std::memcpy(&mapped, rdram + data + 0x728u + uint32_t(order) * 4u, 4);
+            if (mapped < 8u)
+                slot = mapped;
+            // title-match probe: CSd5EventData::GetTitle 0x2af090 returns slot record (+slot*0xD4) +0x8C as the
+            // entrance title graphic when it is not 0xFF (else the belt the wrestler holds). A title match should set
+            // it (challenger / belt at stake) -> wire SYM's title-match time tables 12-27 from this once logged.
+            uint32_t title8c = 0xFFFFFFFFu;
+            if (data != 0u && data < 0x2000000u)
+                std::memcpy(&title8c, rdram + data + slot * 0xD4u + 0x8Cu, 4);
+            std::fprintf(stderr, "[hctp-pbp] entrance #%d -> cast slot %u (event data 0x%X, title+0x8C 0x%X)%c", order, slot,
+                         data, title8c, 10);
         }
         uint16_t code = 0;
-        std::memcpy(&code, rdram + 0x4921CAu + uint32_t(order) * 0x20u, 2);
+        std::memcpy(&code, rdram + 0x4921CAu + slot * 0x20u, 2);
         if (code >= 25500u)
         {
-            code = g_entranceCast[uint32_t(order)];
+            code = g_entranceCast[slot];
             std::fprintf(stderr, "[hctp-pbp] entrance #%d: cached cast slot -> %u%c", order, code, 10);
         }
         if (code >= 25500u && order > 0)
@@ -1716,23 +1845,91 @@ namespace
             std::fprintf(stderr, "[hctp-pbp] entrance #%d starts: cast code %u = empty slot, silent%c", order, code, 10);
             return;
         }
-        int roster = code >= 10000u ? int((code - 10000u) / 100u + 0x56u) : int(code / 100u | (code % 100u) << 8);
         // belt held (CTitleHistoryData::CheckTitleHold 0x324110): u16 holder ids at GetSaveData() 0x4B6450 + 0x9EFC,
         // 11 slots for 9 belts (belts 2 and 3 = tag titles, two holders each) -> belt + 1 above bit 16 for Finkel
-        static const uint8_t kSlotBelt[11] = {0, 1, 2, 2, 3, 3, 4, 5, 6, 7, 8};
+        auto rosterOf = [&](uint16_t c, int &belt) {
+            const int r = c >= 10000u ? int((c - 10000u) / 100u + 0x56u) : int(c / 100u | (c % 100u) << 8);
+            static const uint8_t kSlotBelt[11] = {0, 1, 2, 2, 3, 3, 4, 5, 6, 7, 8};
+            belt = -1;
+            for (uint32_t s = 0; s < 11u && belt < 0; ++s)
+            {
+                uint16_t holder = 0;
+                std::memcpy(&holder, rdram + 0x4C034Cu + s * 2u, 2);
+                if (holder == uint16_t(r & 0xFF))
+                    belt = kSlotBelt[s];
+            }
+            return r;
+        };
         int belt = -1;
-        for (uint32_t s = 0; s < 11u && belt < 0; ++s)
-        {
-            uint16_t holder = 0;
-            std::memcpy(&holder, rdram + 0x4C034Cu + s * 2u, 2);
-            if (holder == uint16_t(roster & 0xFF))
-                belt = kSlotBelt[s];
-        }
+        const int roster = rosterOf(code, belt);
         std::fprintf(stderr, "[hctp-pbp] entrance #%d starts: cast code %u -> roster 0x%02X attire %d belt %d%c", order, code,
                      roster & 0xFF, (roster >> 8) & 0xFF, belt, 10);
-        if (belt >= 0)
-            roster |= (belt + 1) << 16;
-        hctpCommentaryEntrance(uint32_t(roster));
+        // SvR ring announcer (SLUS_210.60 0x211c10): one entrance = every cast member walking out in it; 2+ members =
+        // tag-team category -> a known team gets ONE team call, else each member's intro back to back. HCTP: a shared
+        // (stable) entrance gives the partners no event of their own (SetEntranceEventNo 0x2ace70), so their slots
+        // are missing from data+0x728[0 .. data+0x84); they share this slot's team byte (0x4920C0 + slot*0x20 + 0x109).
+        uint32_t ids[8];
+        int belts[8];
+        uint32_t n = 0;
+        ids[n] = uint32_t(roster), belts[n++] = belt;
+        {
+            uint32_t data = 0, count = 0;
+            std::memcpy(&data, rdram + 0x52A0B8u, 4);
+            if (data != 0u && data < 0x2000000u)
+                std::memcpy(&count, rdram + data + 0x84u, 4);
+            const auto teamOf = [&](uint32_t i) {
+                return g_entranceTeam[i] >= 0 ? g_entranceTeam[i] : int8_t(rdram[0x4921C9u + i * 0x20u]);
+            };
+            const int8_t myTeam = teamOf(slot);
+            for (uint32_t i = 0; i < 8u && count != 0u && count <= 8u; ++i)
+            {
+                uint16_t c = 0;
+                std::memcpy(&c, rdram + 0x4921CAu + i * 0x20u, 2);
+                if (c >= 25500u)
+                    c = g_entranceCast[i]; // live slot cleared by entrance time
+                if (i == slot || c >= 25500u || teamOf(i) != myTeam)
+                    continue;
+                bool ownEntrance = false;
+                for (uint32_t k = 0; k < count && !ownEntrance; ++k)
+                {
+                    uint32_t sl = 0;
+                    std::memcpy(&sl, rdram + data + 0x728u + k * 4u, 4);
+                    ownEntrance = sl == i;
+                }
+                if (ownEntrance)
+                    continue;
+                int b = -1;
+                ids[n] = uint32_t(rosterOf(c, b)), belts[n++] = b;
+                std::fprintf(stderr, "[hctp-pbp] entrance #%d: cast slot %u (roster 0x%02X) walks out in this entrance%c", order,
+                             i, ids[n - 1] & 0xFF, 10);
+            }
+        }
+        // tag belts (2 WWE Tag, 3 World Tag): both holders in this one entrance -> the team call ("They are the WWE Tag
+        // Team Champions!") on the last member (bit 24); a holder whose partner has his own entrance -> "one half of"
+        bool together = false;
+        for (uint32_t a = 0; a < n; ++a)
+            for (uint32_t b = a + 1; b < n; ++b)
+                together = together || ((belts[a] == 2 || belts[a] == 3) && belts[a] == belts[b]);
+        for (uint32_t k = 0; k < n; ++k)
+        {
+            if (belts[k] >= 0)
+                ids[k] |= uint32_t(belts[k] + 1) << 16;
+            if (together && (belts[k] == 2 || belts[k] == 3))
+                ids[k] |= 1u << 24; // no "one half of" for this member; lib plays the team call after the group
+        }
+        // title match = Season only: CSeasonSystem::nvGameInit 0x2579e0 copies the card's belt (CheckTitleMatch 0x30fdd0:
+        // save + 0x9C8C + match*0xD0 + 4, 0xFF = none; ConvertBeltNo2ScriptNo 0x33b460) into match setup 0x4922C5.
+        // Exhibition never writes that byte -> also require the season event struct *(0x529400) (log both to confirm).
+        {
+            uint32_t season = 0;
+            std::memcpy(&season, rdram + 0x529400u, 4);
+            const uint32_t stake = rdram[0x4922C5u];
+            const uint32_t titleBelt = season != 0u && stake < 9u ? stake : 0xFFu;
+            std::fprintf(stderr, "[hctp-pbp] title check: 0x4922C5=0x%02X season*0x529400=0x%X -> belt %d%c", stake, season,
+                         titleBelt == 0xFFu ? -1 : int(titleBelt), 10);
+            hctpCommentarySetTitleMatch(titleBelt);
+        }
+        hctpCommentaryEntranceGroup(ids, n);
     }
 
     // GameSE(CChar*, se, ...) plays a wrestler's move sound: CChar+0xA4 = the move being performed (the id SvR's
@@ -1865,6 +2062,7 @@ namespace
     // MODS\PAC\EVET\36xx (+ 37xx stage-plane variant) plus a MODS\PAC\ENTR\SEVP that carries their script rows.
     std::map<std::string, std::pair<uint32_t, int>> g_loosePac; // "/TAG/KEY" -> (size bytes, entry slot or -1)
     int g_loosePacNextSlot = 127;
+    std::deque<int> g_loosePacSlotOrder; // slots in hand-out order (oldest first) for reuse when 127..32 are taken
     PS2Runtime::RecompiledFunction g_origCFileSearch = nullptr;
     void scanLoosePac()
     {
@@ -1905,8 +2103,23 @@ namespace
                                "PAC" + (path + 0) + (stock.find(";1") != std::string::npos ? ";1" : "");
             for (char &c : name)
                 if (c == '/' || c == '\\') c = sep;
-            const int slot = g_loosePacNextSlot;
-            if (name.size() >= 0x20 || slot < 32 || names[slot * 0x20] != 0)
+            int slot = g_loosePacNextSlot;
+            if (name.size() < 0x20 && (slot < 32 || names[slot * 0x20] != 0) && !g_loosePacSlotOrder.empty())
+            {
+                // Slots 127..32 used up (the Content Pack has ~130 loose files and restored models need theirs): reuse
+                // the slot handed out longest ago; its file is re-assigned a slot when the game asks for it again.
+                slot = g_loosePacSlotOrder.front();
+                g_loosePacSlotOrder.pop_front();
+                for (auto &e : g_loosePac)
+                    if (e.second.second == slot)
+                        e.second.second = -1;
+                std::fprintf(stderr, "[loosepac] entry slots full: reusing entry %d%c", slot, 10);
+            }
+            else if (name.size() < 0x20 && slot >= 32 && names[slot * 0x20] == 0)
+                --g_loosePacNextSlot;
+            else
+                slot = -1;
+            if (slot < 0)
             {
                 std::fprintf(stderr, "[loosepac] %s: no free entry slot (name %s), stock file used%c", path, name.c_str(), 10);
                 g_loosePac.erase(it);
@@ -1914,7 +2127,7 @@ namespace
             }
             std::memcpy(names + slot * 0x20, name.c_str(), name.size() + 1);
             it->second.second = slot;
-            --g_loosePacNextSlot;
+            g_loosePacSlotOrder.push_back(slot);
             std::fprintf(stderr, "[loosepac] %s -> %s (%u bytes, entry %d)%c", path, name.c_str(), it->second.first, slot, 10);
         }
         uint8_t *const info = rdram + 0x524DE0u;
@@ -1939,12 +2152,25 @@ namespace
         g_origGetEntranceEventNo(rdram, ctx, runtime);
         if (order >= 8)
             return;
+        // called from CSd5EventData::SetEntranceEventNo 0x2ace70, which reads GetRule() 0x1f53f0 (= 0x4920C0) and the
+        // cast table (+0x10A code, +0x109 team) right then -> snapshot the whole setup block, not just this order
         if (order == 0)
+        {
             g_entranceCast.fill(25500u);
+            g_entranceTeam.fill(-1);
+        }
+        g_entranceRule = rdram[0x4920C0u];
+        for (uint32_t i = 0; i < 8u; ++i)
+        {
+            uint16_t c; std::memcpy(&c, rdram + 0x4921CAu + i * 0x20u, 2);
+            if (c < 25500u)
+                g_entranceCast[i] = c, g_entranceTeam[i] = int8_t(rdram[0x4921C9u + i * 0x20u]);
+        }
+        std::fprintf(stderr, "[hctp-pbp] entrance setup snapshot (order %u): rule 0x%02X teams %d %d %d %d %d %d%c", order,
+                     g_entranceRule, g_entranceTeam[0], g_entranceTeam[1], g_entranceTeam[2], g_entranceTeam[3],
+                     g_entranceTeam[4], g_entranceTeam[5], 10);
         uint32_t season; std::memcpy(&season, rdram + self + order * 0xD4u + 0x14Cu, 4);
         uint16_t code; std::memcpy(&code, rdram + 0x4921CAu + order * 0x20u, 2);
-        if (code < 25500u)
-            g_entranceCast[order] = code;
         if (season != 0 || code >= 10000u)
             return;
         const uint32_t id = code / 100u, attire = (code / 10u) % 10u;
@@ -4003,6 +4229,8 @@ namespace
                                            runtime.replaceFunction(0x12cec0u, getCharaGamePropCutRoster));
             if (slots > 0 && (g_origIsSeasonEntry = runtime.lookupFunction(0x12d050u)) != nullptr)
                 runtime.replaceFunction(0x12d050u, isSeasonEntryCutRoster);
+            if (slots > 0 && (g_origSeasonCharaFrameCtor = runtime.lookupFunction(0x316ba0u)) != nullptr)
+                runtime.replaceFunction(0x316ba0u, seasonCharaFrameCtorCutRoster);
             std::cerr << "[hctp] cut roster restore: " << slots << " slots with models"
                       << (ok ? "" : " (hook FAILED)") << std::endl;
             if (slots > 0)

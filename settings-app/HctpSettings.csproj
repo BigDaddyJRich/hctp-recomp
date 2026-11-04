@@ -13,7 +13,7 @@
     <AssemblyName>HCTP Recompiled Settings</AssemblyName>
     <RootNamespace>HctpSettings</RootNamespace>
     <Product>HCTP Recompiled</Product>
-    <Version>0.3.4</Version>
+    <Version>0.3.5</Version>
   </PropertyGroup>
 
   <ItemGroup>

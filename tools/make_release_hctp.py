@@ -1,10 +1,10 @@
 # Makes the HCTP build kit a player downloads: dist\HCTP-Recomp-Windows.zip (nothing is published).
 #   HCTP Recomp\
-#     Build HCTP.bat          drop your disc (.iso/.chd) or game folder on it: builds the game on this PC
+#     HCTP Recompiled Settings.exe   the launcher: asks for the disc, builds the game on this PC, PLAY, settings
 #     READ ME FIRST.txt
 #     files\python\           a portable Python (python.org's embeddable package)
-#     files\source\           this repository (as git would commit it), PS2Recomp at its HEAD commit, and deps\ =
-#                             the libraries PS2Recomp's CMake would clone with git
+#     files\source\           what the build needs from this repository (KEEP), PS2Recomp at its HEAD commit minus
+#                             dev scripts / unused targets, and deps\ = the libraries PS2Recomp's CMake would clone
 # Nothing from the disc and nothing made from the game's code goes in: the recompiled C++ (runner\, generated\) and
 # the compiled exe are made on the player's PC. Every name is checked. Needs PS2Recomp built here once (out\recomp,
 # out\native: their _deps). Run: python tools\make_release_hctp.py
@@ -35,23 +35,23 @@ DEPS = {
     'libdwarf': ('out/recomp/_deps/libdwarf-src', ('test/', 'fuzz/')),
     'rabbitizer': ('out/recomp/_deps/rabbitizer-src', ('tests/',)),
 }
-SKIP = ('settings-app/', 'dist/', 'images/', 'logs/', 'shots/', 'third_party/')
+# Nov 4 (Jordan): players get only what they need to build and play - no test/run bats, dev tools, notes or docs, and
+# no "Build HCTP.bat" (it set up <kit>\game while the launcher uses <kit>\files\game: two layouts, the bat's failed more).
+# The launcher runs tools/hctp_setup.py (+ setup_game.py, hctp_prepare_disc.py -> prepare_disc.py -> disc/chdreader.py,
+# vu1_recomp.py + hctp_vu1_ranges.txt, sync_generated.py -> overrides_hctp/), config_hctp/hctp.toml, and opens
+# LICENSE / THIRD-PARTY-NOTICES.txt.
+KEEP = ('LICENSE', 'THIRD-PARTY-NOTICES.txt', 'README.md', 'CHANGELOG.md', 'config_hctp/', 'overrides_hctp/',
+        'tools/hctp_setup.py', 'tools/setup_game.py', 'tools/hctp_prepare_disc.py', 'tools/prepare_disc.py', 'tools/disc/',
+        'tools/vu1_recomp.py', 'tools/hctp_vu1_ranges.txt', 'tools/sync_generated.py')
+# PS2Recomp: its top-level run/build bats and notes, backup copies, and targets the game build never configures
+# (analyzer / studio / test / android / vita sit behind PS2X_BUILD_* options the setup turns off).
+PS2RECOMP_SKIP = ('CLAUDE.md', 'CMakeSettings.json', '.github/', 'overrides_backup/', 'android/', 'vita/',
+                  'ps2xAnalyzer/', 'ps2xStudio/', 'ps2xTest/')
 
-BUILD_BAT = r'''@echo off
-rem Builds WWE SmackDown! Here Comes the Pain for this PC from YOUR copy of the game (USA, SLUS-20787).
-rem Drop your disc image (.iso / .chd) or your game folder (the one with SLUS_207.87) on this file, or run it and
-rem paste the path when asked.
-cd /d "%~dp0"
-set "DISC=%~1"
-if "%DISC%"=="" set /p "DISC=Path to your HCTP .iso / .chd or game folder (Enter = already set up): "
-if "%DISC%"=="" (
-  "files\python\python.exe" "files\source\tools\hctp_setup.py" --data "%~dp0."
-) else (
-  "files\python\python.exe" "files\source\tools\hctp_setup.py" --data "%~dp0." --disc "%DISC%"
-)
-if errorlevel 1 (echo. & echo The build stopped - the [error] line above says why. Logs: "%~dp0logs") else (echo. & echo Done. Start the game with "Play HCTP.bat".)
-pause
-'''
+
+def ps2recomp_skip(name):
+    return name.startswith(PS2RECOMP_SKIP) or ('/' not in name and name.lower().endswith(('.bat', '.ps1', '.sh')))
+
 
 README = r"""HCTP Recomp - WWE SmackDown! Here Comes the Pain on PC (work in progress)
 =========================================================================
@@ -63,22 +63,32 @@ C++ and compiled here, and it never leaves your PC.
 You need: Windows 10/11 64-bit, a CPU with AVX2, a Direct3D 11 graphics card, ~16 GB of RAM, ~15 GB of free space,
 internet for the first build, and your own HCTP disc (USA) as an .iso or .chd, or its files in a folder.
 
-Easiest: open "HCTP Recompiled Settings.exe" - it asks for your disc, builds the game, then PLAY, settings
-(display, renderer, controllers, volume) and updates from GitHub are in the same window. Or by hand:
-
 To build and play:
-  1. Unzip this folder somewhere with a SHORT path, e.g. C:\Games\HCTP Recomp (long paths can break the build).
-  2. Drag your disc image (.iso / .chd) or your game folder onto "Build HCTP.bat".
-     If Microsoft's free C++ build tools aren't installed, they are installed first (allow Windows' prompt once).
-     The first build takes a while (roughly 30-90 minutes, depending on the PC).
-  3. When it says Done, start the game with "Play HCTP.bat".
+  1. Unzip this folder somewhere with a SHORT path, e.g. C:\Games\HCTP Recompiled (long paths can break the build).
+  2. Open "HCTP Recompiled Settings.exe" (the launcher) and pick your disc image (.iso / .chd) or game folder.
+     It builds the game on your PC. If Microsoft's free C++ build tools aren't installed, they are installed first
+     (allow Windows' prompt once). The first build takes a while (roughly 30-90 minutes, depending on the PC).
+     Close other programs (browser, games) while it builds: it needs the memory.
+  3. When it's done, press PLAY. Settings (display, renderer, controllers, volume) and updates are in the same window.
 
 If Windows says "Windows protected your PC": click "More info", then "Run anyway". Or right-click the zip >
 Properties > tick "Unblock" > OK before unzipping.
 
-After the build:
-  game\       your game's files plus ps2EntryRunner.exe (the game) and its DLLs; memory cards are in game\mc0, mc1
+After the build (inside files\):
+  game\           your game's files plus "WWE SmackDown! Here Comes the Pain.exe" (the game) and its DLLs
   build\, logs\   the build's working files (build\ can be deleted once the game runs, to save space)
+
+Add it to Steam: Steam > Games > Add a Non-Steam Game to My Library > Browse > files\game\
+"WWE SmackDown! Here Comes the Pain.exe". It starts on its own (no launcher needed) with the settings you saved in
+the launcher. Keep it in files\game: the game needs the files next to it.
+
+Optional packs (shared on the project's Discord, not part of this download):
+  Content Pack     the restored wrestlers (Hulk Hogan, Ultimate Warrior, Jeff Hardy, Regal, Kidman ...), models,
+                   entrances, music, TitanTrons. Without it you get the stock roster.
+  Commentary Pack  extra commentary and Finkel lines.
+  Install: build/update the game first, close it, then unzip the pack INTO files\game\ (the folder with SLUS_207.87),
+  merging folders and replacing files. A newer pack unzips over an older one the same way. Each pack has its own
+  README.txt with the details. The launcher's Play page shows whether each pack is installed.
 
 This is a work in progress: see the project page for what works and the known bugs.
   https://github.com/BigDaddyJRich/hctp-recomp
@@ -102,14 +112,13 @@ def main():
         with zipfile.ZipFile(out + '.part', 'w', zipfile.ZIP_DEFLATED, compresslevel=6) as z:
             z.write(exe, TOP + '/' + EXE)
             z.writestr(TOP + '/READ ME FIRST.txt', README.replace('\n', '\r\n'))
-            z.writestr(TOP + '/Build HCTP.bat', BUILD_BAT.replace('\r\n', '\n').replace('\n', '\r\n'))
             with zipfile.ZipFile(pyzip) as py:
                 for n in py.namelist():
                     z.writestr(FILES + 'python/' + n, py.read(n))
             listed = base.git(['ls-files', '-co', '--exclude-standard', '-z'], REPO).decode().split('\0')
             n = 0
             for rel in listed:
-                if not rel or rel == 'PS2Recomp' or rel.startswith(SKIP) or rel.endswith(('.pid', '.log')):
+                if not rel.startswith(KEEP) or rel.endswith(('.pid', '.log', '.pyc')):
                     continue
                 path = os.path.join(REPO, rel)
                 if os.path.isfile(path):
@@ -118,7 +127,8 @@ def main():
                     n += 1
             counts['ours'] = n
             # PS2Recomp as committed (its working copy holds the game's generated runner code: never taken from there)
-            counts['PS2Recomp'] = base.add_archive(z, os.path.join(REPO, 'PS2Recomp'), SRC + 'PS2Recomp/')
+            counts['PS2Recomp'] = base.add_archive(z, os.path.join(REPO, 'PS2Recomp'), SRC + 'PS2Recomp/',
+                                                   ps2recomp_skip)
             for name, (where, skip) in DEPS.items():
                 folder = os.path.join(REPO, 'PS2Recomp', *where.split('/'))
                 if not os.path.isdir(folder):

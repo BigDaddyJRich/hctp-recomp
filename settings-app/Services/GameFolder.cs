@@ -26,12 +26,16 @@ public sealed class GameFolder
     public bool HasCommentaryPack => File.Exists(Path.Combine(Data, "game", "BGM", "FINKEL.afs"));
     public bool HasSave => Directory.Exists(Path.Combine(SavesPath, "BASLUS-20787SD5"));
 
+    /// <summary>The game's file name in a player's install: the retail title, so "Add a Non-Steam Game" shows it right.</summary>
+    public const string RetailExeName = "WWE SmackDown! Here Comes the Pain.exe";
+
     /// <summary>The game program: the newest of the places a build puts it (a player's install: in <c>files\</c>).</summary>
     public string? GameExe =>
         new[]
         {
             Path.Combine(Data, GameExeName),
-            Path.Combine(Data, "game", "ps2EntryRunner.exe"), // where tools\hctp_setup.py puts the build
+            Path.Combine(Data, "game", RetailExeName), // where tools\hctp_setup.py puts the build (Nov 4: retail title)
+            Path.Combine(Data, "game", "ps2EntryRunner.exe"), // builds before Nov 4
             Path.Combine(Data, "PS2Recomp", "out", "fast", "ps2xRuntime", "ps2EntryRunner.exe"),
             Path.Combine(Data, "PS2Recomp", "out", "runtime", "ps2xRuntime", "ps2EntryRunner.exe"),
         }
@@ -168,7 +172,7 @@ public sealed class GameFolder
 
     /// <summary>The game's program names (a player's install, a developer build); one running = PLAY is off, so two
     /// copies never share the memory card.</summary>
-    private static readonly string[] GameProcessNames = { "HCTP Recompiled", "ps2EntryRunner" };
+    private static readonly string[] GameProcessNames = { "HCTP Recompiled", "WWE SmackDown! Here Comes the Pain", "ps2EntryRunner" };
 
     public const string AlreadyRunning = "The game is already running.";
 

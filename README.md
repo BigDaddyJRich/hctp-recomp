@@ -14,6 +14,12 @@ unzip it to a short path (e.g. `C:\Games\HCTP`) and open **HCTP Recompiled Setti
 (.iso / .chd or its files), builds the game on your PC (30-90 minutes the first time), then gives you PLAY, settings
 and updates. Optional content and commentary packs are shared on Discord.
 
+**Restored wrestlers (Content Pack):** Hulk Hogan, Legend Hogan, Ultimate Warrior, Jeff Hardy, William Regal, Billy
+Kidman and the other cut wrestlers appear only with the Content Pack. Update the game first (launcher update or
+rebuild; older builds show none of them with the pack), close it, then unzip the pack into your game folder
+`HCTP Recompiled\files\game` (the one with `SLUS_207.87`), merging folders and replacing files. A newer pack goes
+over an older one the same way. Your own `pac` files stay stock.
+
 **No game files or game code are in this repository.** You need your own copy of the game; everything generated from
 it (the recompiled C++ in `PS2Recomp/ps2xRuntime/src/runner/` and `generated/`) stays on your PC and is never committed.
 

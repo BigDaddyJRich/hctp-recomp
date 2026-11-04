@@ -1,8 +1,8 @@
-# HCTP first-run setup (the build kit's "Build HCTP.bat" runs it; also by hand):
+# HCTP first-run setup (the launcher, HCTP Recompiled Settings.exe, runs it; also by hand):
 #   python tools/hctp_setup.py --data <install folder> [--disc <disc.iso | disc.chd | folder with SLUS_207.87>]
 # 1. your game -> <data>/game/, 2. Microsoft's C++ build tools (installed when missing), 3. PS2Recomp's recompiler,
 # 4. the game's code -> C++ (on this PC only), 5. the native Windows build (D3D11 host, as build-native.bat),
-# 6. ps2EntryRunner.exe + DLLs into <data>/game/ (the game runs from its own folder) and "Play HCTP.bat" beside it.
+# 6. ps2EntryRunner.exe + DLLs into <data>/game/ (the game runs from its own folder; the launcher starts it).
 # Same [step]/[progress]/[error] lines as setup_game.py (whose helpers it uses).
 import argparse
 import os
@@ -95,7 +95,7 @@ def step_game(env, data):
     return os.path.join(build, 'ps2xRuntime')
 
 
-PLAY_BAT = '@echo off\r\ncd /d "%~dp0game"\r\nstart "" ps2EntryRunner.exe\r\n'
+RETAIL_EXE = 'WWE SmackDown! Here Comes the Pain.exe'  # launcher: GameFolder.RetailExeName
 
 
 def step_finish(out_dir, data):
@@ -109,10 +109,14 @@ def step_finish(out_dir, data):
         shutil.copyfile(source, os.path.join(game, os.path.basename(source) + '.new'))
     for source in files:
         name = os.path.basename(source)
-        os.replace(os.path.join(game, name + '.new'), os.path.join(game, name))
-    with open(os.path.join(data, 'Play HCTP.bat'), 'w', newline='') as f:
-        f.write(PLAY_BAT)
-    say(f'the game: {os.path.join(game, "ps2EntryRunner.exe")} (start it with "Play HCTP.bat")')
+        # the game gets the retail title (Jordan, Nov 4) so players can add it to Steam as it is
+        dest = RETAIL_EXE if source == exe else name
+        os.replace(os.path.join(game, name + '.new'), os.path.join(game, dest))
+    old = os.path.join(game, 'ps2EntryRunner.exe')
+    if os.path.isfile(old):
+        os.remove(old)  # an earlier build's copy: the launcher would start whichever is newer
+    # no "Play HCTP.bat" any more (Nov 4): the launcher's PLAY (or Steam, via the exe) starts the game
+    say(f'the game: {os.path.join(game, RETAIL_EXE)} (PLAY in HCTP Recompiled Settings, or add it to Steam)')
     progress(1.0)
 
 
