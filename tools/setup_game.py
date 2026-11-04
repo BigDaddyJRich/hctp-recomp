@@ -73,8 +73,9 @@ def error_details(lines, keep=6, width=240):
     return [line.strip()[:width] for line in picked[-keep:] if line.strip()]
 
 
-def run(cmd, env=None, cwd=None, parse=None, log_name=None):
-    """Runs a command, passing its lines on (and to parse(line) for progress)."""
+def run(cmd, env=None, cwd=None, parse=None, log_name=None, low_priority=False):
+    """Runs a command, passing its lines on (and to parse(line) for progress). low_priority: below normal (the
+    compilers it starts inherit it), so the PC stays usable during the long game build."""
     say('> ' + ' '.join(f'"{c}"' if ' ' in c else c for c in cmd))
     if env and not os.path.isabs(cmd[0]):
         # Windows looks a program up on this process's PATH, not env's: find cmake / ninja on the build tools' PATH
@@ -82,7 +83,8 @@ def run(cmd, env=None, cwd=None, parse=None, log_name=None):
         if found:
             cmd = [found] + cmd[1:]
     proc = subprocess.Popen(cmd, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                            text=True, encoding='utf-8', errors='replace', bufsize=1)
+                            text=True, encoding='utf-8', errors='replace', bufsize=1,
+                            creationflags=0x4000 if low_priority and os.name == 'nt' else 0)  # BELOW_NORMAL_PRIORITY_CLASS
     last = collections.deque(maxlen=400)
     for line in proc.stdout:
         line = line.rstrip()
@@ -233,7 +235,7 @@ def build_with_retry(build_dir, env, start, end):
     jobs = build_jobs()
     first = start
     try:
-        run(['cmake', '--build', build_dir, '--', f'-j{jobs}'], env=env, parse=parse)
+        run(['cmake', '--build', build_dir, '--', f'-j{jobs}'], env=env, parse=parse, low_priority=True)
     except SetupError as error:
         retry_jobs = 1 if jobs <= 2 else 2
         say(f'[retry] The build stopped ({error}). Trying again with {retry_jobs} at a time')
@@ -241,7 +243,7 @@ def build_with_retry(build_dir, env, start, end):
             say(f'  {line}')
         time.sleep(5)
         first = at[0]
-        run(['cmake', '--build', build_dir, '--', f'-j{retry_jobs}'], env=env, parse=parse)
+        run(['cmake', '--build', build_dir, '--', f'-j{retry_jobs}'], env=env, parse=parse, low_priority=True)
 
 
 def step_recompiler(env, data):
