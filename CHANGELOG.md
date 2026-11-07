@@ -3,6 +3,11 @@
 This file records HCTP-specific changes only. Local experiments, extracted game assets, emulator dumps, and temporary
 run scripts are intentionally kept out of the public repository.
 
+## 0.3.6
+
+- Launcher Discord button opens the HCTP Discord server (was a profile link).
+- Launcher Scale setting adds 5× and 6× (before, only Auto could pick them).
+
 ## 0.3.5
 
 - Building the game needs far less memory: peak ~5 GB for the whole build (one step used to need 27 GB, so 8-16 GB
@@ -65,7 +70,7 @@ Coming next: a fuller launcher with a built-in mod manager, along the lines of t
 Testing: please write down exactly what you did and what happened for anything you test (mode, wrestlers,
 match type, arena, what you pressed, what went wrong, a screenshot if you can). Send notes to any of:
 - Email: jrich102948@gmail.com
-- Discord: https://discord.com/users/531701434597638165
+- Discord: https://discord.gg/z39SWwQDq
 - GitHub Issues: https://github.com/BigDaddyJRich/hctp-recomp/issues
 
 Known issues (most earlier bugs are fixed):

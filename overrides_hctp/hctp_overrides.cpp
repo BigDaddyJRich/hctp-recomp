@@ -43,6 +43,21 @@ extern "C" bool hctpMovieFrame(int ch, uint8_t *rgba, int w, int h);
 extern "C" void hctpCommentaryEvent(uint32_t event); // ps2xRuntime/src/lib/hctp_commentary.cpp
 extern "C" void hctpCommentaryEntrance(uint32_t rosterId);
 extern "C" void hctpCommentaryEntranceGroup(const uint32_t *rosterIds, uint32_t count);
+// Nov 6 (Jordan): wrestler cast slots from the rule table (role 0/1); valets/managers (Haas with Benjamin,
+// Sable with Vince) also sit in the cast table and made singles "tag" + got banter lines. 0xFF = rule unknown.
+static uint32_t hctpRuleWrestlerSlotMask(const uint8_t *rdram, uint8_t ruleType)
+{
+    if (ruleType >= 0x56u)
+        return 0xFFu;
+    const uint8_t *const rt = rdram + 0x45AF60u + uint32_t(ruleType) * 0x20u;
+    uint32_t m = 0;
+    for (uint32_t k = 0; k < rt[1] && k < 6u; ++k)
+        if (rt[0xC + 3 * k + 2] < 2u && rt[0xC + 3 * k] < 8u)
+            m |= 1u << rt[0xC + 3 * k];
+    return m ? m : 0xFFu;
+}
+
+static uint32_t g_entranceSlotMask = 0xFFu; // cast slots that are real wrestlers in this match (rule table 0x45AF60)
 extern "C" void hctpCommentarySetTitleMatch(uint32_t belt);
 extern "C" void hctpCommentaryResetEntrances();
 extern "C" void hctpCommentarySetTagMatch(uint32_t tag);
@@ -55,6 +70,14 @@ extern "C" void hctpCommentaryArena(int stage);
 extern "C" void hctpCommentaryBrand(int brand);
 extern "C" void hctpCommentaryCharaRoster(uint32_t chara, uint32_t rosterId);
 extern "C" void hctpCommentaryRumbleEntrant(uint32_t rosterId);
+extern "C" void hctpCommentaryPreviewEntrance(uint32_t rosterId); // [COMMFIX Nov 6] CAM entrance preview
+
+// ps2_runtime.cpp: pin CSR.FIELD at one guest read site (see applyHctp, flicker-free field pin).
+void ps2PinCsrField(uint32_t pc, bool pin, bool field) noexcept;
+
+// Roster expansion: cast code -> roster id for host code (commentary, PPV). Slot model nos (8600..9999) give the slot's
+// TEMPLATE id (its Finkel/commentary rows), else code/100 / the CAW id. Defined in the ROSTER EXPANSION section.
+uint32_t hctpRosterCodeId(const uint8_t *rdram, uint32_t code);
 
 // Royal Rumble entrant (called from the hand-edited Draw__9CGameSyncFv_0x1f5c50.cpp right after CGameSync::Draw stores the
 // slot popped from the entry queue 0x527A90 into 0x527AB8, store at 0x1f65c0). Host code only, no guest calls.
@@ -69,8 +92,10 @@ void hctpRumbleSpawn(uint8_t *rdram, uint32_t slot)
         std::memcpy(&cast, rdram + chara + 0x30u, 2);
     std::fprintf(stderr, "[hctp-pbp] rumble spawn: slot %u chara 0x%X cast %u%c", slot, chara, cast, 10);
     if (cast < 10000u)
-        hctpCommentaryRumbleEntrant(cast / 100u);
+        hctpCommentaryRumbleEntrant(hctpRosterCodeId(rdram, cast));
 }
+
+int hctpIkSvrTwistBone(const uint8_t *rdram, uint32_t model, int which); // Nov 7, defined at the end
 
 namespace ps2_stubs
 {
@@ -79,6 +104,7 @@ namespace ps2_stubs
 
 namespace
 {
+    int ppvCommentaryBrand(); // PPV play: card brand 0 RAW / 1 SMACKDOWN, -1 = none (defined with the PPV code)
     // Cut-wrestler restore (HCTP_NO_CUT_ROSTER=1 disables): the ID sheet's "No Model" slots keep name/moveset/entrance
     // data in CHAR\ALL_.pac but have type byte +0x163 = 6 (hidden) and zeroed stats (+0..+4, value/5; order str,
     // sub/tech, speed, tech/sub, end). Models are inserted into CH/CH2.PAC by tools/build_cut_roster_pacs.py.
@@ -97,7 +123,7 @@ namespace
         {0x0D, 0, {13, 12, 19, 15, 15}, 0x0C, 1, "Jeff Hardy", 0},   // keeps his own (empty) event: Jordan ports his entrance,
         {0x11, 0, {15, 19, 12, 18, 16}, 0x12, 1, "William Regal", 3071},
         {0x18, 0, {18, 13, 12, 14, 17}, 0x1A, 1, "Bradshaw", 3071},
-        {0x20, 0, {0, 0, 0, 0, 0}, 0x2D, 3, "Hulk Hogan", 0},       // keeps its stats; Hogan / Hollywood / Mr. America
+        {0x20, 0, {0, 0, 0, 0, 0}, 0x2D, 2, "Hulk Hogan", 0},       // keeps its stats; 2 attires (Jordan Nov 5: Hollywood + Mr. America = own slots)
         {0x21, 0, {20, 13, 10, 13, 16}, 0x1D, 1, "Rosey", 3071},       // Jordan's recommended stats
         {0x23, 0, {18, 13, 14, 13, 15}, 0x1D, 1, "Jamal", 3071},       // Jordan's recommended stats
         {0x24, 0, {16, 13, 14, 15, 16}, 0x19, 1, "Billy Gunn", 3071},
@@ -163,9 +189,26 @@ namespace
                     g_cutRosterHasModel[i] = true;
                     ++enabled;
                 }
-                // Hogan's yellow 3204 is gear-only in the active game; routing it as a full cast
-                // produces floating shirt/boa/glasses. NWO's entrance attire is working, so retain it.
-                if ((k & 0xFF00u) == key && (k & 0xFu) == 4u && !(id == 0x20 && k == 0x3204u))
+                // HOGAN GEAR FIX (Nov 6): GetEntranceCastNo swaps the WHOLE body for the XXA4 cast, so only full
+                // models may be routed. Hogan's 3204/3214/3224 (SYM gear: FusaW2/Glass/H1_*) are gear-only (no
+                // PAC type-8 entry) -> body vanished = floating glasses/boa/shirt. Gear belongs in the XXA2
+                // dress, which the game draws over the ring body (like stock HBK 4502).
+                auto fullModelPack = [&](uint16_t kk) {
+                    char p[32];
+                    std::snprintf(p, sizeof(p), "%s/%04X", id < 30 ? "MODS/PAC/EMD" : "MODS/PAC/EMD2", kk);
+                    std::ifstream pf(p, std::ios::binary);
+                    if (!pf)
+                        return true; // stock archive member: stock XXX4 casts are full models
+                    uint8_t h[8 + 16 * 8] = {};
+                    pf.read(reinterpret_cast<char *>(h), sizeof(h));
+                    uint32_t n = 0;
+                    std::memcpy(&n, h + 4, 4);
+                    for (uint32_t e = 0; e < n && e < 16; ++e)
+                        if (h[8 + e * 8] == 8 && h[9 + e * 8] == 0)
+                            return true;
+                    return false;
+                };
+                if ((k & 0xFF00u) == key && (k & 0xFu) == 4u && fullModelPack(k))
                     g_cutEntranceCodes.insert(static_cast<uint16_t>(id * 100u + ((k >> 4) & 0xFu) * 10u + 4u));
             }
         }
@@ -174,14 +217,96 @@ namespace
     // Roster-wide gloss reduction: CSkinModel::DrawChar 0x155dc0 multiplies every material colour constant by the
     // vector at 0x40F330. Its .w (0x40F33C, normally 128.0) scales the excessive reflection/gloss strength. Use 32.0
     // around every wrestler draw, then restore the game constant. HCTP_FULL_GLOSS=1 keeps the original appearance.
+    bool g_entranceSnapFresh = false; // [COMMFIX Nov 6] moved up: used before its old declaration
     PS2Runtime::RecompiledFunction g_origCharDraw = nullptr;
+    int g_drawCharBleed = 0; // Nov 7 SvR blood layer: CChar+0x390 blood level of the CChar being drawn (0 = none / menu)
     void charDrawReducedGloss(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         float saved, dull = 32.0f;
         std::memcpy(&saved, rdram + 0x40F33Cu, 4);
         std::memcpy(rdram + 0x40F33Cu, &dull, 4);
+        const uint32_t ch = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_MASK;
+        int lvl = 0; // Nov 7: bleeding = byte CChar+0x383 (UpdateBloodTex 0x1dc5e4 sets it when blood is applied);
+                     // +0x390 level is already non-zero on the matchup screen (Jordan's shot: Bret blood shown)
+        if (ch != 0u && ch <= PS2_RAM_SIZE - 0x394u)
+            lvl = rdram[ch + 0x383u];
+        const int prevBleed = g_drawCharBleed;
+        g_drawCharBleed = lvl > 0 ? lvl : 0;
         g_origCharDraw(rdram, ctx, runtime);
+        g_drawCharBleed = prevBleed;
         std::memcpy(rdram + 0x40F33Cu, &saved, 4);
+    }
+    // Nov 7 SvR BLOOD LAYER (notes\ANY_BONE_ANIMATION_RESEARCH_20261106.md s16/s18): SvR04 models carry an overlay
+    // texture named "blood"; SvR04 CChar ctor 0x1acda0 stores its index (CChar+0x544) and draw 0x1ae520 skips meshes
+    // with it until bleeding (+0x393). HCTP bleeds by face swap (UpdateBloodTex 0x1dc580, level CChar+0x390) and never
+    // skips -> red patch. Same skip here: CSkinModel::DrawChar 0x155dc0 (a0 = model; +0xC8 = YOBJ+8: +0x10 n_mesh,
+    // +0x1C meshes 64 B (+4 n_mat, +0xC mats 0xD0 B: +0x28 tex index, +0xC2 qwc of the REF tag, +0xCC addr),
+    // +0x18 n_tex, +0x24 tex names 16 B). Blood materials get qwc 0 for the call (empty REF = nothing drawn), restored
+    // after. Shown while the drawing CChar (CChar::Draw 0x1bb200 hook) has blood level > 0. HCTP_SVR_BLOOD=0 = off.
+    PS2Runtime::RecompiledFunction g_origDrawCharBlood = nullptr;
+    std::map<uint32_t, std::vector<uint32_t>> g_bloodMats; // key = skinData ^ (n_mesh << 24); value = material addrs
+    void drawCharSvrBlood(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t model = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_MASK;
+        uint32_t sd = 0u;
+        if (model != 0u && model <= PS2_RAM_SIZE - 0xCCu)
+            std::memcpy(&sd, rdram + model + 0xC8u, 4);
+        sd &= PS2_RAM_MASK;
+        if (sd == 0u || sd > PS2_RAM_SIZE - 0x28u || g_drawCharBleed > 0)
+        {
+            g_origDrawCharBlood(rdram, ctx, runtime);
+            return;
+        }
+        auto rd = [&](uint32_t a) { uint32_t v = 0u; if (a <= PS2_RAM_SIZE - 4u) std::memcpy(&v, rdram + a, 4); return v; };
+        const uint32_t nMesh = rd(sd + 0x10u), meshes = rd(sd + 0x1Cu) & PS2_RAM_MASK;
+        const uint32_t key = sd ^ (nMesh << 24);
+        auto it = g_bloodMats.find(key);
+        if (it == g_bloodMats.end())
+        {
+            std::vector<uint32_t> mats;
+            const uint32_t nTex = rd(sd + 0x18u), names = rd(sd + 0x24u) & PS2_RAM_MASK;
+            std::vector<uint32_t> bloodTex;
+            if (nTex < 256u && names != 0u && names <= PS2_RAM_SIZE - nTex * 16u)
+                for (uint32_t t = 0; t < nTex; ++t)
+                {
+                    char nm[17] = {};
+                    std::memcpy(nm, rdram + names + t * 16u, 16);
+                    if (std::strcmp(nm, "blood") == 0 || std::strcmp(nm, "blood_b") == 0)
+                        bloodTex.push_back(t);
+                }
+            if (!bloodTex.empty() && nMesh < 512u && meshes != 0u)
+                for (uint32_t m = 0; m < nMesh; ++m)
+                {
+                    const uint32_t mesh = meshes + m * 64u, nMat = rd(mesh + 4u), mats0 = rd(mesh + 0xCu) & PS2_RAM_MASK;
+                    for (uint32_t k = 0; k < nMat && k < 256u && mats0 != 0u; ++k)
+                    {
+                        const uint32_t mat = mats0 + k * 0xD0u;
+                        if (std::find(bloodTex.begin(), bloodTex.end(), rd(mat + 0x28u)) != bloodTex.end())
+                            mats.push_back(mat);
+                    }
+                }
+            if (!bloodTex.empty())
+            std::fprintf(stderr, "[svrblood] ymp 0x%X: %zu blood tex, %zu material(s) hidden until bleeding%c", sd,
+                         bloodTex.size(), mats.size(), 10);
+            if (g_bloodMats.size() > 4096u)
+                g_bloodMats.clear();
+            it = g_bloodMats.emplace(key, std::move(mats)).first;
+        }
+        if (it->second.empty())
+        {
+            g_origDrawCharBlood(rdram, ctx, runtime);
+            return;
+        }
+        std::vector<uint16_t> saved(it->second.size());
+        for (size_t i = 0; i < it->second.size(); ++i)
+        {
+            std::memcpy(&saved[i], rdram + it->second[i] + 0xC2u, 2);
+            const uint16_t z = 0u;
+            std::memcpy(rdram + it->second[i] + 0xC2u, &z, 2);
+        }
+        g_origDrawCharBlood(rdram, ctx, runtime);
+        for (size_t i = 0; i < it->second.size(); ++i)
+            std::memcpy(rdram + it->second[i] + 0xC2u, &saved[i], 2);
     }
     // Native-model bridge probe: capture only a bounded identity record for a live
     // CSkinModel.  This stays observational; the original VIF/VU/GS draw remains
@@ -296,6 +421,7 @@ namespace
     // CSd5EventData::GetEntranceCastNo 0x2af480 (a1 = cast code id*100 + attire*10) hard-codes the wrestlers who wear an
     // entrance attire (part 4): 0x3A->5804, 0x45->6904, 0x48->7204, 0x4B->7504, 0x4C->7604, 0x50->8004, 0x27->3904;
     // everyone else gets the ring (or high-poly) model. Restored wrestlers with an XXA4 pack get their entrance attire.
+    uint16_t g_hoganTearBody = 0; // Hogan after-tear body override (see initEventSystemShirtTear)
     PS2Runtime::RecompiledFunction g_origGetEntranceCastNo = nullptr;
     void getEntranceCastNoCutRoster(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
@@ -305,10 +431,175 @@ namespace
         if (code < 10000u && g_cutEntranceCodes.count(static_cast<uint16_t>(entrance)))
             SET_GPR_U32(ctx, 2, entrance);
     }
+    // Molly Holly SvR port (Nov 5): GameMem::Setup 0x1feed0 sizes the 7 character pages (KB, table 0x419d68[slot],
+    // cast code at 0x4920C0 + slot*32 + 0x10A): part 0 (ring) = 0x1E0, other parts 0x290, B&P mode part 3 = 0x350, then
+    // ymemReallocatePage(2, 0x419d60). SvR Molly (3754 verts) needs ~535 KB without textures -> give her ring attires
+    // (41x0) the part-1/2 size 0x290 when the loose SvR model (> 512 KB) is installed in MODS/PAC/EMD2.
+    PS2Runtime::RecompiledFunction g_origReallocatePage = nullptr;
+    void reallocatePageBigModels(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        // Nov 5 (Hogan session): generalised from SvR Molly (41x0) to every loose ring model > 512 KB (Hogan WM19 graft
+        // 3210 = 524800 B loaded nothing -> invisible body, only the separate gear pack drew). Sizes cached per code.
+        static std::map<uint16_t, uint64_t> s_looseSize;
+        g_hoganTearBody = 0; // match memory setup: entrance over, ring models load by their own codes again
+        auto looseBig = [](uint16_t code) {
+            auto it = s_looseSize.find(code);
+            if (it == s_looseSize.end())
+            {
+                std::error_code ec;
+                const std::string key = std::to_string(code);
+                uint64_t sz = std::filesystem::file_size((code < 3000u ? "MODS/PAC/EMD/" : "MODS/PAC/EMD2/") + key, ec);
+                it = s_looseSize.emplace(code, ec ? 0u : sz).first;
+            }
+            return it->second;
+        };
+        auto looseSize = looseBig;
+        auto looseBigFn = [&looseSize](uint16_t code) { return looseSize(code) > 0x80000u; };
+        const uint32_t first = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4]));
+        const uint32_t table = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5]));
+        if (first == 2u && table == 0x419d60u)
+        {
+            for (uint32_t slot = 0; slot < 7u; ++slot)
+            {
+                uint16_t code = 0;
+                std::memcpy(&code, rdram + 0x4920C0u + slot * 32u + 0x10Au, 2);
+                uint32_t size = 0;
+                std::memcpy(&size, rdram + table + 8u + slot * 4u, 4);
+                if (code < 10000u && code % 10u == 0u && size == 0x1E0u && looseBigFn(code))
+                {
+                    size = 0x290u;
+                    std::memcpy(rdram + table + 8u + slot * 4u, &size, 4);
+                    std::fprintf(stderr, "[mem] slot %u cast %u big loose model 0x1E0 -> 0x290%c", slot, unsigned(code), 10);
+                }
+                // Nov 7: loose entrance attires (XXa4, e.g. SvR06 Hogan 80s 7204 = 776 KB decoded) larger than the
+                // 0x290 page get the B&P part-3 size 0x350 (848 KB), whether the page is keyed by the entrance code
+                // or by the ring code whose entrance attire is armed.
+                if (code < 10000u && (code % 10u == 4u || code % 10u == 0u) && size < 0x350u)
+                {
+                    const uint16_t ent = static_cast<uint16_t>(code - code % 10u + 4u);
+                    if (g_cutEntranceCodes.count(ent) && looseSize(ent) > 0x290u * 1024u)
+                    {
+                        std::fprintf(stderr, "[mem] slot %u cast %u entrance attire %u 0x%X -> 0x350%c", slot,
+                                     unsigned(code), unsigned(ent), size, 10);
+                        size = 0x350u;
+                        std::memcpy(rdram + table + 8u + slot * 4u, &size, 4);
+                    }
+                }
+            }
+        }
+        g_origReallocatePage(rdram, ctx, runtime);
+    }
+    // Hair chains (Nov 6): CKami (hair physics, 0x1F0 B, ctor 0x1c5980) keeps its CKami1 chain pointers at +0x1C,
+    // null-terminated, and +0x58 is its "reinit" flag -> room for 14 chains. The ctor loop calls CKami1::Make
+    // 0x1c5f50(char, idx, kami) until it returns 0, with no bound: models with more hair chains (Nero 3X Warrior,
+    // 534 KB) overwrite +0x58.. +0x80 (char pointer) -> CKami::ActionLink ran CKami1 on garbage (crash in
+    // MatchWrestler::MakeChar -> CKami1::Init writing 0x0F800000). Nero 3X grows the object to 0x270 and moves the
+    // array to +0x1F0 (ELF patch). Ours: chains 14+ live in a host list per CKami; CKami::ActionLink 0x1c5d70 runs
+    // them after the stock 14 (Init 0x1c6160 when the stock loop did, then CKami1::ActionLink 0x1c6170); dtor
+    // 0x1c5cc0 deletes them. HCTP_KAMI_EXTRA=0 = stock (crashes on such models).
+    constexpr uint32_t kKamiStockChains = 14u;
+    PS2Runtime::RecompiledFunction g_origKamiMake = nullptr, g_origKamiAction = nullptr, g_origKamiDtor = nullptr;
+    std::map<uint32_t, std::vector<uint32_t>> g_kamiExtra;
+    bool g_kamiInitSeen = false;
+    uint32_t kamiCallFn(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, PS2Runtime::RecompiledFunction fn,
+                        uint32_t addr, std::initializer_list<uint32_t> args)
+    {
+        const bool savedHit = t_eeCheckpointHit, savedNo = t_eeNoCheckpoint;
+        t_eeNoCheckpoint = true; // run to the end: host code cannot resume a paused callee
+        const R5900Context saved = *ctx;
+        int r = 4;
+        for (uint32_t a : args)
+            ctx->r[r++] = _mm_set_epi64x(0, static_cast<int64_t>(static_cast<int32_t>(a)));
+        ctx->pc = addr;
+        fn(rdram, ctx, runtime);
+        const uint32_t ret = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[2]));
+        *ctx = saved;
+        t_eeCheckpointHit = savedHit;
+        t_eeNoCheckpoint = savedNo;
+        return ret;
+    }
+    void kamiMakeExtra(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t chr = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4]));
+        const uint32_t idx = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5]));
+        const uint32_t kami = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[6]));
+        if (idx == 0u)
+            g_kamiExtra.erase(kami); // fresh CKami at a recycled address
+        if (idx != kKamiStockChains)
+        {
+            g_origKamiMake(rdram, ctx, runtime);
+            return;
+        }
+        // Stock slot 14 = the terminator: build every further chain into the host list; the stock array ends here.
+        std::vector<uint32_t> extra;
+        for (uint32_t i = kKamiStockChains; i < 100u; ++i)
+        {
+            const uint32_t c = kamiCallFn(rdram, ctx, runtime, g_origKamiMake, 0x1c5f50u, {chr, i, kami});
+            if (!c)
+                break;
+            extra.push_back(c);
+        }
+        if (!extra.empty())
+        {
+            std::fprintf(stderr, "[kami] CKami 0x%x: %u hair chains (stock room 14), %u kept on host%c", kami,
+                         unsigned(kKamiStockChains + extra.size()), unsigned(extra.size()), 10);
+            g_kamiExtra[kami] = std::move(extra);
+        }
+        ctx->r[2] = _mm_setzero_si128();
+        ctx->pc = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
+    }
+    void kamiInitSeen(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
+    {
+        // CKami1::Init 0x1c6160, stock body: this+4 = 1
+        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4]));
+        const uint32_t one = 1u;
+        std::memcpy(rdram + ((self + 4u) & 0x1FFFFFFu), &one, 4);
+        g_kamiInitSeen = true;
+        ctx->pc = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
+    }
+    void kamiActionExtra(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t kami = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4]));
+        auto it = g_kamiExtra.find(kami);
+        if (it == g_kamiExtra.end())
+        {
+            g_origKamiAction(rdram, ctx, runtime);
+            return;
+        }
+        const uint32_t ra = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
+        g_kamiInitSeen = false;
+        kamiCallFn(rdram, ctx, runtime, g_origKamiAction, 0x1c5d70u, {kami});
+        for (uint32_t c : it->second)
+        {
+            if (g_kamiInitSeen)
+            {
+                const uint32_t one = 1u;
+                std::memcpy(rdram + ((c + 4u) & 0x1FFFFFFu), &one, 4);
+            }
+            kamiCallFn(rdram, ctx, runtime, runtime->lookupFunction(0x1c6170u), 0x1c6170u, {c});
+        }
+        ctx->pc = ra;
+    }
+    void kamiDtorExtra(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t kami = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4]));
+        auto it = g_kamiExtra.find(kami);
+        if (it != g_kamiExtra.end())
+        {
+            const std::vector<uint32_t> extra = std::move(it->second);
+            g_kamiExtra.erase(it);
+            for (uint32_t c : extra) // as the stock loop: operator delete
+                kamiCallFn(rdram, ctx, runtime, runtime->lookupFunction(0x100200u), 0x100200u, {c});
+        }
+        g_origKamiDtor(rdram, ctx, runtime);
+    }
     // Hogan's entrance shirt tear: InitEventSystem normally switches to the XXX2
     // after-tear dress only when the event member flag at +0x155 is set. Modern
     // Hogan's 32xx cast entries do not set it, so the entrance gear remains on.
     // Enable the switch only when the matching loose after-tear pack exists.
+    // Nov 6 (Jordan): Hogan's entrance (event 3032, Legend 3078 bank) swaps in a SEVP after-tear body object with the
+    // literal model 3200 (attire 1). For other Hogan attires that showed the attire-1 body at the tear. While such an
+    // entrance runs, /EMD2/3200 is served as that attire's ring body (32A0); cleared when GameMem sets up the match.
     PS2Runtime::RecompiledFunction g_origInitEventSystem = nullptr;
     void initEventSystemShirtTear(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
@@ -327,6 +618,11 @@ namespace
                 std::memcpy(&code, rdram + member, 2);
                 std::fprintf(stderr, "[entrance] InitEventSystem event %u member %u cast %u dress flag %u%c", event,
                              selected, unsigned(code), unsigned(rdram[member + (0x155u - 0x88u)]), 10);
+                if (code < 10000u && code / 100u == 32u && (code % 100u) / 10u != 0u)
+                {
+                    g_hoganTearBody = static_cast<uint16_t>(code - code % 10u);
+                    std::fprintf(stderr, "[entrance] Hogan tear body 3200 -> %u%c", unsigned(g_hoganTearBody), 10);
+                }
                 if (false && code / 100u == 0x20u && code < 10000u) // superseded by enableHoganDress (IsDress table)
                 {
                     char key[8];
@@ -345,6 +641,18 @@ namespace
     }
     void restoreCutRoster(uint8_t *rdram)
     {
+        // Nov 6 Rosey (0x21): the roster record says "Rosie" at +0x116 (name: select lists, CAM, results, title holders,
+        // stables - GetWrestlerName 0x12cde0) and +0x144 (second copy, ring name). Table 0x4C0F54 comes from the
+        // memory-card save (keeps the old spelling), so the loose MODS\PAC\CHAR\ALL fix alone never showed. Patch the
+        // live record; the next save writes "Rosey" back. HCTP_NO_ROSEY_FIX=1 = off.
+        static const bool roseyFix = std::getenv("HCTP_NO_ROSEY_FIX") == nullptr;
+        if (roseyFix)
+            for (const uint32_t off : {0x116u, 0x144u})
+            {
+                uint8_t *const nm = rdram + 0x4C0F54u + 0x21u * 0x170u + off;
+                if (std::memcmp(nm, "Rosie", 6) == 0)
+                    std::memcpy(nm, "Rosey", 6);
+            }
         for (size_t i = 0; i < kCutCount; ++i)
         {
             const CutWrestler &w = kCutRoster[i];
@@ -365,14 +673,37 @@ namespace
     // (78) only; give Modern Hogan's attire 0 the same flag when its dress pack (EMD2\3202) is installed.
     void enableHoganDress(uint8_t *rdram)
     {
-        static const bool hasDress = std::filesystem::exists("MODS/PAC/EMD2/3202");
-        if (hasDress)
-            rdram[0x41B5C0u + 0x20u * 6u + 0u] = 1;
+        // Nov 5: every Modern Hogan attire A whose dress pack EMD2A2 is installed gets the flag (was attire 0 only),
+        // so each attire walks out in its own gear and tears it (WM19 = attire 1 -> 3212).
+        static const uint8_t dressMask = [] {
+            uint8_t m = 0;
+            for (unsigned a = 0; a < 6; ++a)
+            {
+                char key[32];
+                std::snprintf(key, sizeof(key), "MODS/PAC/EMD2/32%u2", a);
+                if (std::filesystem::exists(key))
+                    m |= uint8_t(1u << a);
+            }
+            return m;
+        }();
+        for (unsigned a = 0; a < 6; ++a)
+            if (dressMask & (1u << a))
+                rdram[0x41B5C0u + 0x20u * 6u + a] = 1;
+        // Nov 5: Jerry Lawler (53): ring attire 0 = EMD2\5300 (5330 body + retail head, no crown), entrance dress =
+        // EMD2\5302 (stock 5300 jacket + crown as a gear model, like HBK 4502). Flag only when the gear pack exists.
+        static const bool lawlerDress = std::filesystem::exists("MODS/PAC/EMD2/5302");
+        if (lawlerDress)
+            rdram[0x41B5C0u + 53u * 6u + 0u] = 1;
         // Legend Hogan (0x4E) is a restored cut slot: ch2 has his body 7800 but no dress 7802, so his stock flag made
         // the entrance ask for a missing pack -> CFile::MemAllocCashPage spun forever in CachRemoveHead (hang).
         static const bool legendDress = std::filesystem::exists("MODS/PAC/EMD2/7802");
         if (!legendDress)
+        {
             rdram[0x41B5C0u + 0x4Eu * 6u + 0u] = 0;
+            // nvCast's backstage attire table 0x41A8D0 (s8 per id < 0x56) has 100 for Legend Hogan: >99 sets the cast's
+            // dress flag (+0xC9) -> same missing 7802 pack in Season cutscenes. Use plain attire 0 instead.
+            rdram[0x41A8D0u + 0x4Eu] = 0;
+        }
         static bool logged = false;
         if (!logged)
         {
@@ -397,12 +728,38 @@ namespace
         const uint32_t id = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0xFFu;
         restoreCutRoster(rdram);
         g_origIsSeasonEntry(rdram, ctx, runtime);
-        // The commentator/NPC profiles have no Season story/player data. Exposing them here reaches the match loader
-        // and hangs on a black screen (verified with Jerry Lawler). Keep them in Exhibition/CAM but not Season.
-        // Jordan Oct 28: every restored slot crashed when picked in Season (Jeff, both Hogans, Lawler), not only NPCs.
+        // Nov 5: restored wrestlers are Season-playable again (Jordan). Season cutscene casts ask GetMatchWrestlerNo for the
+        // backstage part XX01 and fall back to the ring model; restored slots now get their entrance attire there
+        // (getMatchWrestlerNoCutRoster). The announcer/NPC slots stay out of Season until Jordan decides (Lawler reached
+        // the match loader and hung on a black screen, Oct 22).
+        if (id >= 50 && id <= 55)
+            SET_GPR_U32(ctx, 2, 0u);
+    }
+    // GetMatchWrestlerNo 0x12cce0 (a0 id, a1 attire, a2 backstage wanted, a3 entrance, t0 special, t1 CAW): returns model
+    // rec+0x114 * 100 + attire*10, +1 when a2 is set and that backstage pack exists (MakeCharName + CFile::ExistenceCheck).
+    // Season casts (nvCast 0x258a30) set a2. Restored wrestlers have no XX01 backstage pack: use their entrance attire
+    // (XXn4, Jordan Nov 5), or keep the ring attire when they have none (Jeff).
+    PS2Runtime::RecompiledFunction g_origGetMatchWrestlerNo = nullptr;
+    void getMatchWrestlerNoCutRoster(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t id = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4]));
+        const bool backstage = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[6])) != 0u &&
+                               static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[7])) == 0u &&
+                               static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[8])) == 0u;
+        g_origGetMatchWrestlerNo(rdram, ctx, runtime);
+        const uint32_t code = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[2])) & 0xFFFFu;
+        if (!backstage || id >= 0x56u || code >= 10000u || code % 10u != 0u)
+            return;
+        bool restored = false;
         for (size_t i = 0; i < kCutCount; ++i)
-            if (kCutRoster[i].id == id)
-                SET_GPR_U32(ctx, 2, 0u);
+            restored = restored || (g_cutRosterHasModel[i] && kCutRoster[i].id == id);
+        if (restored && g_cutEntranceCodes.count(static_cast<uint16_t>(code + 4u)))
+        {
+            SET_GPR_U32(ctx, 2, code + 4u);
+            static int logged = 0;
+            if (logged++ < 16)
+                std::fprintf(stderr, "[season] backstage cast %u -> entrance attire %u%c", code, code + 4u, 10);
+        }
     }
     // CSeasonCharaFrame ctor 0x316ba0 (a0 this): builds its pickable roster (u16 list at +0x88, count +0x1EC) from
     // GetCharaGameProp types, which restoreCutRoster made valid for the restored slots. Season has no story data for
@@ -426,9 +783,7 @@ namespace
         {
             uint16_t id = 0;
             std::memcpy(&id, rdram + self + 0x88u + i * 2u, 2);
-            bool cut = false;
-            for (size_t c = 0; c < kCutCount; ++c)
-                cut = cut || kCutRoster[c].id == id;
+            const bool cut = id >= 50 && id <= 55; // Nov 5: only the announcer/NPC slots stay out of Season
             if (!cut)
                 std::memcpy(rdram + self + 0x88u + (out++) * 2u, &id, 2);
         }
@@ -438,7 +793,156 @@ namespace
             std::memcpy(rdram + self + 0x88u + i * 2u, &none, 2);
         }
         std::memcpy(rdram + self + 0x1ECu, &out, 4);
-        std::fprintf(stderr, "[season] chara list %u -> %u (restored slots removed)%c", count, out, 10);
+        std::fprintf(stderr, "[season] chara list %u -> %u (NPC slots removed)%c", count, out, 10);
+    }
+
+    // Season roster entry: "only one of these wrestlers" rule (Jordan Nov 5). Stock CRosterFrame hard-codes one pair:
+    // CheckRosterSpecialCondition 0x34ffe0 (leaf; this+0x458 = cursor index, +0x362 u16[0x76] roster ids, +0x2EC s8[0x76]
+    // entry flags: <0 unavailable, 0 out, 1 in, 2 locked) returns 2 when Undertaker 0x03 / Legend Undertaker 0x48 is picked
+    // while the other is in; CheckEntryOther 0x350100 then undoes the toggle and InputAction shows SetWarning(6) =
+    // WarningStart(kind 5, msg 29) = GetWarningMsg 0x168e40 table 0x410580[5] entry 29 -> {char *lines[5], count 5}:
+    // "@C", "You can't enter Undertaker and", "The Undertaker at the same time.", "Please select one.", "".
+    // SetRosterSpecialCondition 0x34fd10 (ctor) drops one Taker when a saved roster has both.
+    // Here: data-driven groups (first = stock Taker, same text), message lines swapped per group.
+    constexpr uint16_t kNoId = 0xFFFF;
+    struct OneOfGroup
+    {
+        uint16_t ids[4]; // kNoId = unused (roster id 0 is The Rock, so 0 is a real id)
+        const char *line1, *line2;
+    };
+    // A group with one id does nothing until its second slot is added (roster expansion): just add the new id.
+    constexpr OneOfGroup kOneOfGroups[] = {
+        {{0x03, 0x48, kNoId, kNoId}, "You can't enter Undertaker and", "The Undertaker at the same time."}, // stock
+        {{0x20, 0x4E, kNoId, kNoId}, "You can't enter Hulk Hogan and", "Legend Hulk Hogan at the same time."},
+        {{0x07, kNoId, kNoId, kNoId}, "You can't enter Kane and", "Legend Kane at the same time."},           // + 90s Kane
+        {{0x00, kNoId, kNoId, kNoId}, "You can't enter The Rock and", "Legend The Rock at the same time."},   // + SvR 90s Rock
+        {{0x44, 0xA2, kNoId, kNoId}, "You can't enter Roddy Piper and", "Legend Roddy Piper at the same time."}, // Piper = 0x44 (0x45 = DiBiase); 0xA2 = new Modern Piper slot
+        // Mr. America: add 0x20's group if he should count as a Hogan.
+    };
+    int g_oneOfHit = -1;          // group of the last refusal (GetWarningMsg reads it)
+    uint32_t g_oneOfMsg[std::size(kOneOfGroups)] = {}; // guest {char *lines[5], count} per group
+    int oneOfGroupOf(uint16_t id)
+    {
+        for (size_t g = 0; g < std::size(kOneOfGroups); ++g)
+            for (uint16_t m : kOneOfGroups[g].ids)
+                if (m != kNoId && m == id)
+                    return static_cast<int>(g);
+        return -1;
+    }
+    // LEGEND banner. IsLegend 0x12d200 (leaf, a0 ROSTER_ID) is a hard-coded id list; it drives the select-screen info
+    // plate (SelectWrestlerDrawer::DrawInfoPlate 0x2883c0: plate shifted 0x37 + legend banner), the Season superstar
+    // list (CSeasonCharaFrame::DrawSuperStarList 0x319ee0) and keeps legends out of Royal Rumble random entrants
+    // (CRoyalRumbleFrame::ElectRumbleStar 0x300690). Stock list below; add new legend slot ids to kExtraLegends
+    // (90s Rock, 90s Kane, Andre...). Modern Piper / Modern Hogan 0x20 stay out.
+    constexpr uint16_t kStockLegends[] = {0x3A, 0x44, 0x45, 0x46, 0x48, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50, 0x51, 0x52};
+    constexpr uint16_t kExtraLegends[] = {kNoId};
+    void isLegendExtended(uint8_t *, R5900Context *ctx, PS2Runtime *)
+    {
+        const uint32_t id = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0xFFFFu;
+        uint32_t legend = 0;
+        for (uint16_t l : kStockLegends)
+            legend |= l == id;
+        for (uint16_t l : kExtraLegends)
+            legend |= l != kNoId && l == id;
+        SET_GPR_U32(ctx, 2, legend);
+        ctx->pc = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
+    }
+    uint16_t rosterIdAt(const uint8_t *rdram, uint32_t self, uint32_t i)
+    {
+        uint16_t id;
+        std::memcpy(&id, rdram + self + 0x362u + i * 2u, 2);
+        return id;
+    }
+    int8_t rosterFlagAt(const uint8_t *rdram, uint32_t self, uint32_t i) { return static_cast<int8_t>(rdram[self + 0x2ECu + i]); }
+    void checkRosterSpecialConditionGroups(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
+    {
+        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        uint32_t idx;
+        std::memcpy(&idx, rdram + self + 0x458u, 4);
+        uint32_t result = 0;
+        if (idx < 0x76u)
+        {
+            const uint16_t id = rosterIdAt(rdram, self, idx);
+            const int g = oneOfGroupOf(id);
+            // only refuse an ADD (CheckEntryOther toggled the flag before calling us), so a roster that somehow holds two
+            // can still drop one
+            if (g >= 0 && rosterFlagAt(rdram, self, idx) >= 1)
+                for (uint32_t i = 0; i < 0x76u && !result; ++i)
+                    if (i != idx && rosterIdAt(rdram, self, i) != id && oneOfGroupOf(rosterIdAt(rdram, self, i)) == g &&
+                        rosterFlagAt(rdram, self, i) >= 1)
+                    {
+                        result = 2;
+                        g_oneOfHit = g;
+                    }
+        }
+        SET_GPR_U32(ctx, 2, result);
+        ctx->pc = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
+    }
+    PS2Runtime::RecompiledFunction g_origSetRosterSpecialCondition = nullptr;
+    void setRosterSpecialConditionGroups(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu,
+                       ra = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
+        g_origSetRosterSpecialCondition(rdram, ctx, runtime); // stock Taker pair (keeps its feud/title preference)
+        if (ctx->pc != ra)
+            return;
+        uint32_t mode;
+        std::memcpy(&mode, rdram + self + 0x2E8u, 4);
+        if (mode != 0u && mode != 4u) // same gate as stock
+            return;
+        for (size_t g = 1; g < std::size(kOneOfGroups); ++g)
+        {
+            int keep = -1;
+            for (uint32_t i = 0; i < 0x76u; ++i) // a locked (2) member wins, else the first one entered
+                if (oneOfGroupOf(rosterIdAt(rdram, self, i)) == static_cast<int>(g) && rosterFlagAt(rdram, self, i) >= 1 &&
+                    (keep < 0 || (rosterFlagAt(rdram, self, i) == 2 && rosterFlagAt(rdram, self, keep) != 2)))
+                    keep = static_cast<int>(i);
+            for (uint32_t i = 0; keep >= 0 && i < 0x76u; ++i)
+                if (static_cast<int>(i) != keep && oneOfGroupOf(rosterIdAt(rdram, self, i)) == static_cast<int>(g) &&
+                    rosterFlagAt(rdram, self, i) == 1)
+                {
+                    rdram[self + 0x2ECu + i] = 0;
+                    std::fprintf(stderr, "[season] roster: %s only once, dropped id 0x%X%c", kOneOfGroups[g].line1,
+                                 rosterIdAt(rdram, self, i), 10);
+                }
+        }
+    }
+    PS2Runtime::RecompiledFunction g_origGetWarningMsg = nullptr;
+    // GetWarningMsg 0x168e40 (a0 kind, a1 msg) -> pointer to {char **lines, u32 count}
+    void getWarningMsgGroups(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t kind = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])),
+                       msg = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5]));
+        g_origGetWarningMsg(rdram, ctx, runtime);
+        if (kind != 5u || msg != 29u || g_oneOfHit <= 0 || g_oneOfHit >= static_cast<int>(std::size(kOneOfGroups)))
+            return;
+        uint32_t &rec = g_oneOfMsg[g_oneOfHit];
+        if (!rec)
+        {
+            // copy the stock record (5 lines: "@C", line1, line2, "Please select one.", "") and swap lines 1-2
+            const uint32_t stock = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[2])) & 0x1FFFFFFu;
+            uint32_t stockLines, count;
+            std::memcpy(&stockLines, rdram + stock, 4);
+            std::memcpy(&count, rdram + stock + 4u, 4);
+            if (count != 5u)
+                return;
+            const OneOfGroup &grp = kOneOfGroups[g_oneOfHit];
+            const size_t l1 = std::strlen(grp.line1) + 1u, l2 = std::strlen(grp.line2) + 1u;
+            const uint32_t buf = runtime->guestMalloc(static_cast<uint32_t>(8u + 20u + l1 + l2));
+            if (!buf)
+                return;
+            uint8_t *p = rdram + (buf & 0x1FFFFFFu);
+            const uint32_t lines = buf + 8u, s1 = buf + 28u, s2 = s1 + static_cast<uint32_t>(l1);
+            std::memcpy(p, &lines, 4);
+            std::memcpy(p + 4, &count, 4);
+            std::memcpy(p + 8, rdram + (stockLines & 0x1FFFFFFu), 20);
+            std::memcpy(p + 12, &s1, 4);
+            std::memcpy(p + 16, &s2, 4);
+            std::memcpy(p + 28, grp.line1, l1);
+            std::memcpy(p + 28 + l1, grp.line2, l2);
+            rec = buf;
+        }
+        SET_GPR_U32(ctx, 2, rec);
     }
 
     // Select-list expansion. The character select list is MENU/CHSL: kStockSelect 0x80-byte records (+2 s16 roster id,
@@ -473,6 +977,8 @@ namespace
     }
 
     void expandReaderList(uint8_t *rdram, PS2Runtime *runtime, uint32_t reader);
+    uint32_t rosterxCount();                                          // roster expansion section (near applyHctp)
+    uint32_t rosterxAppendSelect(uint8_t *rdram, uint8_t *out, uint32_t n);
     void readEndProcessSelectList(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t reader = gprU32(ctx, 4);
@@ -500,9 +1006,9 @@ namespace
         for (size_t i = 0; i < kCutCount; ++i)
             if (g_cutRosterHasModel[i])
                 extra.push_back(&kCutRoster[i]);
-        if (extra.empty())
+        if (extra.empty() && rosterxCount() == 0u)
             return;
-        const uint32_t total = kStockSelect + static_cast<uint32_t>(extra.size());
+        const uint32_t total = kStockSelect + static_cast<uint32_t>(extra.size()) + rosterxCount();
         const uint32_t buf = runtime->guestMalloc(total * kSelectRec);
         if (buf == 0u)
             return;
@@ -526,7 +1032,14 @@ namespace
             // Original ReadEndProcess fills only the stock 65. Never inherit
             // another wrestler's SmackDown names/situations from the template.
             if (!hctp_restored_finishers::refresh(rdram, 0x2000000u, buf + n * kSelectRec, w->id))
+            {
+                std::memset(rec + 0x24, 0, 0x44); // blank, never the template wrestler's finishers (Al Snow showed 619)
                 std::fprintf(stderr, "[selist] restored finisher display pending for %u%c", unsigned(w->id), 10);
+            }
+            // +0x72 = special-referee flag (MakeSpecialRefereeTable 0x2bdd50 keeps records with it set). Templates HBK /
+            // Vince / Steph / Bischoff are referees, so Hogan, Linda, Lawler, Cole... inherited it and crashed as
+            // referee (no referee attire). Restored wrestlers are never referees (Jordan Nov 5).
+            rec[0x72] = 0;
             for (uint32_t set : {0x68u, 0x74u}) // costume ids: template ids for the attire slots that have models
             {
                 const int16_t first = rdS16(tmpl + set);
@@ -540,6 +1053,7 @@ namespace
             }
             ++n;
         }
+        n = rosterxAppendSelect(rdram, out, n); // roster expansion (HCTP_ROSTER_EXPAND) new slots
         g_selectCount = n;
         g_readerLists[reader] = {list, buf};
         wrU32(rdram, reader + 0x20u, buf);
@@ -719,8 +1233,12 @@ namespace
         SET_GPR_U32(ctx, 2, longList ? g_selectCount : kStockSelect);
         ctx->pc = ra;
     }
+    bool g_selectListInstalled = false;
     void installSelectList(PS2Runtime &runtime)
     {
+        if (g_selectListInstalled)
+            return;
+        g_selectListInstalled = true;
         g_origReadEndProcess = runtime.lookupFunction(0x26fcb0u);
         g_origReaderDtor = runtime.lookupFunction(0x26fc20u);
         g_origReaderGetList = runtime.lookupFunction(0x26fe60u);
@@ -1018,6 +1536,36 @@ namespace
     {
         ((g_adxtHooks[I].orig = runtime.lookupFunction(g_adxtHooks[I].addr),
           g_adxtHooks[I].orig && runtime.replaceFunction(g_adxtHooks[I].addr, adxtLogged<I>)), ...);
+    }
+
+    // TEMP diag (HCTP_CHEERLOG=1, Nov 4): entrance crowd cheer (SFX 0x12D, PlayBaseCheerInEntrance) start/stop paths -
+    // Modern Hogan at WrestleMania has no crowd. stage = current stage byte 0x4922C0.
+    AdxtHook g_cheerHooks[] = {
+        {0x3adf30u, "PlayBaseCheerInEntrance", nullptr}, {0x3adef0u, "PlayEnvInGame", nullptr},
+        {0x1adfb0u, "EnvSounds::Play", nullptr}, {0x1ae0a0u, "EnvSounds::FadeStop", nullptr},
+        {0x1adaf0u, "EnvSounds::StartBG_Env", nullptr}, {0x1adf30u, "EnvSounds::EndBG_Env", nullptr},
+        {0x2b60e0u, "CEventBGM::Start", nullptr}, {0x2b6190u, "CEventBGM::StartDoramock", nullptr},
+        {0x2b6220u, "CEventBGM::Stop", nullptr}, {0x2e4660u, "CSkCtrl::PlayMidi", nullptr},
+        {0x2e46e0u, "CSkCtrl::StopMidi", nullptr}, {0x2e47a0u, "CSkCtrl::StopMidiBank", nullptr},
+        {0x2e4600u, "CSkCtrl::StopAll", nullptr}, {0x2e4630u, "CSkCtrl::SoundOff", nullptr},
+        {0x2e47e0u, "CSkCtrl::SoundOffMidiBank", nullptr}, {0x1acdc0u, "SuperStarCheer::FadeStop", nullptr},
+        {0x1acd40u, "SuperStarCheer::PlayByIndex", nullptr}};
+
+    template <int I>
+    void cheerLogged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const AdxtHook &h = g_cheerHooks[I];
+        auto reg = [ctx](int r) { return static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[r])); };
+        std::fprintf(stderr, "[cheer] %s a0=%x a1=%x a2=%x ra=%x stage=%u%c", h.name, reg(4), reg(5), reg(6), reg(31),
+                     rdram[0x4922C0u], 10);
+        h.orig(rdram, ctx, runtime);
+    }
+
+    template <int... I>
+    void installCheerLog(PS2Runtime &runtime, std::integer_sequence<int, I...>)
+    {
+        ((g_cheerHooks[I].orig = runtime.lookupFunction(g_cheerHooks[I].addr),
+          g_cheerHooks[I].orig && runtime.replaceFunction(g_cheerHooks[I].addr, cheerLogged<I>)), ...);
     }
 
     void returnValue(R5900Context *ctx, int32_t value)
@@ -1600,11 +2148,13 @@ namespace
             uint32_t n = 0;
             for (uint32_t slot = 0; slot < 8u; ++slot)
             {
+                if (!(hctpRuleWrestlerSlotMask(rdram, rdram[0x4920C0u]) & (1u << slot)))
+                    continue;
                 uint16_t code = 0;
                 std::memcpy(&code, rdram + 0x4921CAu + slot * 0x20u, 2);
                 if (code >= 25500u) // empty slot (cast code 0 is The Rock)
                     continue;
-                const uint32_t id = code >= 10000u ? (code - 10000u) / 100u + 0x56u : code / 100u;
+                const uint32_t id = hctpRosterCodeId(rdram, code);
                 if (id < 0x56u)
                     ids[n++] = code < 10000u ? id | (code % 100u) << 8 : id; // + attire variant (nWo Hogan)
             }
@@ -1637,9 +2187,13 @@ namespace
                     ++raw;
             }
             std::fprintf(stderr, "%c", 10);
-            hctpCommentaryBrand(sd > raw ? 1 : raw > sd ? 0 : -1);
+            const int ppvBrand = ppvCommentaryBrand(); // item 18: PPV card BRAND row (RAW 0 / SMACKDOWN 1) wins
+            if (ppvBrand >= 0)
+                std::fprintf(stderr, "[hctp-pbp] PPV brand %d overrides the roster majority%c", ppvBrand, 10);
+            hctpCommentaryBrand(ppvBrand >= 0 ? ppvBrand : sd > raw ? 1 : raw > sd ? 0 : -1);
             hctpCommentaryArena(stage);
             hctpCommentaryParticipants(ids, n);
+            g_entranceSnapFresh = false; // [COMMFIX Nov 6] the next entrance without a setup = a preview (CAM)
             hctpCommentaryBellRule(rdram[0x4920C0u], rdram[0x4920E7u]); // B&P = rule +0x27 (MakeKindBit2 0x1d37b0)
             hctpCommentaryEvent(1u);
         } // kPbpBell: match start / match end (debounced in hctp_commentary.cpp)
@@ -1695,9 +2249,15 @@ namespace
     // GetEntranceEventNoFromSystem per cast order, but reads 0 by the time the entrance events play (log Nov 2: entrance #0
     // "rule 0x00 -> singles", bell "rule 0x04") -> cache them there with the cast codes
     uint8_t g_entranceRule = 0xFFu;
+    uint32_t g_announcedSlots = 0u; // cast slots already introduced since entrance #0 was set up (bit per slot)
     std::array<int8_t, 8> g_entranceTeam = {-1, -1, -1, -1, -1, -1, -1, -1};
     std::array<uint16_t, 8> g_entranceCast = {25500u, 25500u, 25500u, 25500u,
                                                25500u, 25500u, 25500u, 25500u};
+    // [COMMFIX Nov 6] true from the match-setup snapshot (GetEntranceEventNoFromSystem) until the opening bell.
+    // Create-a-Moveset entrance previews never run that setup -> the snapshot was the LAST MATCH's cast (Jordan Nov 6:
+    // A-Train = The Rock, Al Snow/Animal/Batista/Big Show silent = 'already introduced this show' from the six-man).
+    // g_entranceSnapFresh declared earlier ([COMMFIX Nov 6] build fix)
+    // [/COMMFIX]
     void commentarySetEvent(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         g_pbpRdram = rdram;
@@ -1709,7 +2269,10 @@ namespace
         if (type == 2u && order < 8u)
             std::fprintf(stderr, "[hctp-pbp] entrance #%u set up%c", order, 10);
         if (type == 2u && order == 0u)
+        {
             hctpCommentaryResetEntrances();
+            g_announcedSlots = 0u;
+        }
         g_pendingOrder = (type == 2u && order < 8u) ? int(order) : -1;
     }
     void commentaryEventPlay(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -1722,6 +2285,25 @@ namespace
         const int order = g_pendingOrder.exchange(-1);
         if (order < 0)
             return;
+        // [COMMFIX Nov 6] no match setup since the last bell = an entrance preview (Create-a-Moveset): the wrestler on
+        // screen is CChar slot 0 (*(0x526EA0)+0x30 cast code, as hctpRumbleSpawn reads it); live cast slot = fallback.
+        // Both logged so Jordan's CAM run shows which one is right. One wrestler, no match rule/title, its own show.
+        if (!g_entranceSnapFresh)
+        {
+            uint32_t chara = 0;
+            uint16_t charCode = 0xFFFFu, liveCode = 0xFFFFu;
+            std::memcpy(&chara, rdram + 0x526EA0u, 4);
+            if (chara >= 0x100000u && chara < 0x2000000u)
+                std::memcpy(&charCode, rdram + chara + 0x30u, 2);
+            std::memcpy(&liveCode, rdram + 0x4921CAu + uint32_t(order) * 0x20u, 2);
+            const uint16_t code = charCode < 10000u ? charCode : liveCode;
+            std::fprintf(stderr, "[hctp-pbp] preview entrance #%d (no match setup): CChar 0x%X code %u, live slot code %u -> %u%c",
+                         order, chara, charCode, liveCode, code, 10);
+            if (code < 10000u)
+                hctpCommentaryPreviewEntrance(hctpRosterCodeId(rdram, code) | (code % 100u) << 8);
+            return;
+        }
+        // [/COMMFIX]
         // Some events clear the live cast table before Play. GetEntranceEventNoFromSystem sees the authoritative
         // value earlier, so use that captured value when the live slot has already become empty.
         // every entrance (was #0 only, before the setup snapshot was complete -> "rule 0x00 -> singles" all match)
@@ -1732,13 +2314,14 @@ namespace
             std::array<uint32_t, 8> seen{};
             for (uint32_t i = 0; i < 8u; ++i)
             {
-                uint16_t candidate = 0;
-                std::memcpy(&candidate, rdram + 0x4921CAu + i * 0x20u, 2);
+                uint16_t candidate = g_entranceCast[i]; // setup snapshot first: the live table changes during entrances
                 if (candidate >= 25500u)
-                    candidate = g_entranceCast[i];
+                    std::memcpy(&candidate, rdram + 0x4921CAu + i * 0x20u, 2);
                 if (candidate >= 25500u)
                     continue;
                 const uint32_t id = candidate >= 10000u ? 0x100u + (candidate - 10000u) / 100u : candidate / 100u;
+                if (!(hctpRuleWrestlerSlotMask(rdram, g_entranceRule != 0xFFu ? g_entranceRule : rdram[0x4920C0u]) & (1u << i)))
+                    continue;
                 if (id == 0x31u || id == 0x33u || std::find(seen.begin(), seen.begin() + present, id) != seen.begin() + present)
                     continue;
                 seen[present++] = id;
@@ -1749,6 +2332,7 @@ namespace
             const uint8_t ruleType = g_entranceRule != 0xFFu ? g_entranceRule : rdram[0x4920C0u];
             bool tag = present > 2u;
             uint32_t teamSize = present >= 6u ? 3u : 2u;
+            g_entranceSlotMask = 0xFFu;
             if (ruleType < 0x56u)
             {
                 const uint8_t *const rt = rdram + 0x45AF60u + uint32_t(ruleType) * 0x20u;
@@ -1761,6 +2345,10 @@ namespace
                     if (s)
                         maxTeam = std::max(maxTeam, s), minTeam = std::min(minTeam, s);
                 tag = maxTeam >= 2u && minTeam == maxTeam; // equal teams of 2+; handicap = singles-style intros
+                g_entranceSlotMask = 0;
+                for (uint32_t k = 0; k < rt[1] && k < 6u; ++k)
+                    if (rt[0xC + 3 * k + 2] < 2u && rt[0xC + 3 * k] < 8u)
+                        g_entranceSlotMask |= 1u << rt[0xC + 3 * k];
                 teamSize = maxTeam >= 3u ? 3u : 2u;
             }
             // the cast's own team bytes (what SetEntranceEventNo groups by) beat the rule table when they are known
@@ -1769,6 +2357,8 @@ namespace
                 for (uint32_t i = 0; i < 8u; ++i)
                 {
                     const uint16_t c = g_entranceCast[i];
+                    if (!(g_entranceSlotMask & (1u << i)))
+                        continue;
                     const uint32_t id = c >= 10000u ? 0x100u : c / 100u;
                     if (c >= 25500u || id == 0x31u || id == 0x33u || g_entranceTeam[i] < 0 || g_entranceTeam[i] >= 8)
                         continue;
@@ -1813,12 +2403,13 @@ namespace
             std::fprintf(stderr, "[hctp-pbp] entrance #%d -> cast slot %u (event data 0x%X, title+0x8C 0x%X)%c", order, slot,
                          data, title8c, 10);
         }
-        uint16_t code = 0;
-        std::memcpy(&code, rdram + 0x4921CAu + slot * 0x20u, 2);
+        // the setup snapshot (GetEntranceEventNoFromSystem hook) first: by entrance time the live table has been
+        // rewritten (Nov 4 six-man log: Benjamin's slot 3 read Cena's code at Cena's entrance -> Cena announced twice)
+        uint16_t code = slot < 8u ? g_entranceCast[slot] : 25500u;
         if (code >= 25500u)
         {
-            code = g_entranceCast[slot];
-            std::fprintf(stderr, "[hctp-pbp] entrance #%d: cached cast slot -> %u%c", order, code, 10);
+            std::memcpy(&code, rdram + 0x4921CAu + slot * 0x20u, 2);
+            std::fprintf(stderr, "[hctp-pbp] entrance #%d: no snapshot, live cast slot -> %u%c", order, code, 10);
         }
         if (code >= 25500u && order > 0)
         {
@@ -1848,7 +2439,7 @@ namespace
         // belt held (CTitleHistoryData::CheckTitleHold 0x324110): u16 holder ids at GetSaveData() 0x4B6450 + 0x9EFC,
         // 11 slots for 9 belts (belts 2 and 3 = tag titles, two holders each) -> belt + 1 above bit 16 for Finkel
         auto rosterOf = [&](uint16_t c, int &belt) {
-            const int r = c >= 10000u ? int((c - 10000u) / 100u + 0x56u) : int(c / 100u | (c % 100u) << 8);
+            const int r = c >= 10000u ? int((c - 10000u) / 100u + 0x56u) : int(hctpRosterCodeId(rdram, c) | (c % 100u) << 8);
             static const uint8_t kSlotBelt[11] = {0, 1, 2, 2, 3, 3, 4, 5, 6, 7, 8};
             belt = -1;
             for (uint32_t s = 0; s < 11u && belt < 0; ++s)
@@ -1872,6 +2463,8 @@ namespace
         int belts[8];
         uint32_t n = 0;
         ids[n] = uint32_t(roster), belts[n++] = belt;
+        if (slot < 8u)
+            g_announcedSlots |= 1u << slot;
         {
             uint32_t data = 0, count = 0;
             std::memcpy(&data, rdram + 0x52A0B8u, 4);
@@ -1881,14 +2474,15 @@ namespace
                 return g_entranceTeam[i] >= 0 ? g_entranceTeam[i] : int8_t(rdram[0x4921C9u + i * 0x20u]);
             };
             const int8_t myTeam = teamOf(slot);
+            // only this match's real wrestlers (rule table slots): leftover cast slots from earlier matches and
+            // default partners are not in the match (Jordan Nov 5: Jericho -> 'Christian', Piper -> 'Sean O'Haire')
             for (uint32_t i = 0; i < 8u && count != 0u && count <= 8u; ++i)
             {
-                uint16_t c = 0;
-                std::memcpy(&c, rdram + 0x4921CAu + i * 0x20u, 2);
+                uint16_t c = g_entranceCast[i]; // setup snapshot; the live slot is rewritten by entrance time
                 if (c >= 25500u)
-                    c = g_entranceCast[i]; // live slot cleared by entrance time
-                if (i == slot || c >= 25500u || teamOf(i) != myTeam)
-                    continue;
+                    std::memcpy(&c, rdram + 0x4921CAu + i * 0x20u, 2);
+                if (!((g_entranceSlotMask >> i) & 1u) || i == slot || c >= 25500u || c == code || teamOf(i) != myTeam || (g_announcedSlots >> i) & 1u)
+                    continue; // (a partner who already walked out in an earlier entrance is not walking out again)
                 bool ownEntrance = false;
                 for (uint32_t k = 0; k < count && !ownEntrance; ++k)
                 {
@@ -1899,6 +2493,7 @@ namespace
                 if (ownEntrance)
                     continue;
                 int b = -1;
+                g_announcedSlots |= 1u << i;
                 ids[n] = uint32_t(rosterOf(c, b)), belts[n++] = b;
                 std::fprintf(stderr, "[hctp-pbp] entrance #%d: cast slot %u (roster 0x%02X) walks out in this entrance%c", order,
                              i, ids[n - 1] & 0xFF, 10);
@@ -1947,7 +2542,7 @@ namespace
             uint16_t cast = 0;
             std::memcpy(&cast, rdram + chara + 0x30u, 2);
             if (cast < 25500u)
-                hctpCommentaryCharaRoster(chara, cast >= 10000u ? (cast - 10000u) / 100u + 0x56u : cast / 100u);
+                hctpCommentaryCharaRoster(chara, hctpRosterCodeId(rdram, cast));
             hctpCommentaryMove(chara, moveId);
         }
         g_origGameSe(rdram, ctx, runtime);
@@ -2088,7 +2683,12 @@ namespace
         char path[33] = {};
         for (int i = 0; i < 32 && rdram[pathAddr + i]; ++i)
             path[i] = static_cast<char>(std::toupper(rdram[pathAddr + i]));
+        if (g_hoganTearBody != 0 && std::strcmp(path, "/EMD2/3200") == 0)
+            std::snprintf(path, sizeof(path), "/EMD2/%04u", unsigned(g_hoganTearBody));
         auto it = g_loosePac.find(path);
+        static const bool logAll = std::getenv("HCTP_FILELOG") != nullptr; // TEMP diag Nov 4: every CFile::Search path
+        if (logAll)
+            std::fprintf(stderr, "[filelog] Search %s ra=%x%c", path, static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31])), 10);
         if (it == g_loosePac.end())
             return g_origCFileSearch(rdram, ctx, runtime);
         char *const names = reinterpret_cast<char *>(rdram + 0x523DE0u);
@@ -2166,6 +2766,7 @@ namespace
             if (c < 25500u)
                 g_entranceCast[i] = c, g_entranceTeam[i] = int8_t(rdram[0x4921C9u + i * 0x20u]);
         }
+        g_entranceSnapFresh = true; // [COMMFIX Nov 6]
         std::fprintf(stderr, "[hctp-pbp] entrance setup snapshot (order %u): rule 0x%02X teams %d %d %d %d %d %d%c", order,
                      g_entranceRule, g_entranceTeam[0], g_entranceTeam[1], g_entranceTeam[2], g_entranceTeam[3],
                      g_entranceTeam[4], g_entranceTeam[5], 10);
@@ -3329,6 +3930,293 @@ namespace
     enum class PpvMode { None, Create, Play }; // PPV cards (slice 2, below)
     PpvMode g_ppvMode = PpvMode::None;
     bool g_ppvForceExhibition = false; // making a card: the next main menu decides EXHIBITION at once
+    // ---- PPV CREATE 2 (Nov 4, HCTP_PPV_CREATE2=0 = slice-2 flow). SvR06 Create port (notes\PPV_HOW_IT_WORKS_FROM_CODE
+    // _20261104.md s7-8.2): CREATE A PPV opens the CARD menu (CreateMenu re-skin, level 2: MATCH 1-3 + SAVE PPV).
+    // A match = stock Exhibition match type -> stock roster select; WrestlerSelectEnd 0x1321a0 decided -> we run
+    // ExshibitionMenuSequence::SetCommon 0x130d10 (the real setup-block writer; OutPutRuleParam 0x181e70 is an empty
+    // stub), store StPPVMatch + the 0x400 setup snapshot and end the sequence (0x1B) -> no arena, no matchup screen.
+    // Any exit of that Exhibition (match stored or Back on its top menu) builds a TopMenuSequence; its LoopEndAct goes
+    // straight back to the card menu (g_ppvReturnToCard). Back on the card menu -> PPV submenu.
+    // Card file ppv/card_00.bin = "PPV2" + StPPVSaveData (434 B, SvR06 layout) + 2 pad + matchNum x 0x400 snapshots.
+    enum class PpvLevel { Sub, Details, Card, Load, Show };
+    PpvLevel g_ppvLevel = PpvLevel::Sub;
+    int g_ppvEditMatch = -1;
+    bool g_ppvReturnToCard = false;
+    constexpr uint32_t kPpvSaveSize = 434u, kPpvMatchSize = 44u, kPpvCardMatches = 8u;
+    // item 15: 8 matches like SvR, 3 rows per page; CIRCLE (Sub1) = next page, SQUARE (Sub2) = clear on the card / SHOW menus (HCTP_PPV_PAGES=0: 3 matches)
+    int g_ppvPage = 0;
+    bool ppvPages()
+    {
+        static const bool on = [] { const char *v = std::getenv("HCTP_PPV_PAGES"); return !(v && *v == '0'); }();
+        return on;
+    }
+    int ppvPageCount() { return ppvPages() ? 3 : 1; }
+    int ppvAbs(uint32_t row) { return g_ppvPage * 3 + static_cast<int>(row); }
+    uint8_t g_ppvWork[kPpvSaveSize] = {};
+    std::vector<uint8_t> g_ppvWorkSnap[8];
+    std::string g_ppvRowNote; // card SAVE row message ("NO MATCHES YET")
+    uint32_t g_ppvCardStr[4] = {};
+    bool ppvDirectExhi() // build ExshibitionMenuSequence directly (item 16: ctor as guest code fixed the Nov 4 freeze); =0 = via main menu
+    {
+        static const bool on = [] { const char *v = std::getenv("HCTP_PPV_DIRECT_EXHI"); return !(v && *v == '0'); }();
+        return on;
+    }
+    // Leave Exhibition for the card: direct = self+0x14 0x15 (LoopEndAct calls GoGameFromMenu -> ppvGoGame builds the
+    // card menu); old = 6 (TopMenuSequence -> ppvTopSeqLoopEnd -> card menu)
+    bool g_ppvExitPending = false;
+    void ppvExitToCard(uint8_t *rdram, uint32_t self)
+    {
+        g_ppvExitPending = ppvDirectExhi();
+        optW32(rdram, self + 0x14u, g_ppvExitPending ? 0x15u : 6u);
+    }
+    bool g_ppvDetails = false, g_ppvDetailsBuilt = false, g_ppvDetailsDone = false;
+    bool ppvDetailsOn()
+    {
+        static const bool on = [] { const char *v = std::getenv("HCTP_PPV_DETAILS"); return v && *v == '1'; }();
+        return on;
+    }
+    bool ppvCreate2()
+    {
+        static const bool on = [] { const char *v = std::getenv("HCTP_PPV_CREATE2"); return !(v && *v == '0'); }();
+        return on;
+    }
+    // ---- PPV DETAILS 2 (Nov 5 autorun item 7; HCTP_PPV_DETAILS2=0 off). SvR05 details rows on the CreateMenu re-skin
+    // (4 fixed rows, ids 87-90): PPV NAME / ARENA / BRAND / MATCH CARD. CStringDraw::Show 0x163140 reads our text
+    // buffer every frame, so X on a value row (CreateMenu::ChangeDecision 0x135b60 hook, original skipped -> menu stays
+    // in input) cycles the value in place; UpdateRect 0x163230 re-measures it. Values live in g_ppvWork (StPPVSaveData:
+    // name +0, arena +46, brand +47, commentary +48). Arena ids = SLUS name table 0x458738 (stage byte 0x4922C0).
+    bool ppvDetails2()
+    {
+        static const bool on = [] { const char *v = std::getenv("HCTP_PPV_DETAILS2"); return !(v && *v == '0'); }();
+        return on;
+    }
+    const char *const kPpvArenaNames[31] = {"SmackDown! A", "SmackDown! B", "SmackDown! C", "SmackDown! D", "RAW A", "RAW B",
+        "RAW C", "RAW D", "Velocity", "HEAT", "SummerSlam", "Unforgiven", "No Mercy", "Survivor Series", "Armageddon",
+        "No Way Out", "WrestleMania XIX", "Backlash", "Judgment Day", "Vengeance", "Rebellion", "Insurrextion", "Bad Blood",
+        "Arena Back Entrance", "Parking Lot", "Training Room", "Times Square", "Outside Arena A", "Outside Arena B",
+        "England Plaza B", "Royal Rumble"};
+    // ring arenas only (23-29 = backstage areas)
+    const uint8_t kPpvArenaCycle[] = {30, 15, 16, 17, 18, 19, 10, 11, 12, 13, 14, 22, 20, 21, 0, 1, 2, 3, 4, 5, 6, 7, 8, 9};
+    struct PpvShow { const char *name; uint8_t arena, brand; }; // brand 0 RAW, 1 SMACKDOWN, 2 BOTH (2003 split)
+    const PpvShow kPpvShows[] = {{"Royal Rumble", 30, 2}, {"No Way Out", 15, 2}, {"WrestleMania XIX", 16, 2},
+        {"Backlash", 17, 0}, {"Judgment Day", 18, 1}, {"Bad Blood", 22, 0}, {"Vengeance", 19, 1}, {"SummerSlam", 10, 2},
+        {"Unforgiven", 11, 0}, {"No Mercy", 12, 1}, {"Survivor Series", 13, 2}, {"Armageddon", 14, 2},
+        {"Rebellion", 20, 1}, {"Insurrextion", 21, 0}, {"King of the Ring", 16, 2}, {"MY PPV", 0xFF, 2}};
+    const char *const kPpvBrands[3] = {"RAW", "SMACKDOWN", "BOTH"};
+    // menu plate font (TopMenuPlate CStringDraw) has capitals only and fits ~19 characters
+    constexpr size_t kPpvPlateChars = 19u;
+    std::string ppvPlateText(std::string t)
+    {
+        std::string o;
+        for (char c : t)
+            if (c != '!' && !(c == ' ' && !o.empty() && o.back() == ' '))
+                o += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+        if (o.size() > kPpvPlateChars)
+            o.resize(kPpvPlateChars);
+        return o;
+    }
+    // label + value; long values drop the label
+    std::string ppvLabelled(const char *label, const std::string &v)
+    {
+        const std::string full = std::string(label) + " " + v;
+        return ppvPlateText(full.size() <= kPpvPlateChars ? full : v);
+    }
+    void ppvDetailsText(int row, char *out, size_t n)
+    {
+        const uint8_t arena = g_ppvWork[46], brand = g_ppvWork[47] < 3u ? g_ppvWork[47] : 2u;
+        char name[47] = {};
+        std::memcpy(name, g_ppvWork, 46);
+        std::string t;
+        if (row == 0)
+            t = ppvLabelled("PPV", name[0] ? name : "MY PPV");
+        else if (row == 1)
+            t = ppvLabelled("ARENA", arena < 31u ? kPpvArenaNames[arena] : "AS PICKED");
+        else if (row == 2)
+            t = ppvLabelled("BRAND", kPpvBrands[brand]);
+        else
+            t = "MATCH CARD";
+        std::snprintf(out, n, "%s", t.c_str());
+    }
+    // commentary byte follows the arena like the hctp-pbp arena rule (Raw arenas -> JR & King = 0, else Cole & Tazz = 1)
+    void ppvSetCommentary()
+    {
+        const uint8_t a = g_ppvWork[46];
+        g_ppvWork[48] = (a >= 4u && a <= 7u) || a == 9u || a == 11u || a == 14u || a == 21u || a == 22u ? 0u : 1u;
+    }
+    void ppvDetailsCycle(int row)
+    {
+        if (row == 0)
+        {
+            char name[47] = {};
+            std::memcpy(name, g_ppvWork, 46);
+            size_t i = 0, n = sizeof(kPpvShows) / sizeof(kPpvShows[0]);
+            while (i < n && std::strcmp(kPpvShows[i].name, name) != 0)
+                ++i;
+            const PpvShow &next = kPpvShows[i < n ? (i + 1) % n : 0];
+            std::memset(g_ppvWork, 0, 46);
+            std::memcpy(g_ppvWork, next.name, std::strlen(next.name));
+            g_ppvWork[46] = next.arena;
+            g_ppvWork[47] = next.brand;
+        }
+        else if (row == 1)
+        {
+            size_t i = 0, n = sizeof(kPpvArenaCycle);
+            while (i < n && kPpvArenaCycle[i] != g_ppvWork[46])
+                ++i;
+            g_ppvWork[46] = i + 1 < n ? kPpvArenaCycle[i + 1] : (i + 1 == n ? 0xFFu : kPpvArenaCycle[0]);
+        }
+        else if (row == 2)
+            g_ppvWork[47] = static_cast<uint8_t>((g_ppvWork[47] + 1u) % 3u);
+        ppvSetCommentary();
+    }
+    // SvR06 createppvdata.o (Create.bin): CPPV_RosterDataInit 0x596980, MatchDataInit 0x5969A0, DataInit 0x596A40,
+    // DefaultSet 0x596AC0. RandomMatch not ported (needs HCTP GetGameTypeData/MakeRosterList) -> matches start empty.
+    void ppvRosterInit(uint8_t *r) { r[0] = 0x7Bu; r[1] = r[2] = r[3] = 0u; }
+    void ppvMatchInit(uint8_t *m)
+    {
+        std::memset(m, 0, kPpvMatchSize);
+        m[0] = 0x5Eu; // rule none
+        m[5] = 0xFFu; // beltNo
+        for (int i = 0; i < 9; ++i)
+            ppvRosterInit(m + 8 + i * 4);
+    }
+    void ppvDataInit(uint8_t *d)
+    {
+        std::memset(d, 0, kPpvSaveSize);
+        for (int i = 0; i < 8; ++i)
+            ppvMatchInit(d + 52 + i * kPpvMatchSize);
+        std::memset(d + 404, 0x7B, 30);
+    }
+    void ppvDefaultSet(uint8_t *d)
+    {
+        ppvDataInit(d);
+        std::memcpy(d, "MY PPV", 7);
+        d[46] = 0xFFu; // arena: not set (details screen = next slice)
+        d[47] = 2u;    // brand both
+        d[48] = 1u;    // commentary Cole/Tazz
+        d[50] = static_cast<uint8_t>(kPpvCardMatches);
+        d[51] = 30u;
+        for (auto &v : g_ppvWorkSnap)
+            v.clear();
+    }
+    bool ppvMatchSet(int i) { return i >= 0 && i < 8 && g_ppvWork[52 + i * kPpvMatchSize] != 0x5Eu && !g_ppvWorkSnap[i].empty(); }
+    // ---- save slots (Nov 5 item 9): ppv/card_NN.bin, NN 00..07 (SvR CreatePPVSys: SearchEmptyData = first free slot,
+    // GetSaveNum = count). File = "PPV2" + StPPVSaveData (434) + 2 pad + matchNum (d[50]) x 0x400 setup snapshots.
+    // Loads are validated (magic, size, matchNum <= 8, name NUL-terminated, rule bytes) -> a bad file is skipped.
+    constexpr int kPpvSlots = 8, kPpvSamples = 3;
+    int g_ppvSlot = 0;
+    bool g_ppvSample = false; // list / play the sample cards ppv/sample_NN.bin (PLAY SAMPLE PPV, item 11)
+    std::string ppvCardPath(int slot)
+    {
+        char p[32];
+        std::snprintf(p, sizeof(p), g_ppvSample ? "ppv/sample_%02d.bin" : "ppv/card_%02d.bin", slot);
+        return p;
+    }
+    bool ppvSaveCard2()
+    {
+        std::error_code ec;
+        std::filesystem::create_directories("ppv", ec);
+        const std::string path = ppvCardPath(g_ppvSlot), tmp = path + ".tmp";
+        {
+            std::ofstream f(tmp, std::ios::binary);
+            if (!f)
+                return false;
+            const char pad[2] = {};
+            f.write("PPV2", 4);
+            f.write(reinterpret_cast<const char *>(g_ppvWork), kPpvSaveSize);
+            f.write(pad, 2);
+            for (uint32_t i = 0; i < g_ppvWork[50] && i < 8u; ++i)
+            {
+                std::vector<uint8_t> snap = g_ppvWorkSnap[i];
+                snap.resize(0x400u, 0u);
+                f.write(reinterpret_cast<const char *>(snap.data()), 0x400);
+            }
+            if (!f)
+                return false;
+        }
+        std::filesystem::rename(tmp, path, ec);
+        return !ec;
+    }
+    bool ppvLoadCard2(int slot)
+    {
+        ppvDefaultSet(g_ppvWork);
+        std::error_code ec;
+        const std::string path = ppvCardPath(slot);
+        const auto size = std::filesystem::file_size(path, ec);
+        std::ifstream f(path, std::ios::binary);
+        char magic[4] = {};
+        uint8_t tmp[kPpvSaveSize + 2];
+        if (ec || !f || !f.read(magic, 4) || std::memcmp(magic, "PPV2", 4) != 0 || !f.read(reinterpret_cast<char *>(tmp), sizeof(tmp)))
+            return false;
+        const uint32_t num = tmp[50];
+        bool ok = num <= 8u && size >= 4u + sizeof(tmp) + num * 0x400u && std::memchr(tmp, 0, 46) != nullptr;
+        for (uint32_t i = 0; ok && i < num; ++i)
+            ok = tmp[52 + i * kPpvMatchSize] <= 0x5Eu; // eRuleType or 0x5E none
+        if (!ok)
+        {
+            std::cerr << "[ppv] " << path << " rejected (bad header)" << std::endl;
+            ppvDefaultSet(g_ppvWork);
+            return false;
+        }
+        std::memcpy(g_ppvWork, tmp, kPpvSaveSize);
+        if (ppvPages())
+            g_ppvWork[50] = 8u; // 3-match files (PPV2, matchNum 3) load and save back with 8 slots
+        g_ppvPage = 0;
+        for (uint32_t i = 0; i < num; ++i)
+        {
+            std::vector<uint8_t> snap(0x400u);
+            if (!f.read(reinterpret_cast<char *>(snap.data()), 0x400))
+                break;
+            if (g_ppvWork[52 + i * kPpvMatchSize] != 0x5Eu)
+                g_ppvWorkSnap[i] = std::move(snap);
+        }
+        g_ppvSlot = slot;
+        return true;
+    }
+    std::vector<int> g_ppvSlotList; // saved, valid slots (YOUR PPVs level)
+    size_t g_ppvSlotIdx = 0;
+    bool g_ppvDeleteArmed = false;
+    void ppvScanSlots()
+    {
+        g_ppvSlotList.clear();
+        for (int i = 0; i < (g_ppvSample ? kPpvSamples : kPpvSlots); ++i)
+            if (ppvLoadCard2(i))
+                g_ppvSlotList.push_back(i);
+        if (g_ppvSlotIdx >= g_ppvSlotList.size())
+            g_ppvSlotIdx = 0;
+        if (!g_ppvSlotList.empty())
+            ppvLoadCard2(g_ppvSlotList[g_ppvSlotIdx]);
+    }
+    int ppvFreeSlot()
+    {
+        std::error_code ec;
+        for (int i = 0; i < kPpvSlots; ++i)
+            if (!std::filesystem::exists(ppvCardPath(i), ec))
+                return i;
+        return -1;
+    }
+    // the CreateMenu font draws only capitals and a few digits (4-8 come out as stubs, item 15 shots) -> Roman numerals
+    std::string ppvNum(int n)
+    {
+        static const char *r[] = {"0", "I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X"};
+        return n >= 0 && n <= 10 ? r[n] : "X+";
+    }
+    std::string ppvLoadText(int row)
+    {
+        if (g_ppvSlotList.empty())
+            return row == 0 ? "NO SAVED PPV" : "";
+        char name[47] = {};
+        std::memcpy(name, g_ppvWork, 46);
+        if (row == 0)
+            return ppvPlateText(ppvNum(static_cast<int>(g_ppvSlotIdx) + 1) + " " + name);
+        if (row == 1)
+            return "PLAY";
+        if (g_ppvSample)
+            return "";
+        if (row == 2)
+            return "EDIT";
+        return g_ppvDeleteArmed ? "X AGAIN TO DELETE" : "DELETE";
+    }
     // the hooked original ran to its return (not stopped at a checkpoint)
     bool ppvOrigDone(R5900Context *ctx, uint32_t ra) { return ctx->pc == ra; }
     void ppvReturn(R5900Context *ctx, uint32_t v0)
@@ -3340,9 +4228,106 @@ namespace
     {
         return optR32(rdram, optR32(rdram, obj + vtblOff) + off);
     }
+    // card row (Nov 5 item 8): "1 LESNAR VS ROCK" (surnames: the plate fits ~19 capitals), 3+ wrestlers
+    // "1 6-MAN KANE ...", empty "1 EMPTY", result after play (item 10) "1 WIN LESNAR"
+    std::string g_ppvResult[8];
+    std::string ppvCtlText(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, int row); // item 14 (below)
+    bool ppvCtlCycle(int row);
+    int ppvShowLastRow();
+    std::string ppvCardRowText(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, int i)
+    {
+        if (i >= 3)
+            return g_ppvRowNote.empty() ? "SAVE PPV" : g_ppvRowNote;
+        i = ppvAbs(static_cast<uint32_t>(i));
+        if (i >= 8)
+            return "-";
+        std::string t = ppvNum(i + 1) + " ";
+        if (!ppvMatchSet(i))
+            return t + "EMPTY";
+        if (!g_ppvResult[i].empty())
+            return ppvPlateText(t + g_ppvResult[i]);
+        if (g_ppvLevel == PpvLevel::Show)
+        {
+            const std::string c = ppvCtlText(rdram, ctx, runtime, i);
+            if (!c.empty())
+                return ppvPlateText(t + c);
+        }
+        const uint8_t *m = g_ppvWork + 52 + i * kPpvMatchSize;
+        std::vector<std::string> names;
+        for (int j = 0; j < 6; ++j)
+        {
+            if (m[8 + j * 4] == 0x7Bu)
+                continue;
+            // GetWrestlerName 0x12cde0: leaf table lookup (ids < 0x56: 0x4B6450 + id*0x170 + 0xAC1A)
+            const uint32_t nm = ppvCall(rdram, ctx, runtime, 0x12cde0u, {m[8 + j * 4], 0u});
+            std::string n = nm ? reinterpret_cast<const char *>(optP(rdram, nm)) : "?";
+            const size_t sp = n.find_last_of(' ');
+            names.push_back(sp == std::string::npos || sp + 1 >= n.size() ? n : n.substr(sp + 1));
+        }
+        if (names.size() == 2u)
+            t += names[0] + " VS " + names[1];
+        else
+        {
+            t += ppvNum(static_cast<int>(names.size())) + "-WAY";
+            for (const auto &n : names)
+                t += " " + n;
+        }
+        return ppvPlateText(t);
+    }
+    // rewrite a CreateMenu row's text in place (CStringDraw::Show reads the buffer each frame) + re-measure it
+    void ppvSetRowText(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t menu, uint32_t row, const std::string &t)
+    {
+        const uint32_t buf = row < 4u ? g_ppvCardStr[row] : 0u;
+        if (!buf || !menu)
+            return;
+        const std::string v = t.substr(0, 47);
+        std::memcpy(optP(rdram, buf), v.c_str(), v.size() + 1u);
+        const uint32_t plate = optR32(rdram, menu + 0x34u + row * 4u);
+        const uint32_t sd = plate ? optR32(rdram, plate + 0xbcu) : 0u;
+        if (sd)
+            ppvCall(rdram, ctx, runtime, 0x163230u, {sd}); // CStringDraw::UpdateRect
+    }
+    std::string ppvShowNextText();
     void ppvGetRCString(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         uint32_t id = optArg(ctx, 4);
+        if (g_ppvMenu && g_ppvLevel == PpvLevel::Show && id >= 87u && id <= 90u)
+        {
+            uint32_t &buf = g_ppvCardStr[id - 87u];
+            if (!buf)
+                buf = runtime->guestMalloc(48u);
+            const std::string t = id == 90u ? ppvShowNextText() : ppvCardRowText(rdram, ctx, runtime, static_cast<int>(id - 87u));
+            std::memcpy(optP(rdram, buf), t.c_str(), t.size() + 1u);
+            return ppvReturn(ctx, buf);
+        }
+        if (g_ppvMenu && g_ppvLevel == PpvLevel::Load && id >= 87u && id <= 90u)
+        {
+            uint32_t &buf = g_ppvCardStr[id - 87u];
+            if (!buf)
+                buf = runtime->guestMalloc(48u);
+            const std::string t = ppvLoadText(static_cast<int>(id - 87u));
+            std::memcpy(optP(rdram, buf), t.c_str(), t.size() + 1u);
+            return ppvReturn(ctx, buf);
+        }
+        if (g_ppvMenu && g_ppvLevel == PpvLevel::Details && id >= 87u && id <= 90u)
+        {
+            uint32_t &buf = g_ppvCardStr[id - 87u];
+            if (!buf)
+                buf = runtime->guestMalloc(48u);
+            char text[48];
+            ppvDetailsText(static_cast<int>(id - 87u), text, sizeof(text));
+            std::memcpy(optP(rdram, buf), text, std::strlen(text) + 1u);
+            return ppvReturn(ctx, buf);
+        }
+        if (g_ppvMenu && g_ppvLevel == PpvLevel::Card && id >= 87u && id <= 90u)
+        {
+            uint32_t &buf = g_ppvCardStr[id - 87u];
+            if (!buf)
+                buf = runtime->guestMalloc(48u);
+            const std::string t = ppvCardRowText(rdram, ctx, runtime, static_cast<int>(id - 87u));
+            std::memcpy(optP(rdram, buf), t.c_str(), t.size() + 1u);
+            return ppvReturn(ctx, buf);
+        }
         if (g_ppvMenu && id >= 87u && id <= 90u)
             id = kPpvStrBase + 1u + (id - 87u);
         if (id < kPpvStrBase || id >= kPpvStrBase + kPpvStrCount)
@@ -3355,6 +4340,122 @@ namespace
             std::memcpy(optP(rdram, addr), s, std::strlen(s) + 1u);
         }
         ppvReturn(ctx, addr);
+    }
+    PS2Runtime::RecompiledFunction g_origCreateMenuDecision = nullptr;
+    // CreateMenu::ChangeDecision 0x135b60 (called by SimpleSelectFrame::FromUI_OK after it stored the row in +0x24)
+    void ppvCreateMenuDecision(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = optArg(ctx, 4);
+        const uint32_t row = optR32(rdram, self + 0x24u);
+        if (g_ppvMenu && g_ppvLevel == PpvLevel::Card && row == 3u)
+        {
+            // SvR CheckEntry / RevisionData subset: a card needs at least one match (rules + wrestlers come from the
+            // stock Exhibition menus, which already only offer legal choices)
+            bool any = false;
+            for (int i = 0; i < 8; ++i)
+                any = any || ppvMatchSet(i);
+            if (!any)
+            {
+                g_ppvRowNote = "NO MATCHES YET";
+                ppvSetRowText(rdram, ctx, runtime, self, 3u, g_ppvRowNote);
+                g_ppvRowNote.clear();
+                std::cerr << "[ppv] card: SAVE refused, no matches" << std::endl;
+                return ppvReturn(ctx, 0u);
+            }
+        }
+        if (g_ppvMenu && g_ppvLevel == PpvLevel::Show && row < 3u)
+        {
+            // item 14: X on an upcoming match cycles who player 1 controls: card names -> AS <each wrestler> -> WATCH
+            if (ppvCtlCycle(ppvAbs(row)))
+                ppvSetRowText(rdram, ctx, runtime, self, row, ppvCardRowText(rdram, ctx, runtime, static_cast<int>(row)));
+            return ppvReturn(ctx, 0u);
+        }
+        if (g_ppvMenu && g_ppvLevel == PpvLevel::Load)
+        {
+            if (row == 0u && g_ppvSlotList.size() > 1u)
+            {
+                g_ppvSlotIdx = (g_ppvSlotIdx + 1u) % g_ppvSlotList.size();
+                ppvLoadCard2(g_ppvSlotList[g_ppvSlotIdx]);
+            }
+            else if (g_ppvSample && row >= 2u)
+                ;
+            else if (row == 3u && !g_ppvSlotList.empty() && g_ppvDeleteArmed)
+            {
+                std::error_code ec;
+                std::filesystem::remove(ppvCardPath(g_ppvSlotList[g_ppvSlotIdx]), ec);
+                std::cerr << "[ppv] deleted " << ppvCardPath(g_ppvSlotList[g_ppvSlotIdx]) << std::endl;
+                g_ppvDeleteArmed = false;
+                ppvScanSlots();
+            }
+            else if (row == 3u && !g_ppvSlotList.empty())
+                g_ppvDeleteArmed = true;
+            else if ((row == 1u || (row == 2u && !g_ppvSample)) && !g_ppvSlotList.empty())
+            {
+                g_ppvDeleteArmed = false;
+                return g_origCreateMenuDecision(rdram, ctx, runtime); // PLAY / EDIT end the menu
+            }
+            if (row != 3u)
+                g_ppvDeleteArmed = false;
+            for (uint32_t r = 0; r < 4u; ++r)
+                ppvSetRowText(rdram, ctx, runtime, self, r, ppvLoadText(static_cast<int>(r)));
+            return ppvReturn(ctx, 0u);
+        }
+        if (!g_ppvMenu || g_ppvLevel != PpvLevel::Details || row >= 3u)
+            return g_origCreateMenuDecision(rdram, ctx, runtime);
+        ppvDetailsCycle(static_cast<int>(row));
+        char text[48];
+        ppvDetailsText(static_cast<int>(row), text, sizeof(text));
+        ppvSetRowText(rdram, ctx, runtime, self, row, text);
+        std::cerr << "[ppv] details: " << text << std::endl;
+        ppvReturn(ctx, 0u);
+    }
+    // MenuInputAction::FromUI_Sub1 0x12e7c0 / FromUI_Sub2 0x12e7d0 (stock no-ops, a0 = frame + 0x14): on the card,
+    // SQUARE / CIRCLE clears the selected match (SvR "delete match")
+    PS2Runtime::RecompiledFunction g_origMenuSub1 = nullptr, g_origMenuSub2 = nullptr;
+    bool ppvCardSub(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, const char *which)
+    {
+        const uint32_t frame = optArg(ctx, 4) - 0x14u;
+        if (!g_ppvMenu || (g_ppvLevel != PpvLevel::Card && g_ppvLevel != PpvLevel::Show) ||
+            optR32(rdram, frame) != 0x47add0u) // CreateMenu vtable
+            return false;
+        const uint32_t row = optR32(rdram, frame + 0x24u);
+        std::cerr << "[ppv] card: " << which << " on row " << row << std::endl;
+        if (ppvPages() && (which[3] == '1' || g_ppvLevel == PpvLevel::Show)) // next page of matches
+        {
+            int pages = ppvPageCount();
+            if (g_ppvLevel == PpvLevel::Show) // only pages that hold card matches
+            {
+                const int last = ppvShowLastRow();
+                pages = std::min(pages, last / 3 + 1);
+            }
+            g_ppvPage = (g_ppvPage + 1) % std::max(pages, 1);
+            for (uint32_t r = 0; r < 3u; ++r)
+                ppvSetRowText(rdram, ctx, runtime, frame, r, ppvCardRowText(rdram, ctx, runtime, static_cast<int>(r)));
+            std::cerr << "[ppv] card: page " << g_ppvPage + 1 << std::endl;
+            return true;
+        }
+        const int m = ppvAbs(row);
+        if (g_ppvLevel == PpvLevel::Card && row < 3u && ppvMatchSet(m))
+        {
+            ppvMatchInit(g_ppvWork + 52 + m * kPpvMatchSize);
+            g_ppvWorkSnap[m].clear();
+            g_ppvResult[m].clear();
+            ppvSetRowText(rdram, ctx, runtime, frame, row, ppvCardRowText(rdram, ctx, runtime, static_cast<int>(row)));
+            std::cerr << "[ppv] card: match " << m + 1 << " cleared" << std::endl;
+        }
+        return true;
+    }
+    void ppvMenuSub1(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (!ppvCardSub(rdram, ctx, runtime, "SUB1"))
+            return g_origMenuSub1(rdram, ctx, runtime);
+        ppvReturn(ctx, 0u);
+    }
+    void ppvMenuSub2(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (!ppvCardSub(rdram, ctx, runtime, "SUB2"))
+            return g_origMenuSub2(rdram, ctx, runtime);
+        ppvReturn(ctx, 0u);
     }
     void ppvTopMenuCtor(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
@@ -3381,7 +4482,14 @@ namespace
         optW32(rdram, self + 0x20u, kTopItems);
         optW32(rdram, self + 0x298u, 0u);
         if (g_ppvMode == PpvMode::Create && !g_ppvForceExhibition) // left Exhibition while making a card: card done
+        {
             g_ppvMode = PpvMode::None;
+            if (ppvCreate2() && g_ppvEditMatch >= 0) // Create 2: match stored or Back -> the card menu
+            {
+                g_ppvReturnToCard = true;
+                g_ppvEditMatch = -1;
+            }
+        }
         g_ppvMenu = false;
     }
     // Builds plate 5 and lays out all 6 once the stock 5 exist. ChangeIntroduction can be paused at a loop checkpoint
@@ -3503,8 +4611,47 @@ namespace
         g_origTopMenuDtor(rdram, ctx, runtime);
     }
     // Ends a sequence and its menu the way the stock LoopEndActs do, then starts `ctor` (size 0x10 sequences).
+    // item 16: ExshibitionMenuSequence ctor 0x1305a0 calls Next(0), which builds the first frame (+0xC); run through
+    // ppvCall (no EE checkpoints) that part was lost -> +0xC NULL -> LoopEndAct 0x1313e0 jalr through a zero vtable
+    // (logs\ppv16.err). Like stock TopMenuSequence::LoopEndAct 0x1382bc: page 1, new 0x164, ctor AS GUEST CODE, then the
+    // old page back - the ctor returns into OutPutRuleParam 0x181e70 (empty stub, hooked) which restores the page.
+    bool g_ppvTramp = false;
+    uint32_t g_ppvTrampRa = 0u, g_ppvTrampSp = 0u, g_ppvTrampPage = 0u;
+    bool ppvTrampoline(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (!g_ppvTramp || optArg(ctx, 29) != g_ppvTrampSp)
+            return false;
+        g_ppvTramp = false;
+        ppvCall(rdram, ctx, runtime, 0x140be0u, {g_ppvTrampPage}); // ymemChangePage back
+        std::cerr << "[ppv] Exhibition ctor ran as guest code, page restored" << std::endl;
+        SET_GPR_U32(ctx, 31, g_ppvTrampRa);
+        ctx->pc = g_ppvTrampRa;
+        return true;
+    }
+    void ppvNextSequenceGuest(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t self, uint32_t menu,
+                              uint32_t ctor, uint32_t size)
+    {
+        ppvCall(rdram, ctx, runtime, ppvVirtual(rdram, menu, 0u, 8u), {menu, 1u});
+        optW32(rdram, self + 0xcu, 0u);
+        ppvCall(rdram, ctx, runtime, ppvVirtual(rdram, self, 8u, 8u), {self, 1u});
+        g_ppvTrampPage = optR32(rdram, 0x500f00u);
+        ppvCall(rdram, ctx, runtime, 0x140be0u, {1u}); // ymemChangePage
+        const uint32_t next = ppvCall(rdram, ctx, runtime, 0x1001e0u, {size});
+        if (!next)
+        {
+            ppvCall(rdram, ctx, runtime, 0x140be0u, {g_ppvTrampPage});
+            return ppvReturn(ctx, 0u);
+        }
+        std::memset(optP(rdram, next), 0, size);
+        g_ppvTramp = true;
+        g_ppvTrampRa = optArg(ctx, 31);
+        g_ppvTrampSp = optArg(ctx, 29);
+        SET_GPR_U32(ctx, 4, next);
+        SET_GPR_U32(ctx, 31, 0x181e70u);
+        ctx->pc = ctor; // guest tail call
+    }
     void ppvNextSequence(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t self, uint32_t menu, uint32_t ctor,
-                         uint32_t size = 0x10u)
+                         uint32_t size = 0x10u, std::initializer_list<uint32_t> ctorArgs = {})
     {
         ppvCall(rdram, ctx, runtime, ppvVirtual(rdram, menu, 0u, 8u), {menu, 1u});
         optW32(rdram, self + 0xcu, 0u);
@@ -3513,7 +4660,13 @@ namespace
         ppvCall(rdram, ctx, runtime, 0x140be0u, {1u}); // ymemChangePage
         const uint32_t next = ppvCall(rdram, ctx, runtime, 0x1001e0u, {size});
         if (next)
-            ppvCall(rdram, ctx, runtime, ctor, {next});
+        {
+            std::memset(optP(rdram, next), 0, size);
+            if (ctorArgs.size() == 2u)
+                ppvCall(rdram, ctx, runtime, ctor, {next, *ctorArgs.begin(), *(ctorArgs.begin() + 1)});
+            else
+                ppvCall(rdram, ctx, runtime, ctor, {next});
+        }
         ppvCall(rdram, ctx, runtime, 0x140be0u, {page});
         ppvReturn(ctx, 0u);
     }
@@ -3523,6 +4676,18 @@ namespace
     {
         const uint32_t self = optArg(ctx, 4);
         const uint32_t menu = optR32(rdram, self + 0xcu);
+        if (g_ppvReturnToCard && menu)
+        {
+            if (!(ppvCall(rdram, ctx, runtime, 0x378bc0u, {}) & 0xffu) || // caOutGame::IsAllEnd
+                !(ppvCall(rdram, ctx, runtime, 0x3aa380u, {}) & 0xffu))   // CrowdSignRead::CanUse
+                return ppvReturn(ctx, 0u);
+            g_ppvReturnToCard = false;
+            g_ppvMenu = true;
+            if (g_ppvLevel != PpvLevel::Show)
+                g_ppvLevel = PpvLevel::Card;
+            std::cerr << "[ppv] back to the " << (g_ppvLevel == PpvLevel::Show ? "SHOW" : "card") << " menu" << std::endl;
+            return ppvNextSequence(rdram, ctx, runtime, self, menu, 0x186e50u); // CreateTopMenuSequence (card menu)
+        }
         if (g_ppvForceExhibition && menu)
         {
             g_ppvForceExhibition = false;
@@ -3561,6 +4726,111 @@ namespace
     constexpr uint32_t kPpvSetup = 0x492040u, kPpvSetupSize = 0x400u, kPpvMaxMatches = 5u;
     std::vector<std::vector<uint8_t>> g_ppvCard;
     size_t g_ppvPlayIdx = 0;
+    uint8_t g_ppvPlayArena = 0xFFu;
+    uint8_t g_ppvPlayBrand = 2u; // item 18: card BRAND row for the show being played (2 = both)
+    // Nov 5 item 10: card row of each played match, result once per match, card shown between matches
+    std::vector<int> g_ppvCardRow;
+    bool g_ppvResultTaken = false;
+    // ---- item 14 (Nov 5 round 2): per-match Play-as / WATCH (HCTP_PPV_PLAYAS=0 off). SetCommon 0x130d10 writes cast
+    // slot j (0x4921C0 + j*0x20): +0 = pad / char index (human = its position 0..; CPU = first free index), +8 = 1 for
+    // CPU else 0; referee etc. have +4 != 0. Choice per card match: -1 = as created, 0..n-1 = P1 plays wrestler k
+    // (k-th slot with a code and +4 == 0), n = WATCH (all CPU). Applied to the snapshot copy in ppvOutPutRule.
+    std::vector<int> g_ppvCtl;
+    bool ppvPlayAs()
+    {
+        static const bool on = [] { const char *v = std::getenv("HCTP_PPV_PLAYAS"); return !(v && *v == '0'); }();
+        return on;
+    }
+    std::vector<int> ppvCtlWrestlers(const std::vector<uint8_t> &m)
+    {
+        std::vector<int> w;
+        for (int j = 0; j < 6; ++j)
+        {
+            const uint8_t *c = m.data() + 0x180 + j * 0x20;
+            uint16_t code; std::memcpy(&code, c + 0xA, 2);
+            uint32_t ctl; std::memcpy(&ctl, c + 4, 4);
+            if (code != 0x639Cu && ctl == 0u)
+                w.push_back(j);
+        }
+        return w;
+    }
+    int ppvCtlCardIdx(int row)
+    {
+        for (size_t k = 0; k < g_ppvCardRow.size() && k < g_ppvCard.size(); ++k)
+            if (g_ppvCardRow[k] == row)
+                return static_cast<int>(k);
+        return -1;
+    }
+    int ppvShowLastRow()
+    {
+        int last = 0;
+        for (int r : g_ppvCardRow)
+            last = std::max(last, r);
+        return last;
+    }
+    std::string ppvCtlText(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, int row)
+    {
+        const int k = ppvPlayAs() ? ppvCtlCardIdx(row) : -1;
+        if (k < 0 || static_cast<size_t>(k) >= g_ppvCtl.size() || g_ppvCtl[k] < 0)
+            return {};
+        const auto w = ppvCtlWrestlers(g_ppvCard[k]);
+        if (g_ppvCtl[k] >= static_cast<int>(w.size()))
+            return "WATCH";
+        uint16_t code; std::memcpy(&code, g_ppvCard[k].data() + 0x180 + w[g_ppvCtl[k]] * 0x20 + 0xA, 2);
+        const uint32_t nm = ppvCall(rdram, ctx, runtime, 0x12cde0u, {code / 100u, 0u}); // GetWrestlerName
+        std::string n = nm ? reinterpret_cast<const char *>(optP(rdram, nm)) : "?";
+        const size_t sp = n.find_last_of(' ');
+        return "AS " + (sp == std::string::npos || sp + 1 >= n.size() ? n : n.substr(sp + 1));
+    }
+    bool ppvCtlCycle(int row)
+    {
+        const int k = ppvPlayAs() ? ppvCtlCardIdx(row) : -1;
+        if (k < 0 || static_cast<size_t>(k) < g_ppvPlayIdx) // played already
+            return false;
+        g_ppvCtl.resize(g_ppvCard.size(), -1);
+        const int n = static_cast<int>(ppvCtlWrestlers(g_ppvCard[k]).size());
+        g_ppvCtl[k] = g_ppvCtl[k] >= n ? -1 : g_ppvCtl[k] + 1;
+        std::cerr << "[ppv] play-as: match " << row + 1 << " choice " << g_ppvCtl[k] << " of " << n << " (n = WATCH)" << std::endl;
+        return true;
+    }
+    void ppvCtlApply(uint8_t *rdram, size_t k)
+    {
+        if (!ppvPlayAs() || k >= g_ppvCtl.size() || g_ppvCtl[k] < 0)
+            return;
+        const auto w = ppvCtlWrestlers(g_ppvCard[k]);
+        const int human = g_ppvCtl[k] < static_cast<int>(w.size()) ? w[g_ppvCtl[k]] : -1;
+        uint8_t next = human >= 0 ? 1u : 0u;
+        for (int j = 0; j < 6; ++j)
+        {
+            uint8_t *c = rdram + 0x4921C0u + j * 0x20u;
+            uint16_t code; std::memcpy(&code, c + 0xA, 2);
+            if (code == 0x639Cu)
+                continue;
+            if (j == human)
+                c[0] = 0u, c[8] = 0u;
+            else
+                c[0] = next++, c[8] = 1u;
+        }
+        std::cerr << "[ppv] play-as applied: human slot " << human << " (-1 = WATCH)" << std::endl;
+    }
+    int ppvCommentaryBrand()
+    {
+        static const bool on = [] { const char *v = std::getenv("HCTP_PPV_BRAND"); return !(v && *v == '0'); }();
+        return on && g_ppvMode == PpvMode::Play && g_ppvPlayBrand < 2u ? int(g_ppvPlayBrand) : -1;
+    }
+    bool ppvCardBetween()
+    {
+        static const bool on = [] { const char *v = std::getenv("HCTP_PPV_CARD_BETWEEN"); return !(v && *v == '0'); }();
+        return on;
+    }
+    std::string ppvShowNextText()
+    {
+        if (g_ppvPlayIdx >= g_ppvCard.size())
+            return "END SHOW";
+        if (g_ppvPlayIdx + 1u == g_ppvCard.size() && g_ppvCard.size() > 1u)
+            return "MAIN EVENT";
+        return "NEXT MATCH " + ppvNum(static_cast<int>(g_ppvPlayIdx) + 1);
+    }
     PS2Runtime::RecompiledFunction g_origGoGame = nullptr, g_origOutPutRule = nullptr, g_origReturnFromGame = nullptr;
     // Guest tail call: heavy game functions (GoGameFromMenu) run as guest code with EE checkpoints, not in ppvCall
     // (no checkpoints there), returning straight to the hook's caller.
@@ -3597,8 +4867,305 @@ namespace
         }
         return !g_ppvCard.empty();
     }
+    // ---- sample cards (Nov 5 item 11): host-generated from stock roster ids. No game data: a real singles setup
+    // snapshot captured by the game (first singles match of any saved card, else the Oct 27 ppv_sample.bin) is the
+    // template; only the two cast codes change (cast slot n = snapshot +0x180 + n*0x20, u16 code at +0xA =
+    // roster id * 100 + attire; slot 2 = referee, 25500 = empty).
+    struct PpvSampleCard { const char *name; uint8_t arena, brand; uint8_t ids[3][2]; };
+    const PpvSampleCard kPpvSampleCards[kPpvSamples] = {
+        {"WrestleMania XIX", 16, 2, {{0x17, 0x25}, {0x05, 0x2C}, {0x00, 0x01}}},  // Rey v Chavo, Angle v Lesnar, Rock v Austin
+        {"SummerSlam", 10, 2, {{0x38, 0x04}, {0x2D, 0x06}, {0x02, 0x2F}}},       // Eddie v RVD, HBK v Jericho, HHH v Goldberg
+        {"Survivor Series", 13, 2, {{0x26, 0x1A}, {0x07, 0x03}, {0x08, 0x09}}}}; // Cena v Show, Kane v Taker, Booker v Benoit
+    bool ppvSingleSnap(const std::vector<uint8_t> &v)
+    {
+        auto code = [&](int n) { return static_cast<uint32_t>(v[0x18A + n * 0x20] | v[0x18B + n * 0x20] << 8); };
+        return v.size() >= 0x400u && v[0x80] == 0u && code(1) < 25500u && code(3) == 25500u;
+    }
+    bool ppvFindTemplate(std::vector<uint8_t> &out)
+    {
+        const bool was = g_ppvSample;
+        g_ppvSample = false;
+        bool found = false;
+        for (int i = 0; i < kPpvSlots && !found; ++i)
+            if (ppvLoadCard2(i))
+                for (int m = 0; m < 8 && !found; ++m)
+                    if (ppvMatchSet(m) && ppvSingleSnap(g_ppvWorkSnap[m]))
+                    {
+                        out = g_ppvWorkSnap[m];
+                        found = true;
+                    }
+        g_ppvSample = was;
+        if (!found && ppvLoadCard("ppv_sample.bin")) // slice-2 card (raw 0x400 snapshots)
+            for (const auto &m : g_ppvCard)
+                if (!found && ppvSingleSnap(m))
+                {
+                    out = m;
+                    found = true;
+                }
+        g_ppvCard.clear();
+        return found;
+    }
+    void ppvMakeSamples()
+    {
+        std::error_code ec;
+        g_ppvSample = true;
+        bool missing = false;
+        for (int i = 0; i < kPpvSamples; ++i)
+            missing = missing || !std::filesystem::exists(ppvCardPath(i), ec);
+        if (!missing)
+            return;
+        std::vector<uint8_t> tpl;
+        if (!ppvFindTemplate(tpl))
+        {
+            std::cerr << "[ppv] samples: no singles template yet (save one PPV with a singles match first)" << std::endl;
+            return;
+        }
+        g_ppvSample = true;
+        for (int i = 0; i < kPpvSamples; ++i)
+        {
+            const PpvSampleCard &c = kPpvSampleCards[i];
+            ppvDefaultSet(g_ppvWork);
+            std::memset(g_ppvWork, 0, 46);
+            std::memcpy(g_ppvWork, c.name, std::strlen(c.name));
+            g_ppvWork[46] = c.arena;
+            g_ppvWork[47] = c.brand;
+            ppvSetCommentary();
+            for (int m = 0; m < 3; ++m)
+            {
+                uint8_t *rec = g_ppvWork + 52 + m * kPpvMatchSize;
+                rec[0] = 0u; // singles (the template's rule)
+                g_ppvWorkSnap[m] = tpl;
+                for (int w = 0; w < 2; ++w)
+                {
+                    rec[8 + w * 4] = c.ids[m][w];
+                    const uint32_t code = c.ids[m][w] * 100u;
+                    g_ppvWorkSnap[m][0x18A + w * 0x20] = static_cast<uint8_t>(code);
+                    g_ppvWorkSnap[m][0x18B + w * 0x20] = static_cast<uint8_t>(code >> 8);
+                }
+            }
+            g_ppvSlot = i;
+            std::cerr << "[ppv] sample " << ppvCardPath(i) << (ppvSaveCard2() ? " made" : " FAILED") << std::endl;
+        }
+    }
+    // Nov 5 PPV OPENING (Jordan: main-event feud cutscene + show pyro + announcers BEFORE the card). SvR05 plays its PPV
+    // events (PPVEvent 0x5230b0 mode 0) through the normal event control, not the Season VM. HCTP's PPV openings are
+    // Season scripts' EventInit(40NN) + EventInit(41NN) = /TKME/SEVP events (EventType 4 = Season machinery). We start
+    // them like drDoramock::SetDoramockEvent 0x39c0c0 as EventType 3 (non-Season end path -> ReturnMenuFromGame) and only
+    // switch the SEVP / EVTK loaders (ctors 0x165680 / 0x165ba0, EventType a1) to type 4 while the opening runs.
+    // Trigger: match 1's GoGameFromMenu builds CSd5EventMng(2,0,0) (entrance) -> we turn it into (3,3,&param).
+    bool g_ppvOpening = false, g_ppvOpeningActive = false;
+    bool ppvOpeningOn()
+    {
+        static const bool on = [] { const char *v = std::getenv("HCTP_PPV_OPENING"); return v && *v == '1'; }();
+        return on;
+    }
+    int ppvShowIndex()
+    {
+        if (const char *v = std::getenv("HCTP_PPV_OPENING_EVT"))
+            return std::atoi(v);
+        char name[47] = {};
+        std::memcpy(name, g_ppvWork, 46);
+        // Season opening ids 40NN: 4002 played the No Way Out arena (Jordan, Nov 5) -> NN = month order with
+        // Armageddon = 0, Royal Rumble = 1, No Way Out = 2 ... (kPpvShows index + 1) % 12. Rebellion/Insurrextion/KOTR: unknown
+        for (int i = 0; i < 12; ++i)
+            if (std::strcmp(kPpvShows[i].name, name) == 0)
+                return (i + 1) % 12;
+        return 1;
+    }
+    PS2Runtime::RecompiledFunction g_origEvtMngCtor = nullptr, g_origEvtSysLoaderCtor = nullptr, g_origEvtMotLoaderCtor = nullptr;
+    void ppvEvtSysLoaderCtor(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (std::getenv("HCTP_EVTLOG"))
+            std::cerr << "[evtlog] ppvEvtSysLoaderCtor type " << optArg(ctx, 5) << " arg " << optArg(ctx, 6) << std::endl;
+        if (g_ppvOpeningActive && optArg(ctx, 5) == 3u)
+        {
+            // Nov 7 v2: Season PPV intro ground truth (Jordan's Backlash run, HCTP_EVTLOG) = EventType 1 events
+            // 1999 (feud montage) + 1902 (arena/pyro opening) -> /EVTS/SEVP (Request 0x165790 type 1 = 0x45d570)
+            SET_GPR_U32(ctx, 5, 1u);
+            std::cerr << "[ppv] opening: event archive -> /EVTS/SEVP" << std::endl;
+        }
+        g_origEvtSysLoaderCtor(rdram, ctx, runtime);
+    }
+    void ppvEvtMotLoaderCtor(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (std::getenv("HCTP_EVTLOG"))
+            std::cerr << "[evtlog] ppvEvtMotLoaderCtor type " << optArg(ctx, 5) << " arg " << optArg(ctx, 6) << std::endl;
+        if (g_ppvOpeningActive && optArg(ctx, 5) == 3u)
+        {
+            SET_GPR_U32(ctx, 5, 1u); // type 1, id >= 1000 -> /EVNT/%04d (Request 0x165cc0)
+            std::cerr << "[ppv] opening: motions /EVNT/" << optArg(ctx, 6) << std::endl;
+        }
+        g_origEvtMotLoaderCtor(rdram, ctx, runtime);
+    }
+    // Scene driver (Season scripts drive opening scenes: nvJump 0x259220 = SetCurrentScene 0x167250 + SetCurrentFrame
+    // 0x167270 + Restart 0x166f30; nvEventEnd 0x259150 = Stop 0x166eb0 + End 0x166fa0 on the CEventSystem). Without the
+    // Season VM the first scene idles, so the host steps the scenes (SvR: X CONTINUE per beat; here a timer for now).
+    uint32_t g_ppvEvtSys = 0u;
+    int g_ppvEvtNo = 0, g_ppvSceneStep = 0, g_ppvSceneTimer = 0;
+    PS2Runtime::RecompiledFunction g_origEvtSysCtor = nullptr, g_origEvtSysAction = nullptr;
+    void ppvEvtSysCtor(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (g_ppvOpeningActive)
+        {
+            g_ppvEvtSys = optArg(ctx, 4);
+            g_ppvSceneStep = 0;
+            g_ppvSceneTimer = 0;
+            std::cerr << "[ppv] opening: event system #" << g_ppvEvtNo << " at 0x" << std::hex << g_ppvEvtSys << std::dec << std::endl;
+            ++g_ppvEvtNo;
+        }
+        g_origEvtSysCtor(rdram, ctx, runtime);
+    }
+    void ppvEvtSysAction(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t sys = optArg(ctx, 4);
+        if (std::getenv("HCTP_EVTLOG") && sys)
+        {
+            static uint32_t lastSys = 0u; static uint16_t lastScene = 0xFFFFu;
+            uint16_t sc; std::memcpy(&sc, rdram + sys + 0x18u, 2);
+            if (sys != lastSys || sc != lastScene)
+            {
+                uint16_t cnt; std::memcpy(&cnt, rdram + sys + 0x1Cu, 2);
+                std::cerr << "[evtlog] event system 0x" << std::hex << sys << std::dec << " scene " << sc << " of " << cnt << std::endl;
+                lastSys = sys; lastScene = sc;
+            }
+        }
+        if (g_ppvOpeningActive && sys && sys == g_ppvEvtSys && rdram[sys + 0x54u])
+        {
+            static const int kFrames = [] { const char *v = std::getenv("HCTP_PPV_SCENE_FRAMES"); return v ? std::atoi(v) : 180; }();
+            // feud montage 1999 (first event): scene order = Jordan's Season Backlash intro (HCTP_EVTLOG, Nov 5):
+            // 130 0 120 113 115 105 126 1 112 121 100 (feud-type pick; one order for now); pyro 1902: plays as built
+            static const int kFeud[] = {130, 0, 120, 113, 115, 105, 126, 1, 112, 121, 100};
+            const bool feud = g_ppvEvtNo == 1;
+            const int steps = feud ? static_cast<int>(sizeof(kFeud) / sizeof(kFeud[0])) : 0;
+            if (feud && g_ppvSceneStep == 0 && g_ppvSceneTimer == 0)
+                g_ppvSceneTimer = kFrames - 1; // first jump (130) right away, like the script
+            const int limit = feud ? kFrames : kFrames * 6;
+            if (++g_ppvSceneTimer >= limit)
+            {
+                g_ppvSceneTimer = 0;
+                uint16_t count; std::memcpy(&count, rdram + sys + 0x1Cu, 2);
+                if (g_ppvSceneStep < steps && kFeud[g_ppvSceneStep] < count)
+                {
+                    const int sc = kFeud[g_ppvSceneStep++];
+                    ppvCall(rdram, ctx, runtime, 0x167250u, {sys, static_cast<uint32_t>(sc)});
+                    ppvCall(rdram, ctx, runtime, 0x167270u, {sys, 0u});
+                    ppvCall(rdram, ctx, runtime, 0x166f30u, {sys});
+                    std::cerr << "[ppv] opening: scene " << sc << " of " << count << std::endl;
+                }
+                else
+                {
+                    std::cerr << "[ppv] opening: event end (scenes " << count << ")" << std::endl;
+                    g_ppvEvtSys = 0u;
+                    ppvCall(rdram, ctx, runtime, 0x166eb0u, {sys}); // Stop
+                    ppvCall(rdram, ctx, runtime, 0x166fa0u, {sys}); // End
+                    return ppvReturn(ctx, 0u);
+                }
+            }
+        }
+        g_origEvtSysAction(rdram, ctx, runtime);
+    }
+    void ppvEvtMngCtor(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        static const bool evtlog = std::getenv("HCTP_EVTLOG") != nullptr;
+        if (evtlog)
+        {
+            const uint32_t prm = optArg(ctx, 7);
+            std::cerr << "[evtlog] CSd5EventMng type " << optArg(ctx, 5) << " mgr " << optArg(ctx, 6) << " param 0x" << std::hex << prm << std::dec;
+            if (prm)
+            {
+                std::cerr << " count " << optR32(rdram, prm) << " ev " << optR32(rdram, prm + 4) << " " << optR32(rdram, prm + 8)
+                          << " casts " << optR32(rdram, prm + 0x24) << " " << optR32(rdram, prm + 0x28) << " e34 " << optR32(rdram, prm + 0x34);
+            }
+            std::cerr << " setup casts";
+            for (int i = 0; i < 8; ++i) { uint16_t v; std::memcpy(&v, rdram + 0x4921CAu + i * 0x20, 2); std::cerr << " " << v; }
+            std::cerr << " stage " << int(rdram[0x4922C0u]) << std::endl;
+        }
+        if (!g_ppvOpening || optArg(ctx, 5) != 2u || optArg(ctx, 6) != 0u || g_ppvCard.empty())
+            return g_origEvtMngCtor(rdram, ctx, runtime);
+        g_ppvOpening = false;
+        // main event = the card's last match: its first two wrestlers, different teams when possible
+        const std::vector<uint8_t> &m = g_ppvCard.back();
+        uint32_t c[2] = {0x639Cu, 0x639Cu};
+        int team0 = -1, got = 0;
+        for (int pass = 0; pass < 2 && got < 2; ++pass)
+            for (int j = 0; j < 6 && got < 2; ++j)
+            {
+                const uint8_t *s = m.data() + 0x180 + j * 0x20;
+                uint16_t code; std::memcpy(&code, s + 0xA, 2);
+                uint32_t role; std::memcpy(&role, s + 4, 4);
+                if (code == 0x639Cu || role != 0u)
+                    continue;
+                const uint32_t cc = code / 10u * 10u; // SetDoramockEvent: costume code /10*10
+                if (got == 0)
+                    c[got++] = cc, team0 = s[9];
+                else if (cc != c[0] && (pass == 1 || s[9] != team0))
+                    c[got++] = cc;
+            }
+        // v2 (Nov 7): Season PPV intro = 1999 feud montage + 1902 arena/pyro opening (EVNT motion banks exist only for
+        // 1900/1901/1902/1904 -> 1902 = the PPV opening for every PPV, arena from the stage; UNVERIFIED for non-Backlash
+        // PPVs). HCTP_PPV_OPENING_EVT=<n> overrides the 2nd event number.
+        const uint32_t ev0 = 1999u;
+        const uint32_t ev1 = std::getenv("HCTP_PPV_OPENING_EVT") ? static_cast<uint32_t>(std::atoi(std::getenv("HCTP_PPV_OPENING_EVT"))) : 1902u;
+        const uint32_t page = optR32(rdram, 0x500f00u);
+        ppvCall(rdram, ctx, runtime, 0x140be0u, {1u}); // ymemChangePage (common page: param must outlive this call)
+        const uint32_t p = ppvCall(rdram, ctx, runtime, 0x1001e0u, {0x130u});
+        ppvCall(rdram, ctx, runtime, 0x140be0u, {page});
+        if (!p)
+            return g_origEvtMngCtor(rdram, ctx, runtime);
+        std::memset(optP(rdram, p), 0, 0x130u);
+        optW32(rdram, p, 2u); // tagEVENTMNGPARAM: count; event numbers at +4 + k*4 (CSd5EventData::SetDoramockEventNo
+        optW32(rdram, p + 4u, ev0); // 0x2ad170 copies param+4.. into its event list);
+        optW32(rdram, p + 8u, ev1); // entries of 0x20 below: casts +0x24..+0x30, +0x34
+        for (uint32_t k = 0; k < 2u; ++k)
+        {
+            const uint32_t e = p + k * 0x20u;
+            optW32(rdram, e + 0x24u, c[0]);
+            optW32(rdram, e + 0x28u, c[1]);
+            optW32(rdram, e + 0x2Cu, 0x639Cu);
+            optW32(rdram, e + 0x30u, 0x639Cu);
+            optW32(rdram, e + 0x34u, k ? ev1 : ev0);
+            optW32(rdram, e + 0x38u, 0x639Cu);
+            optW32(rdram, e + 0x3Cu, 0x639Cu);
+            optW32(rdram, e + 0x40u, 0x639Cu);
+        }
+        // casts into the setup cast table like SetDoramockEvent (OutPutRuleParam restores match 1's snapshot later)
+        const uint32_t slots[] = {0x4921CAu, 0x4921EAu, 0x49220Au, 0x49222Au, 0x49224Au, 0x49226Au, 0x49228Au, 0x4922AAu};
+        for (int i = 0; i < 8; ++i)
+        {
+            const uint16_t v = static_cast<uint16_t>(i < 2 ? c[i] : 0x639Cu);
+            std::memcpy(rdram + slots[i], &v, 2);
+        }
+        SET_GPR_U32(ctx, 5, 3u); // EventType 3 (doramock: ends in ReturnMenuFromGame)
+        SET_GPR_U32(ctx, 6, 3u); // SD5EVENTMNG_TYPE 3 (6 = MovesFromDramock)
+        SET_GPR_U32(ctx, 7, p);
+        g_ppvOpeningActive = true;
+        g_ppvEvtNo = 0;
+        g_ppvEvtSys = 0u;
+        std::cerr << "[ppv] opening: events " << ev0 << " + " << ev1 << " casts " << c[0] << " " << c[1]
+                  << " (stage " << int(rdram[0x4922C0u]) << ")" << std::endl;
+        g_origEvtMngCtor(rdram, ctx, runtime);
+    }
     void ppvGoGame(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (g_ppvExitPending)
+        {
+            g_ppvExitPending = false;
+            g_ppvMode = PpvMode::None;
+            g_ppvEditMatch = -1;
+            g_ppvMenu = true;
+            g_ppvLevel = PpvLevel::Card;
+            std::cerr << "[ppv] back to the card menu (direct)" << std::endl;
+            const uint32_t page = optR32(rdram, 0x500f00u);
+            ppvCall(rdram, ctx, runtime, 0x140be0u, {1u}); // ymemChangePage
+            const uint32_t next = ppvCall(rdram, ctx, runtime, 0x1001e0u, {0x10u});
+            if (next)
+            {
+                std::memset(optP(rdram, next), 0, 0x10u);
+                ppvCall(rdram, ctx, runtime, 0x186e50u, {next}); // CreateTopMenuSequence = card menu
+            }
+            ppvCall(rdram, ctx, runtime, 0x140be0u, {page});
+            return ppvReturn(ctx, 0u);
+        }
         if (g_ppvMode != PpvMode::Create)
             return g_origGoGame(rdram, ctx, runtime);
         ppvCall(rdram, ctx, runtime, 0x181e70u, {}); // OutPutRuleParam, as GoGameFromMenu does first
@@ -3630,13 +5197,46 @@ namespace
     // is unsafe (it can pause at an EE checkpoint and resume later)
     void ppvOutPutRule(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (ppvTrampoline(rdram, ctx, runtime))
+            return;
         if (g_ppvMode != PpvMode::Play || g_ppvPlayIdx >= g_ppvCard.size())
             return g_origOutPutRule(rdram, ctx, runtime);
         std::memcpy(optP(rdram, kPpvSetup), g_ppvCard[g_ppvPlayIdx].data(), kPpvSetupSize);
+        ppvCtlApply(rdram, g_ppvPlayIdx);
+        if (g_ppvPlayArena < 31u) // PPV arena (details screen) for every match; 0xFF = keep the snapshot's stage
+            rdram[0x4922C0u] = g_ppvPlayArena;
         ppvReturn(ctx, 0u);
     }
     void ppvReturnFromGame(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (g_ppvOpeningActive) // the opening event ended (type 3 -> ReturnMenuFromGame): now the card, match 1 next
+        {
+            g_ppvOpeningActive = false;
+            g_ppvOpening = false;
+            std::cerr << "[ppv] opening over -> card" << std::endl;
+            g_ppvReturnToCard = true;
+            g_ppvLevel = PpvLevel::Show;
+            g_ppvPage = g_ppvCardRow.empty() ? 0 : g_ppvCardRow[0] / 3;
+            return g_origReturnFromGame(rdram, ctx, runtime);
+        }
+        g_ppvOpening = false; // entrances off: no event manager was built for the opening
+        if (g_ppvMode == PpvMode::Play && ppvCardBetween() && !g_ppvCardRow.empty())
+        {
+            // back through the stock menus; the first TopMenuSequence LoopEnd opens the SHOW card (results + next)
+            if (!g_ppvResultTaken && g_ppvPlayIdx < g_ppvCardRow.size() && g_ppvCardRow[g_ppvPlayIdx] < 8)
+            {
+                // item 19: time-limit draw (scripted tag, 10:00 -> REMATCH / EXIT) never calls GetDoramockResult
+                g_ppvResult[g_ppvCardRow[g_ppvPlayIdx]] = "DRAW";
+                std::cerr << "[ppv] match " << g_ppvCardRow[g_ppvPlayIdx] + 1 << ": DRAW (no result call)" << std::endl;
+            }
+            ++g_ppvPlayIdx;
+            std::cerr << "[ppv] match over -> SHOW card (" << g_ppvPlayIdx << "/" << g_ppvCard.size() << " played)" << std::endl;
+            g_ppvReturnToCard = true;
+            g_ppvLevel = PpvLevel::Show;
+            if (g_ppvPlayIdx < g_ppvCardRow.size())
+                g_ppvPage = g_ppvCardRow[g_ppvPlayIdx] / 3;
+            return g_origReturnFromGame(rdram, ctx, runtime);
+        }
         if (g_ppvMode == PpvMode::Play && ++g_ppvPlayIdx < g_ppvCard.size())
         {
             std::cerr << "[ppv] next match " << g_ppvPlayIdx + 1 << "/" << g_ppvCard.size() << std::endl;
@@ -3654,11 +5254,136 @@ namespace
     // (ppvCreateSeqLoopEnd counts down), then delete it and run GoGameFromMenu as guest code.
     constexpr int kPpvLaunchFrames = 10;
     int g_ppvLaunchDelay = 0;
+    // RecordIf::SetMatchData 0x2b66b0(this, MatchResultIn*): the game's record of a finished match. Read from its code:
+    // +0xC rule (0xD = Royal Rumble), +0x14 u32 roster id x6, +0x2C u8 per-wrestler result x6, +0x10 / +0xC2 / +0xC3.
+    // Winner = wrestlers whose result byte is 1 (NOT verified yet - the raw bytes are logged for checking).
+    PS2Runtime::RecompiledFunction g_origRecordSetMatch = nullptr;
+    void ppvRecordSetMatch(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t in = optArg(ctx, 5);
+        if (!g_ppvOpeningActive && g_ppvMode == PpvMode::Play && !g_ppvResultTaken && in && g_ppvPlayIdx < g_ppvCardRow.size())
+        {
+            g_ppvResultTaken = true;
+            std::string win;
+            std::fprintf(stderr, "[ppv] result: rule 0x%X +0 %u +1 %u +4 %u +8 %u +10 %u +C2 %u +C3 %u |", optR32(rdram, in + 0xCu),
+                         rdram[in], rdram[in + 1u], optR32(rdram, in + 4u), optR32(rdram, in + 8u), optR32(rdram, in + 0x10u),
+                         rdram[in + 0xC2u], rdram[in + 0xC3u]);
+            for (uint32_t j = 0; j < 6u; ++j)
+            {
+                const uint32_t id = optR32(rdram, in + 0x14u + j * 4u);
+                const uint8_t r = rdram[in + 0x2Cu + j];
+                std::fprintf(stderr, " %X:%u", id, r);
+                if (r == 1u && id < 0x7Bu && win.empty())
+                {
+                    const uint32_t nm = ppvCall(rdram, ctx, runtime, 0x12cde0u, {id, 0u}); // GetWrestlerName
+                    std::string n = nm ? reinterpret_cast<const char *>(optP(rdram, nm)) : "?";
+                    const size_t sp = n.find_last_of(' ');
+                    win = sp == std::string::npos || sp + 1 >= n.size() ? n : n.substr(sp + 1);
+                }
+            }
+            std::fprintf(stderr, "%c", 10);
+            const int row = g_ppvCardRow[g_ppvPlayIdx];
+            if (row >= 0 && row < 8)
+                g_ppvResult[row] = win.empty() ? "NO WINNER" : "WIN " + win;
+            std::cerr << "[ppv] match " << row + 1 << ": " << g_ppvResult[row] << std::endl;
+        }
+        g_origRecordSetMatch(rdram, ctx, runtime);
+    }
+    // GetDoramockResult 0x39dc00 (called by GameMainSequence::LoopEndAct 0x2e1198 after the match; SetMatchData above is
+    // Season-only via CMatchMakeSystem::SetResultData). Its code: CChar table 0x526ea0[slot]; for slot 0..7 a char with
+    // +0x383 != 0 puts its cast code (0x4921CA + slot*0x20) into drGameResult's list (= the winners), bytes 0x492370 /
+    // 0x492371 index that table too (decision / finisher side). We read the same data before the original runs.
+    PS2Runtime::RecompiledFunction g_origDoramockResult = nullptr;
+    void ppvDoramockResult(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (!g_ppvOpeningActive && g_ppvMode == PpvMode::Play && !g_ppvResultTaken && g_ppvPlayIdx < g_ppvCardRow.size())
+        {
+            g_ppvResultTaken = true;
+            std::string win;
+            int winners = 0;
+            std::fprintf(stderr, "[ppv] result: 370=%d 371=%d |", int(int8_t(rdram[0x492370u])), int(int8_t(rdram[0x492371u])));
+            for (uint32_t t = 0; t < 8u; ++t)
+            {
+                const uint32_t ch = optR32(rdram, 0x526ea0u + t * 4u);
+                uint16_t code = 0;
+                std::memcpy(&code, rdram + 0x4921CAu + t * 0x20u, 2);
+                if (!ch || ch >= 0x2000000u)
+                    continue;
+                const uint8_t f = rdram[ch + 0x383u];
+                std::fprintf(stderr, " slot%u code %u flag %u", t, code, f);
+                if (f && code < 25500u)
+                {
+                    const uint32_t id = hctpRosterCodeId(rdram, code);
+                    if (winners++ == 0)
+                    {
+                        const uint32_t nm = ppvCall(rdram, ctx, runtime, 0x12cde0u, {id, 0u}); // GetWrestlerName
+                        std::string n = nm ? reinterpret_cast<const char *>(optP(rdram, nm)) : "?";
+                        const size_t sp = n.find_last_of(' ');
+                        win = sp == std::string::npos || sp + 1 >= n.size() ? n : n.substr(sp + 1);
+                    }
+                }
+            }
+            std::fprintf(stderr, "%c", 10);
+            // item 19: 0x492371 = the slot the referee counted (CRef::Count10 0x1f9968 = ref+0x38 target, Miteru pin
+            // 0x1f8930 / Count20) = the LOSER (scripted ppv19: Rock pinned by Austin, 371 = Rock's slot 0). Winner =
+            // the other team (team byte +9); 3+ teams -> "<NAME> LOST". The +0x383 list above is only a fallback.
+            auto nameOf = [&](int slot) {
+                uint16_t code = 0;
+                std::memcpy(&code, rdram + 0x4921CAu + slot * 0x20u, 2);
+                if (code >= 25500u)
+                    return std::string();
+                const uint32_t id = hctpRosterCodeId(rdram, code);
+                const uint32_t nm = ppvCall(rdram, ctx, runtime, 0x12cde0u, {id, 0u});
+                std::string n = nm ? reinterpret_cast<const char *>(optP(rdram, nm)) : "?";
+                const size_t sp = n.find_last_of(' ');
+                return sp == std::string::npos || sp + 1 >= n.size() ? n : n.substr(sp + 1);
+            };
+            const int ls = int(int8_t(rdram[0x492371u]));
+            std::string text;
+            if (ls >= 0 && ls < 8 && !nameOf(ls).empty() && rdram[0x4921C4u + ls * 0x20u] == 0u) // a wrestler (+4 role 0)
+            {
+                const uint8_t lt = rdram[0x4921C9u + ls * 0x20u];
+                int teams = 0, otherFirst = -1, others = 0;
+                bool seen[8] = {};
+                for (int j = 0; j < 8; ++j)
+                {
+                    if (nameOf(j).empty() || rdram[0x4921C4u + j * 0x20u] != 0u)
+                        continue;
+                    const uint8_t t = rdram[0x4921C9u + j * 0x20u] & 7u;
+                    if (!seen[t])
+                        seen[t] = true, ++teams;
+                    if (t != lt && otherFirst < 0)
+                        otherFirst = j;
+                    if (t != lt && otherFirst >= 0 && rdram[0x4921C9u + otherFirst * 0x20u] == t)
+                        ++others;
+                }
+                if (teams == 2 && otherFirst >= 0)
+                    text = others > 1 ? "WIN " + nameOf(otherFirst) + " +" + ppvNum(others - 1) : "WIN " + nameOf(otherFirst);
+                else
+                    text = nameOf(ls) + " LOST";
+                std::fprintf(stderr, "[ppv] result from 0x492371: loser slot %d team %d, %d teams%c", ls, int(lt), teams, 10);
+            }
+            else if (!win.empty())
+                text = winners > 1 ? "WIN " + win + " +" + ppvNum(winners - 1) : "WIN " + win;
+            const int row = g_ppvCardRow[g_ppvPlayIdx];
+            if (row >= 0 && row < 8)
+                g_ppvResult[row] = text.empty() ? "NO RESULT" : text;
+            std::cerr << "[ppv] match " << row + 1 << ": " << g_ppvResult[row] << std::endl;
+        }
+        g_origDoramockResult(rdram, ctx, runtime);
+    }
     void ppvStartPlay(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t self, uint32_t menu)
     {
+        if (g_ppvMode != PpvMode::Play) // a new show (else: next match from the SHOW card)
+        {
+            g_ppvPlayIdx = 0;
+            for (auto &r : g_ppvResult)
+                r.clear();
+        }
         g_ppvMode = PpvMode::Play;
-        g_ppvPlayIdx = 0;
-        std::cerr << "[ppv] playing card, " << g_ppvCard.size() << " matches" << std::endl;
+        g_ppvResultTaken = false;
+        std::cerr << "[ppv] show arena " << int(g_ppvPlayArena) << std::endl;
+        std::cerr << "[ppv] playing card match " << g_ppvPlayIdx + 1 << "/" << g_ppvCard.size() << std::endl;
         ppvCall(rdram, ctx, runtime, ppvVirtual(rdram, menu, 0u, 8u), {menu, 1u});
         optW32(rdram, self + 0xcu, 0u);
         ppvCall(rdram, ctx, runtime, 0x2440a0u, {}); // MenuWrestlerCtrl::End
@@ -3686,10 +5411,172 @@ namespace
             return ppvReturn(ctx, 0u);
         if (!(ppvCall(rdram, ctx, runtime, 0x3aa380u, {}) & 0xffu)) // CrowdSignRead::CanUse
             return ppvReturn(ctx, 0u);
+        if (g_ppvLevel == PpvLevel::Show)
+        {
+            if (decided && sel == 3u && g_ppvPlayIdx < g_ppvCard.size())
+            {
+                g_ppvLevel = PpvLevel::Sub;
+                return ppvStartPlay(rdram, ctx, runtime, self, menu); // next match (index kept)
+            }
+            std::cerr << "[ppv] show " << (g_ppvPlayIdx < g_ppvCard.size() ? "abandoned" : "finished") << std::endl;
+            g_ppvMode = PpvMode::None;
+            g_ppvCardRow.clear();
+            g_ppvLevel = PpvLevel::Sub;
+            return ppvNextSequence(rdram, ctx, runtime, self, menu, 0x186e50u);
+        }
+        if (g_ppvLevel == PpvLevel::Load)
+        {
+            g_ppvDeleteArmed = false;
+            if (decided && sel == 1u && !g_ppvSlotList.empty()) // PLAY
+            {
+                g_ppvCard.clear();
+                g_ppvCardRow.clear();
+                g_ppvPlayArena = g_ppvWork[46];
+                g_ppvPlayBrand = g_ppvWork[47];
+                for (int i = 0; i < 8; ++i)
+                    if (ppvMatchSet(i))
+                    {
+                        g_ppvCard.push_back(g_ppvWorkSnap[i]);
+                        g_ppvCardRow.push_back(i);
+                    }
+                g_ppvMode = PpvMode::None; // new show
+                g_ppvLevel = PpvLevel::Sub;
+                if (!g_ppvCard.empty())
+                {
+                    std::cerr << "[ppv] YOUR PPVs: play " << ppvCardPath(g_ppvSlot) << std::endl;
+                    g_ppvCtl.assign(g_ppvCard.size(), -1);
+                    if (ppvPlayAs() && ppvCardBetween())
+                    {
+                        // item 14: SHOW card before match 1 (pick Play-as / WATCH per match, then NEXT MATCH 1)
+                        g_ppvPlayIdx = 0;
+                        for (auto &r : g_ppvResult)
+                            r.clear();
+                        g_ppvMode = PpvMode::Play;
+                        g_ppvLevel = PpvLevel::Show;
+                        g_ppvPage = g_ppvCardRow.empty() ? 0 : g_ppvCardRow[0] / 3;
+                        if (ppvOpeningOn()) // Jordan: opening (feud + pyro + announcers) BEFORE the card
+                        {
+                            g_ppvOpening = true;
+                            std::cerr << "[ppv] opening event before the card" << std::endl;
+                            return ppvStartPlay(rdram, ctx, runtime, self, menu);
+                        }
+                        std::cerr << "[ppv] show card before match 1" << std::endl;
+                        return ppvNextSequence(rdram, ctx, runtime, self, menu, 0x186e50u);
+                    }
+                    return ppvStartPlay(rdram, ctx, runtime, self, menu);
+                }
+                std::cerr << "[ppv] YOUR PPVs: card has no matches" << std::endl;
+                g_ppvLevel = PpvLevel::Load;
+            }
+            else if (decided && sel == 2u && !g_ppvSlotList.empty() && !g_ppvSample) // EDIT
+            {
+                std::cerr << "[ppv] YOUR PPVs: edit " << ppvCardPath(g_ppvSlot) << std::endl;
+                g_ppvLevel = ppvDetails2() ? PpvLevel::Details : PpvLevel::Card;
+            }
+            else
+                g_ppvLevel = PpvLevel::Sub;
+            return ppvNextSequence(rdram, ctx, runtime, self, menu, 0x186e50u);
+        }
+        if (g_ppvLevel == PpvLevel::Details)
+        {
+            // only MATCH CARD (row 3) ends the menu with a decision; Back -> PPV submenu
+            g_ppvLevel = decided && sel == 3u ? PpvLevel::Card : PpvLevel::Sub;
+            std::cerr << "[ppv] details -> " << (g_ppvLevel == PpvLevel::Card ? "card" : "PPV submenu") << std::endl;
+            return ppvNextSequence(rdram, ctx, runtime, self, menu, 0x186e50u);
+        }
+        if (ppvCreate2() && g_ppvLevel == PpvLevel::Card)
+        {
+            if (decided && sel < 3u && ppvAbs(sel) < 8) // edit match (page row sel): stock match type + roster select
+            {
+                g_ppvEditMatch = ppvAbs(sel);
+                std::cerr << "[ppv] card: editing match " << g_ppvEditMatch + 1 << std::endl;
+                g_ppvMode = PpvMode::Create;
+                g_ppvMenu = false;
+                g_ppvLevel = PpvLevel::Sub;
+                if (ppvDirectExhi())
+                {
+                    // what TopMenuSequence's ctor 0x138030 sets up before the main menu can start Exhibition:
+                    // save byte (save+0x10000-0x63e1) = 0 and CStableControl::SetStableType(0); MenuMovie and
+                    // MenuWrestlerCtrl are already running under the PPV menus
+                    const uint32_t save = ppvCall(rdram, ctx, runtime, 0x12cb10u, {}); // GetSaveData
+                    if (save)
+                        rdram[save + 0x10000u - 0x63e1u] = 0u;
+                    ppvCall(rdram, ctx, runtime, 0x172ef0u, {0u});
+                    std::cerr << "[ppv] card: Exhibition built directly" << std::endl;
+                    return ppvNextSequenceGuest(rdram, ctx, runtime, self, menu, 0x1305a0u, 0x164u); // ExshibitionMenuSequence
+                }
+                g_ppvForceExhibition = true;
+                return ppvNextSequence(rdram, ctx, runtime, self, menu, 0x138030u); // TopMenuSequence -> EXHIBITION
+            }
+            if (decided && sel == 3u)
+                std::cerr << "[ppv] card saved: " << (ppvSaveCard2() ? ppvCardPath(g_ppvSlot) : "FAILED") << std::endl;
+            // SAVE -> PPV submenu; Back -> details (HCTP_PPV_DETAILS2) else PPV submenu
+            g_ppvLevel = !(decided && sel == 3u) && ppvDetails2() ? PpvLevel::Details : PpvLevel::Sub;
+            return ppvNextSequence(rdram, ctx, runtime, self, menu, 0x186e50u);
+        }
         if (!decided || sel >= 3u)
         {
             g_ppvMenu = false;
             return ppvNextSequence(rdram, ctx, runtime, self, menu, 0x138030u); // TopMenuSequence
+        }
+        if (sel == 1u && ppvCreate2()) // CREATE A PPV: the card menu (edits the saved card, or a new default one)
+        {
+            // new card in the first free slot (SvR SearchEmptyData); all 8 used -> YOUR PPVs (edit / delete one)
+            g_ppvSample = false;
+            const int slot = ppvFreeSlot();
+            if (slot < 0)
+            {
+                std::cerr << "[ppv] create: all " << kPpvSlots << " slots used -> YOUR PPVs" << std::endl;
+                g_ppvSlotIdx = 0;
+                ppvScanSlots();
+                g_ppvLevel = PpvLevel::Load;
+                return ppvNextSequence(rdram, ctx, runtime, self, menu, 0x186e50u);
+            }
+            ppvDefaultSet(g_ppvWork);
+            for (auto &r : g_ppvResult)
+                r.clear();
+            g_ppvSlot = slot;
+            std::cerr << "[ppv] create: new card in " << ppvCardPath(slot) << std::endl;
+            g_ppvLevel = ppvDetails2() ? PpvLevel::Details : PpvLevel::Card;
+            if (ppvDetailsOn())
+            {
+                // PPV DETAILS = Stable Details re-skin: StableSequence(STABLE_TYPE 0, ATB 0) as CreateTopMenuSequence's
+                // LoopEndAct 0x187148 builds it (new 0xC); ppvStableFrameAction lands on CStableDetails
+                g_ppvDetails = true;
+                g_ppvDetailsBuilt = g_ppvDetailsDone = false;
+                g_ppvMenu = false;
+                std::cerr << "[ppv] details: StableSequence" << std::endl;
+                return ppvNextSequence(rdram, ctx, runtime, self, menu, 0x177000u, 0xCu, {0u, 0u});
+            }
+            return ppvNextSequence(rdram, ctx, runtime, self, menu, 0x186e50u);
+        }
+        if (sel == 2u && ppvCreate2())
+        {
+            // YOUR PPVs: saved cards (X on the name cycles them), PLAY / EDIT / DELETE
+            g_ppvSample = false;
+            g_ppvSlotIdx = 0;
+            g_ppvDeleteArmed = false;
+            ppvScanSlots();
+            for (auto &r : g_ppvResult)
+                r.clear();
+            std::cerr << "[ppv] YOUR PPVs: " << g_ppvSlotList.size() << " saved" << std::endl;
+            g_ppvLevel = PpvLevel::Load;
+            return ppvNextSequence(rdram, ctx, runtime, self, menu, 0x186e50u);
+        }
+        if (sel == 0u && ppvCreate2()) // PLAY SAMPLE PPV: the generated sample cards, same list screen (PLAY only)
+        {
+            ppvMakeSamples();
+            g_ppvSample = true;
+            g_ppvSlotIdx = 0;
+            g_ppvDeleteArmed = false;
+            ppvScanSlots();
+            std::cerr << "[ppv] samples: " << g_ppvSlotList.size() << std::endl;
+            if (!g_ppvSlotList.empty())
+            {
+                g_ppvLevel = PpvLevel::Load;
+                return ppvNextSequence(rdram, ctx, runtime, self, menu, 0x186e50u);
+            }
+            g_ppvSample = false; // no template yet: the old slice-2 sample below
         }
         if (sel == 1u) // CREATE A PPV: new card, one Exhibition run per match
         {
@@ -3705,6 +5592,158 @@ namespace
         std::cerr << "[ppv] no " << (sel == 0u ? "sample" : "saved") << " card" << std::endl;
         ppvNextSequence(rdram, ctx, runtime, self, menu, 0x186e50u); // CreateTopMenuSequence again (PPV submenu)
     }
+    // ExshibitionMenuSequence::WrestlerSelectEnd 0x1321a0 (fresh entry, our own decided path; cancel and Royal Rumble
+    // 0xD / Hell 0x47 stay stock). Stock decided path: rule+0x1E == 3 or rule 0x3C -> 0x18 matchup, else 0x17 arena.
+    PS2Runtime::RecompiledFunction g_origWrestlerSelEnd = nullptr;
+    void ppvWrestlerSelEnd(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = optArg(ctx, 4);
+        const uint32_t rule = optR32(rdram, self + 0x140u);
+        if (!ppvCreate2() || g_ppvMode != PpvMode::Create || g_ppvEditMatch < 0 || rule == 0xDu || rule == 0x47u)
+            return g_origWrestlerSelEnd(rdram, ctx, runtime);
+        const uint32_t frame = optR32(rdram, self + 0xcu);
+        if (!frame || !(ppvCall(rdram, ctx, runtime, ppvVirtual(rdram, frame, 0u, 0x34u), {frame}) & 0xffu))
+        {
+            ppvCall(rdram, ctx, runtime, 0x346110u, {}); // MatchWrestlerCtrl::End, as the stock cancel
+            ppvExitToCard(rdram, self);
+            return ppvReturn(ctx, 0x1Bu);
+        }
+        const uint32_t ruleRec = 0x45AF60u + rule * 0x20u; // rule table: +0x1F default stage
+        const uint32_t stage = static_cast<uint32_t>(static_cast<int32_t>(static_cast<int8_t>(rdram[ruleRec + 0x1fu])));
+        optW32(rdram, self + 0x148u, stage);
+        optW32(rdram, self + 0x14cu, stage);
+        ppvCall(rdram, ctx, runtime, 0x181df0u, {});     // COptionBackUp::OptionBackUp, as the stock decided path
+        ppvCall(rdram, ctx, runtime, 0x130d10u, {self}); // SetCommon: selections -> setup block 0x4920C0..
+        const int i = g_ppvEditMatch;
+        uint8_t *m = g_ppvWork + 52 + i * kPpvMatchSize;
+        ppvMatchInit(m);
+        m[0] = static_cast<uint8_t>(rule);
+        for (uint32_t j = 0; j < 6u; ++j) // selection records self+0x18+j*0x30 (SetCommon: +4 used, +8 team, +0x1C id, +0x20 attire)
+        {
+            const uint32_t rec = self + 0x18u + j * 0x30u;
+            if (!optR32(rdram, rec + 4u))
+                continue;
+            uint8_t *r = m + 8 + j * 4;
+            r[0] = static_cast<uint8_t>(optR32(rdram, rec + 0x1cu));
+            r[1] = rdram[0x4921C0u + j * 0x20u];
+            r[2] = static_cast<uint8_t>(optR32(rdram, rec + 0x20u));
+            r[3] = static_cast<uint8_t>(optR32(rdram, rec + 8u));
+        }
+        g_ppvWorkSnap[i].assign(optP(rdram, kPpvSetup), optP(rdram, kPpvSetup) + kPpvSetupSize);
+        std::cerr << "[ppv] card match " << i + 1 << " stored: rule 0x" << std::hex << rule << " ids";
+        for (int j = 0; j < 6; ++j)
+            std::cerr << " " << static_cast<int>(m[8 + j * 4]);
+        std::cerr << std::dec << " (no arena / matchup in Create)" << std::endl;
+        ppvExitToCard(rdram, self);
+        ppvReturn(ctx, 0x1Bu);
+    }
+    // ExshibitionMenuSequence::Next 0x131530 (fresh entry): Create skips PlayerEntry 0x14 / PositionSelect 0x15 - one
+    // player (self+0x13C = 1, GetCommon+0x206 as PlayerEntryEnd), InitPositionInfo 0x1307b0 fills the slot records
+    // (+4 used, +8 position, control from the rule table, default wrestlers), then WrestlerSelect 0x16.
+    PS2Runtime::RecompiledFunction g_origExhiNext = nullptr, g_origExhiTopEnd = nullptr;
+    void ppvExhiNext(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = optArg(ctx, 4), type = optArg(ctx, 5);
+        if (ppvCreate2() && g_ppvMode == PpvMode::Create && g_ppvEditMatch >= 0 && (type == 0x14u || type == 0x15u) &&
+            optR32(rdram, self + 0x140u) != 0xDu)
+        {
+            optW32(rdram, self + 0x13cu, 1u);
+            const uint32_t common = ppvCall(rdram, ctx, runtime, 0x12cb20u, {}); // GetCommon
+            if (common)
+                rdram[common + 0x206u] = 1u;
+            ppvCall(rdram, ctx, runtime, 0x1307b0u, {self});
+            SET_GPR_U32(ctx, 5, 0x16u);
+            std::cerr << "[ppv] card: controller screen skipped -> wrestler select" << std::endl;
+        }
+        g_origExhiNext(rdram, ctx, runtime);
+    }
+    // TopEnd 0x131670: Back on Exhibition's top menu while making a card -> card menu (not the main menu)
+    void ppvExhiTopEnd(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = optArg(ctx, 4), ra = optArg(ctx, 31);
+        g_origExhiTopEnd(rdram, ctx, runtime);
+        if (ppvOrigDone(ctx, ra) && ppvCreate2() && g_ppvMode == PpvMode::Create && g_ppvEditMatch >= 0 &&
+            optArg(ctx, 2) == 0x1Bu && optR32(rdram, self + 0x14u) == 6u)
+            ppvExitToCard(rdram, self);
+    }
+    // ---- PPV DETAILS slice 1 (Nov 4; HCTP_PPV_DETAILS=0 off). Stable Details re-skin (Jordan): name row = PPV name,
+    // members = commentary team, entrance -> arena (relabel/picks = later slices). Read (side-session note
+    // ppv_details_stable_handoff_20261104.md): CStableFrame (singleton *0x526338) works on a new[0x402] COPY of the
+    // global stable table (+0x20, 27 x 0x26); only CStableMain::FromUI_OK/Cancel (0x178650/0x1789d0) write it back,
+    // so CStableMain is deleted at once and never decides. Action 0x177610 builds CStableMain (+0x10) when the reader
+    // is done; we then build CStableDetails like its case 0x177700 (new 0xD0, ctor 0x1743e0(this, frame+0x28, 6, 0),
+    // +0x3c = record index, +0x14) on the first empty record (+0x16 == 0 -> ctor runs InitStableData on the copy).
+    // Details ended (SimpleSelectFrame state +8 == 5, CStableMain gone): record -> g_ppvWork, frame+0x39 = 1 ->
+    // StableSequence::LoopEndAct 0x177100 builds CreateTopMenuSequence (stock) -> our card menu (g_ppvMenu).
+    PS2Runtime::RecompiledFunction g_origStableFrameAction = nullptr;
+    void ppvStableFrameAction(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t frame = optArg(ctx, 4), ra = optArg(ctx, 31);
+        if (g_ppvDetails && g_ppvDetailsBuilt && !g_ppvDetailsDone && frame && !optR32(rdram, frame + 0x10u))
+        {
+            const uint32_t det = optR32(rdram, frame + 0x14u);
+            // Action's own "details finished" test (0x1777dc): CStableMain gone, details alive, frame+0x1c == 0
+            if (det && optR32(rdram, frame + 0x1cu) == 0u)
+            {
+                g_ppvDetailsDone = true;
+                const uint32_t idx = optR32(rdram, frame + 0x3cu), tbl = optR32(rdram, frame + 0x20u);
+                if (tbl && idx < 27u)
+                {
+                    const uint8_t *rec = optP(rdram, tbl + idx * 0x26u);
+                    char hex[0x26 * 3 + 1] = {};
+                    for (int i = 0; i < 0x26; ++i)
+                        std::snprintf(hex + i * 3, 4, "%02x ", rec[i]);
+                    std::cerr << "[ppv] details done, record " << idx << ": " << hex << std::endl;
+                    if (rec[0])
+                    {
+                        std::memset(g_ppvWork, 0, 0x16);
+                        std::memcpy(g_ppvWork, rec, 0x15); // name (EndAction copies 0x16 bytes from the name entry)
+                    }
+                }
+                rdram[frame + 0x39u] = 1u; // StableSequence::LoopEndAct -> CreateTopMenuSequence
+                g_ppvDetails = false;
+                g_ppvMenu = true;
+                g_ppvLevel = PpvLevel::Card;
+                return ppvReturn(ctx, 0u);
+            }
+        }
+        g_origStableFrameAction(rdram, ctx, runtime);
+        if (g_ppvDetails && ppvOrigDone(ctx, ra) && rdram[frame + 0x39u]) // left the stable screens: PPV submenu
+        {
+            std::cerr << "[ppv] details: left the stable screens" << std::endl;
+            g_ppvDetails = false;
+            g_ppvMenu = true;
+            g_ppvLevel = PpvLevel::Sub;
+            return;
+        }
+        if (!g_ppvDetails || g_ppvDetailsBuilt || !ppvOrigDone(ctx, ra))
+            return;
+        const uint32_t main = optR32(rdram, frame + 0x10u);
+        if (!main)
+            return;
+        ppvCall(rdram, ctx, runtime, ppvVirtual(rdram, main, 0u, 8u), {main, 1u}); // delete CStableMain
+        optW32(rdram, frame + 0x10u, 0u);
+        ppvCall(rdram, ctx, runtime, 0x177870u, {frame}); // MakeMenuItem
+        uint32_t idx = 26u;
+        const uint32_t tbl = optR32(rdram, frame + 0x20u);
+        for (uint32_t i = 0; tbl && i < 27u; ++i)
+            if (rdram[tbl + i * 0x26u + 0x16u] == 0u)
+            {
+                idx = i;
+                break;
+            }
+        optW32(rdram, frame + 0x3cu, idx);
+        const uint32_t det = ppvCall(rdram, ctx, runtime, 0x1001e0u, {0xD0u});
+        if (det)
+        {
+            std::memset(optP(rdram, det), 0, 0xD0);
+            ppvCall(rdram, ctx, runtime, 0x1743e0u, {det, optR32(rdram, frame + 0x28u), 6u, 0u});
+        }
+        optW32(rdram, frame + 0x14u, det);
+        optW32(rdram, frame + 0x1cu, 1u); // details active (0 = Action deletes it and rebuilds CStableMain)
+        g_ppvDetailsBuilt = true;
+        std::cerr << "[ppv] details: CStableDetails on record " << idx << (det ? "" : " (new FAILED)") << std::endl;
+    }
     void installPpvMenu(PS2Runtime &runtime)
     {
         struct Hook { uint32_t addr; PS2Runtime::RecompiledFunction *orig; PS2Runtime::RecompiledFunction fn; };
@@ -3719,7 +5758,21 @@ namespace
                               {0x138900u, &g_origCursorTarget, ppvCursorTarget},
                               {0x1a8f80u, &g_origGoGame, ppvGoGame},
                               {0x181e70u, &g_origOutPutRule, ppvOutPutRule},
-                              {0x1a9020u, &g_origReturnFromGame, ppvReturnFromGame}};
+                              {0x1a9020u, &g_origReturnFromGame, ppvReturnFromGame},
+                              {0x1321a0u, &g_origWrestlerSelEnd, ppvWrestlerSelEnd},
+                              {0x131530u, &g_origExhiNext, ppvExhiNext},
+                              {0x131670u, &g_origExhiTopEnd, ppvExhiTopEnd},
+                              {0x177610u, &g_origStableFrameAction, ppvStableFrameAction},
+                              {0x135b60u, &g_origCreateMenuDecision, ppvCreateMenuDecision},
+                              {0x12e7c0u, &g_origMenuSub1, ppvMenuSub1},
+                              {0x12e7d0u, &g_origMenuSub2, ppvMenuSub2},
+                              {0x2b66b0u, &g_origRecordSetMatch, ppvRecordSetMatch},
+                              {0x39dc00u, &g_origDoramockResult, ppvDoramockResult},
+                              {0x2a7a20u, &g_origEvtMngCtor, ppvEvtMngCtor},
+                              {0x165680u, &g_origEvtSysLoaderCtor, ppvEvtSysLoaderCtor},
+                              {0x165ba0u, &g_origEvtMotLoaderCtor, ppvEvtMotLoaderCtor},
+                              {0x166a60u, &g_origEvtSysCtor, ppvEvtSysCtor},
+                              {0x166e00u, &g_origEvtSysAction, ppvEvtSysAction}};
         for (const Hook &h : hooks)
             if (!(*h.orig = runtime.lookupFunction(h.addr)))
                 return;
@@ -3992,6 +6045,955 @@ namespace
         std::cerr << "[hctp-opt] in-game music track + commentary volume options " << (ok ? "on" : "FAILED") << std::endl;
     }
 
+    // ===================== ROSTER EXPANSION (HCTP_ROSTER_EXPAND=1, default off; Nov 5) =====================
+    // Real new roster ids (no CAW carriers). Plan: F:\hctp-project\notes\ROSTER_EXPANSION_PLAN_20261105.md.
+    // Ids 0x56..0xA1 are CAW ids (GetCharaGameProp 0x12cec0: id >= 0x56 -> CAW block 0x4B6460+(id-0x56)*0x460), so new
+    // slots take ids 0xA2.. (u8-safe). Every one of the 49 functions with "slti id, 0x56" would send them to the CAW path:
+    //  - record accessors (GetCharaGameProp, name, ring name, IsSmackDownEntry, IsRosterExist, IsSeasonEntry) answer
+    //    from a host-built 0x170 record (template's org record + MODS\ROSTER\<folder>\slot.txt / record.bin) in guest heap;
+    //  - per-id stock tables (mike/belt/corset pos, posture, portrait, costume, B&P/first blood) get the TEMPLATE id;
+    //  - GetMatchWrestlerNo returns model no (86..99, the CAW-id range no stock model uses) *100 + attire*10: the
+    //    model pac is copied behind MODS\PAC\EMD2\<code>. Paths that turn a cast code back into an id (code/100) land on
+    //    a CAW id -> GetCharaGameProp maps (pool model no, known ra) to the slot ([rosterx] logs unknown ra sites).
+    // Step 1 = static model numbers (<= 14 slots); step 3 = per-match model-number pool (unlimited slots).
+    struct RosterxSlot
+    {
+        uint16_t id = 0;
+        uint8_t tmpl = 0x2D, modelNo = 0, attires = 0;
+        int16_t entrance = 0; // 0 = template's entrance (slot.txt entrance=3071 = O'Haire walk-down)
+        std::string name, ring, folder;
+        std::vector<std::string> pacs; // attire models (model1.pac, model2.pac ... or the first *.pac)
+        std::vector<uint8_t> record;   // optional record.bin (0x170 stock layout)
+        uint32_t rec = 0;              // guest record
+    };
+    std::vector<RosterxSlot> g_rosterx;
+    constexpr uint16_t kRosterxFirstId = 0xA2;
+    constexpr uint8_t kRosterxModelFirst = 86, kRosterxModelLast = 99;
+    // ra sites that call GetCharaGameProp(cast code / 100): GetEntranceEventNoFromSystem 0x2ad230
+    // A CAW in slot 0 also gives (10000-10000)/100 + 0x56 = 0x56 at these sites: map only when a live cast code is the
+    // slot's model no (8600..8699), never when that code is a CAW one.
+    bool rosterxCastHasModel(const uint8_t *rdram, uint32_t modelNo)
+    {
+        for (uint32_t i = 0; i < 8; ++i)
+        {
+            uint16_t code;
+            std::memcpy(&code, rdram + 0x4921CAu + i * 0x20u, 2);
+            if (code < 10000u && code / 100u == modelNo)
+                return true;
+        }
+        return false;
+    }
+    RosterxSlot *rosterxByModel(uint32_t no);
+    // Code paths turn cast code 8600 into id 86 = CAW id 0x56 (~36 functions do code/100, see plan). Treat that id as the
+    // slot only while a live cast code uses the slot's model no, no CAW code of that index is cast, and that CAW block is
+    // empty (a real CAW is never shadowed). Nov 5: the ra-site list was wrong (ResetRosterUseType / DrawAbility /
+    // GetTotalAbility loop over real CAW ids).
+    RosterxSlot *rosterxFromCodeId(const uint8_t *rdram, uint32_t id)
+    {
+        if (id < kRosterxModelFirst || id > kRosterxModelLast)
+            return nullptr;
+        RosterxSlot *m = rosterxByModel(id);
+        if (!m || !rosterxCastHasModel(rdram, id) || rdram[0x4B6450u + (id - 0x56u) * 0x460u + 0x126u] != 0)
+            return nullptr;
+        for (uint32_t i = 0; i < 8; ++i)
+        {
+            uint16_t code;
+            std::memcpy(&code, rdram + 0x4921CAu + i * 0x20u, 2);
+            if (code != 0x639Cu && code >= 10000u && (code - 10000u) / 100u == id - 0x56u)
+                return nullptr;
+        }
+        return m;
+    }
+    // Template's cast code for a slot's code (same attire/part digits): for per-model tables keyed on cast codes.
+    uint32_t rosterxTemplateCode(const uint8_t *rdram, const RosterxSlot &s, uint32_t code)
+    {
+        int16_t model;
+        std::memcpy(&model, rdram + 0x4C0F54u + s.tmpl * 0x170u + 0x114u, 2);
+        return static_cast<uint32_t>(model) * 100u + code % 100u;
+    }
+    uint32_t rosterxCount() { return static_cast<uint32_t>(g_rosterx.size()); }
+    RosterxSlot *rosterxById(uint32_t id)
+    {
+        if (id < kRosterxFirstId)
+            return nullptr;
+        for (auto &s : g_rosterx)
+            if (s.id == id)
+                return &s;
+        return nullptr;
+    }
+    RosterxSlot *rosterxByModel(uint32_t no)
+    {
+        for (auto &s : g_rosterx)
+            if (s.modelNo == no)
+                return &s;
+        return nullptr;
+    }
+    uint32_t rosterxRecord(uint8_t *rdram, PS2Runtime *runtime, RosterxSlot &s)
+    {
+        if (s.rec != 0u)
+            return s.rec;
+        s.rec = runtime->guestMalloc(0x170u);
+        if (s.rec == 0u)
+            return 0u;
+        uint8_t *const r = rdram + s.rec;
+        std::memcpy(r, rdram + 0x4C0F54u + s.tmpl * 0x170u, 0x170u);
+        if (s.record.size() == 0x170u)
+            std::memcpy(r, s.record.data(), 0x170u);
+        const int16_t model = s.modelNo;
+        std::memcpy(r + 0x114, &model, 2);
+        if (s.entrance > 0)
+            std::memcpy(r + 0xEC, &s.entrance, 2);
+        std::memset(r + 0x116, 0, 0x16);
+        std::strncpy(reinterpret_cast<char *>(r + 0x116), s.name.c_str(), 0x15);
+        std::memset(r + 0x12C, 0, 0x10);
+        std::strncpy(reinterpret_cast<char *>(r + 0x12C), (s.ring.empty() ? s.name : s.ring).c_str(), 0xF);
+        if (r[0x163] == 6) // template hidden -> visible male
+            r[0x163] = 0;
+        std::fprintf(stderr, "[rosterx] %s: id 0x%X record %08x (template 0x%X, model %u, entrance %d)%c", s.name.c_str(),
+                     s.id, s.rec, s.tmpl, s.modelNo, s.entrance, 10);
+        return s.rec;
+    }
+    // Copies models behind "/EMD2/<model*100 + suffix>" for cfileSearchLoose. Suffix = attire*10 + part (part 0 ring,
+    // 3 entrance flag, 4 entrance dress); entrance-only attires sit at higher attire digits (stock Piper 6930 = his
+    // entrance model, asked for at the entrance; a missing key froze it Nov 5). A slot file "<2 digits>.pac" (e.g.
+    // 30.pac) is that exact suffix; every other suffix the game may ask for gets attire 1's model.
+    void rosterxInstallModels(const RosterxSlot &s)
+    {
+        const std::filesystem::path dir = std::filesystem::path(s.pacs[0]).parent_path();
+        std::vector<uint32_t> suffixes;
+        for (uint32_t a = 0; a < 10; ++a)
+            for (uint32_t part : {0u, 1u, 2u, 3u, 4u})
+                suffixes.push_back(a * 10u + part);
+        for (uint32_t suffix : suffixes)
+            {
+                std::error_code ec0;
+                char own[8];
+                std::snprintf(own, sizeof(own), "%02u.pac", suffix);
+                std::string src;
+                if (std::filesystem::exists(dir / own, ec0))
+                    src = (dir / own).string();
+                else if (suffix % 10u == 1u || suffix % 10u == 2u)
+                    continue; // backstage part / entrance dress (Nov 6: XXA2 raw SvR gear, e.g. Bret 7702): only when shipped: only when the slot ships one (the game falls back to the ring model)
+                else if (suffix / 10u < s.pacs.size())
+                    src = s.pacs[suffix / 10u];
+                else
+                    src = s.pacs[0];
+                const std::string key = std::to_string(s.modelNo * 100u + suffix);
+                const std::filesystem::path dst = std::filesystem::path("MODS") / "PAC" / "EMD2" / key;
+                std::error_code ec;
+                std::filesystem::create_directories(dst.parent_path(), ec);
+                if (!std::filesystem::exists(dst, ec) ||
+                    std::filesystem::file_size(dst, ec) != std::filesystem::file_size(src, ec))
+                    std::filesystem::copy_file(src, dst, std::filesystem::copy_options::overwrite_existing, ec);
+                const uint32_t size = static_cast<uint32_t>(std::filesystem::file_size(dst, ec));
+                if (ec || size == 0u)
+                {
+                    std::fprintf(stderr, "[rosterx] %s: model copy to %s failed%c", s.name.c_str(), dst.string().c_str(), 10);
+                    continue;
+                }
+                auto &e = g_loosePac["/EMD2/" + key];
+                e.first = size;
+                if (e.second == 0)
+                    e.second = -1;
+                // Nov 7: a shipped "<a>4.pac" = full entrance model (SvR06 style, e.g. Hogan 80s retail 7204 with
+                // the bandana) -> GetEntranceCastNo serves XXa4 at the entrance. Skipped when the slot also ships
+                // "<a>2.pac": SvR04 XX04 bodies need their XX02 jacket (Bret 7704/7702), and slot dress casts are
+                // not armed yet (IsDress 0x41B5C0 is per stock id) -> keep the ring body there.
+                if (suffix % 10u == 4u && std::filesystem::exists(dir / own, ec0))
+                {
+                    char dress[8];
+                    std::snprintf(dress, sizeof(dress), "%02u.pac", suffix - 2u);
+                    if (std::filesystem::exists(dir / dress, ec0))
+                        std::fprintf(stderr, "[rosterx] %s: %s needs dress %s, entrance attire off%c", s.name.c_str(), own,
+                                     dress, 10);
+                    else
+                    {
+                        g_cutEntranceCodes.insert(static_cast<uint16_t>(s.modelNo * 100u + suffix));
+                        std::fprintf(stderr, "[rosterx] %s: entrance attire %u (%s)%c", s.name.c_str(),
+                                     unsigned(s.modelNo * 100u + suffix), own, 10);
+                    }
+                }
+            }
+    }
+    // MODS\ROSTER\<folder>\slot.txt: id=<hex, >= A2> template=<hex stock id> name=<select/record name>
+    // ring=<ring name> entrance=<event no>; models model1.pac..model5.pac (else the first *.pac = attire 1);
+    // record.bin optional (0x170, stock layout). Folders without id= get the next free id after the highest given one.
+    int rosterxScan()
+    {
+        std::error_code ec;
+        std::vector<std::filesystem::path> dirs;
+        for (const auto &d : std::filesystem::directory_iterator("MODS/ROSTER", ec))
+            if (d.is_directory(ec))
+                dirs.push_back(d.path());
+        std::sort(dirs.begin(), dirs.end());
+        uint16_t nextId = kRosterxFirstId;
+        std::set<uint16_t> used;
+        for (const auto &dir : dirs)
+        {
+            RosterxSlot s;
+            s.folder = dir.filename().string();
+            s.name = s.folder;
+            std::ifstream cfg(dir / "slot.txt");
+            if (!cfg)
+                continue; // MODS\ROSTER folders without slot.txt = old carrier mods (ignored)
+            for (std::string line; std::getline(cfg, line);)
+            {
+                while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
+                    line.pop_back();
+                unsigned v;
+                if (std::sscanf(line.c_str(), "id=%x", &v) == 1 && v >= kRosterxFirstId && v < 0x8000u)
+                    s.id = static_cast<uint16_t>(v);
+                else if (std::sscanf(line.c_str(), "template=%x", &v) == 1 && v < 0x56u)
+                    s.tmpl = static_cast<uint8_t>(v);
+                else if (std::sscanf(line.c_str(), "entrance=%u", &v) == 1)
+                    s.entrance = static_cast<int16_t>(v);
+                else if (line.rfind("name=", 0) == 0)
+                    s.name = line.substr(5);
+                else if (line.rfind("ring=", 0) == 0)
+                    s.ring = line.substr(5);
+            }
+            for (int a = 1; a <= 5; ++a)
+                if (auto p = dir / ("model" + std::to_string(a) + ".pac"); std::filesystem::exists(p, ec))
+                    s.pacs.push_back(p.string());
+                else
+                    break;
+            if (s.pacs.empty())
+                for (const auto &f : std::filesystem::directory_iterator(dir, ec))
+                {
+                    std::string ext = f.path().extension().string();
+                    for (char &c : ext) c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+                    if (ext == ".pac")
+                    {
+                        s.pacs.push_back(f.path().string());
+                        break;
+                    }
+                }
+            if (s.pacs.empty())
+            {
+                std::fprintf(stderr, "[rosterx] %s: no model pac, skipped%c", s.folder.c_str(), 10);
+                continue;
+            }
+            if (std::ifstream rb(dir / "record.bin", std::ios::binary); rb)
+            {
+                s.record.resize(0x170);
+                if (!rb.read(reinterpret_cast<char *>(s.record.data()), 0x170))
+                    s.record.clear();
+            }
+            s.attires = static_cast<uint8_t>(std::min<size_t>(s.pacs.size(), 5));
+            if (s.id != 0 && used.count(s.id))
+            {
+                std::fprintf(stderr, "[rosterx] %s: id 0x%X already used, reassigned%c", s.folder.c_str(), s.id, 10);
+                s.id = 0;
+            }
+            if (s.id != 0)
+                used.insert(s.id);
+            g_rosterx.push_back(std::move(s));
+        }
+        for (auto &s : g_rosterx)
+            if (s.id == 0)
+            {
+                while (used.count(nextId))
+                    ++nextId;
+                s.id = nextId;
+                used.insert(nextId);
+            }
+        // Step 1: static model numbers 86..99 (14 slots). Step 3 replaces this with a per-match pool.
+        uint8_t model = kRosterxModelFirst;
+        for (auto it = g_rosterx.begin(); it != g_rosterx.end();)
+        {
+            if (model > kRosterxModelLast)
+            {
+                std::fprintf(stderr, "[rosterx] %s: no free model number (step 1 limit 14), skipped%c", it->name.c_str(), 10);
+                it = g_rosterx.erase(it);
+                continue;
+            }
+            it->modelNo = model++;
+            rosterxInstallModels(*it);
+            std::fprintf(stderr, "[rosterx] slot %s id 0x%X template 0x%X model %u (%u attires)%c", it->name.c_str(), it->id,
+                         it->tmpl, it->modelNo, it->attires, 10);
+            ++it;
+        }
+        return static_cast<int>(g_rosterx.size());
+    }
+    // Select list (expandReaderList): one 0x80 CHSL record per slot, cloned from the template's record.
+    uint32_t rosterxAppendSelect(uint8_t *rdram, uint8_t *out, uint32_t n)
+    {
+        (void)rdram;
+        for (const auto &s : g_rosterx)
+        {
+            const uint8_t *tmpl = nullptr;
+            for (uint32_t i = 0; i < kStockSelect && !tmpl; ++i)
+                if (rdS16(out + i * kSelectRec + 2) == s.tmpl)
+                    tmpl = out + i * kSelectRec;
+            if (!tmpl)
+            {
+                std::fprintf(stderr, "[rosterx] %s: template 0x%X not in the select list%c", s.name.c_str(), s.tmpl, 10);
+                continue;
+            }
+            uint8_t *const rec = out + n * kSelectRec;
+            std::memcpy(rec, tmpl, kSelectRec);
+            const int16_t id = static_cast<int16_t>(s.id);
+            std::memcpy(rec + 2, &id, 2);
+            std::memset(rec + 4, 0, 0x20);
+            std::strncpy(reinterpret_cast<char *>(rec + 4), s.name.c_str(), 0x1F);
+            // +0x24..0x67 finisher display: kept from the template (Nov 5: slots now play the template's moveset).
+            rec[0x72] = 0;                    // never a special referee
+            for (uint32_t set : {0x68u, 0x74u})
+            {
+                const int16_t first = rdS16(tmpl + set);
+                for (uint32_t a = 0; a < 5; ++a)
+                {
+                    int16_t v = -1;
+                    if (a < s.attires && first != -1)
+                        v = rdS16(tmpl + set + a * 2) != -1 ? rdS16(tmpl + set + a * 2) : first;
+                    std::memcpy(rec + set + a * 2, &v, 2);
+                }
+            }
+            ++n;
+        }
+        return n;
+    }
+    PS2Runtime::RecompiledFunction g_rxOrigGetCharaGameProp = nullptr, g_rxOrigName = nullptr, g_rxOrigRing = nullptr,
+                                   g_rxOrigSdEntry = nullptr, g_rxOrigExist = nullptr, g_rxOrigSeason = nullptr,
+                                   g_rxOrigMatchNo = nullptr;
+    uint32_t rxArg(R5900Context *ctx, int r) { return static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[r])); }
+    void rosterxGetCharaGameProp(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t id = rxArg(ctx, 4), ra = rxArg(ctx, 31);
+        RosterxSlot *s = rosterxById(id);
+        if (!s && (s = rosterxFromCodeId(rdram, id)) != nullptr)
+        {
+            static std::set<uint32_t> seen; // measurement: code/100 sites that reached the slot
+            if (seen.size() < 64 && seen.insert(ra).second)
+                std::fprintf(stderr, "[rosterx] GetCharaGameProp(0x%X) ra %08x -> %s%c", id, ra, s->name.c_str(), 10);
+        }
+        if (s)
+        {
+            if (const uint32_t rec = rosterxRecord(rdram, runtime, *s))
+            {
+                SET_GPR_U32(ctx, 2, rec);
+                ctx->pc = ra;
+                return;
+            }
+        }
+        g_rxOrigGetCharaGameProp(rdram, ctx, runtime);
+    }
+    template <uint32_t Off>
+    void rosterxNameAt(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, PS2Runtime::RecompiledFunction orig)
+    {
+        RosterxSlot *s = rosterxById(rxArg(ctx, 4));
+        if (!s)
+            s = rosterxFromCodeId(rdram, rxArg(ctx, 4));
+        if (s)
+            if (const uint32_t rec = rosterxRecord(rdram, runtime, *s))
+            {
+                SET_GPR_U32(ctx, 2, rec + Off);
+                ctx->pc = rxArg(ctx, 31);
+                return;
+            }
+        orig(rdram, ctx, runtime);
+    }
+    void rosterxName(uint8_t *rdram, R5900Context *ctx, PS2Runtime *rt) { rosterxNameAt<0x116>(rdram, ctx, rt, g_rxOrigName); }
+    void rosterxRing(uint8_t *rdram, R5900Context *ctx, PS2Runtime *rt) { rosterxNameAt<0x12C>(rdram, ctx, rt, g_rxOrigRing); }
+    void rosterxSdEntry(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (RosterxSlot *s = rosterxById(rxArg(ctx, 4)))
+            if (const uint32_t rec = rosterxRecord(rdram, runtime, *s))
+            {
+                SET_GPR_U32(ctx, 2, static_cast<uint32_t>(static_cast<int32_t>(static_cast<int8_t>(rdram[rec + 0x163])) ^ 6));
+                ctx->pc = rxArg(ctx, 31);
+                return;
+            }
+        g_rxOrigSdEntry(rdram, ctx, runtime);
+    }
+    template <uint32_t Value>
+    void rosterxConst(R5900Context *ctx, uint8_t *rdram, PS2Runtime *runtime, PS2Runtime::RecompiledFunction orig)
+    {
+        if (rosterxById(rxArg(ctx, 4)))
+        {
+            SET_GPR_U32(ctx, 2, Value);
+            ctx->pc = rxArg(ctx, 31);
+            return;
+        }
+        orig(rdram, ctx, runtime);
+    }
+    void rosterxExist(uint8_t *rdram, R5900Context *ctx, PS2Runtime *rt) { rosterxConst<1>(ctx, rdram, rt, g_rxOrigExist); }
+    // Season: new slots stay out until Season data exists for them (plan step 6).
+    void rosterxSeason(uint8_t *rdram, R5900Context *ctx, PS2Runtime *rt) { rosterxConst<0>(ctx, rdram, rt, g_rxOrigSeason); }
+    // GetMatchWrestlerNo 0x12cce0 (a0 id, a1 attire, a2 backstage, a3 entrance, t0 special, t1 CAW): stock formula on the
+    // slot's model no (special -> 90 instead of attire*10, entrance +3, backstage +1 when that loose key exists).
+    void rosterxMatchNo(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        RosterxSlot *s = rosterxById(rxArg(ctx, 4));
+        if (!s)
+            return g_rxOrigMatchNo(rdram, ctx, runtime);
+        const uint32_t attire = rxArg(ctx, 5) < s->attires ? rxArg(ctx, 5) : 0u;
+        uint32_t code = s->modelNo * 100u + (rxArg(ctx, 8) != 0u ? 90u : attire * 10u);
+        if (rxArg(ctx, 7) != 0u)
+            code += 3u;
+        else if (rxArg(ctx, 6) != 0u && g_loosePac.count("/EMD2/" + std::to_string(code + 1u)))
+            code += 1u;
+        SET_GPR_U32(ctx, 2, code & 0xFFFFu);
+        ctx->pc = rxArg(ctx, 31);
+    }
+    // Per-id stock tables: call the original with the template id in the id register.
+    struct RosterxSub
+    {
+        uint32_t addr;
+        int reg;
+        const char *what;
+        bool code; // register holds a cast code (model*100 + attire/part), not a roster id
+        PS2Runtime::RecompiledFunction orig;
+    };
+    RosterxSub g_rxSubs[] = {
+        // Nov 5: corset/mike/belt/IsDress take CAST CODES (andi 0xFFFF; -10000 test) - Modern Piper was oversized.
+        {0x2abb50u, 4, "GetCorsetScale", true, nullptr},       {0x2ac030u, 4, "GetMikePos", true, nullptr},
+        {0x2ac230u, 4, "GetSBeltPos", true, nullptr},          {0x2ab710u, 4, "GetBeltScale", true, nullptr},
+        {0x2abd70u, 4, "GetHeadGearScale", true, nullptr},     {0x2af300u, 5, "IsDress", true, nullptr},
+        {0x370420u, 4, "GetMovesPosture", false, nullptr},     {0x24ce00u, 5, "GetSuperStarFace64", false, nullptr},
+        {0x26ff20u, 5, "GetUsedCostume", false, nullptr},      {0x24ce70u, 4, "WresParamChangeOK", false, nullptr},
+        {0x12d2a0u, 4, "IsBrapanRoster", false, nullptr},      {0x12d300u, 4, "IsFirstBloodRoster", false, nullptr},
+        // Nov 5: CSuperStarReader::RegistSuperStar(this, slot, a2 id): id >= 0x56 -> CAW silhouette 0x56-0x58 (the green
+        // portrait). Template id -> template's face (own SPF faces = plan step 7).
+        {0x24c220u, 6, "RegistSuperStar", false, nullptr},
+    };
+    template <size_t I>
+    void rosterxSub(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const RosterxSub &h = g_rxSubs[I];
+        const uint32_t v = rxArg(ctx, h.reg);
+        if (h.code)
+        {
+            const uint32_t c = v & 0xFFFFu;
+            if (c < 10000u)
+                if (const RosterxSlot *s = rosterxFromCodeId(rdram, c / 100u))
+                {
+                    // Nov 6 ROSTERX DRESS: IsDress (0x2af300, id >= 0x56 -> 0) = 1 when the slot ships "<attire>2.pac"
+                    // (raw XXA2 entrance dress, e.g. SvR Bret jacket 7702; served by rosterxInstallModels).
+                    if (h.addr == 0x2af300u && !s->pacs.empty())
+                    {
+                        char own[8];
+                        std::snprintf(own, sizeof(own), "%u2.pac", (c % 100u) / 10u);
+                        std::error_code ec;
+                        if (std::filesystem::exists(std::filesystem::path(s->pacs[0]).parent_path() / own, ec))
+                        {
+                            SET_GPR_U32(ctx, 2, 1u);
+                            ctx->pc = rxArg(ctx, 31);
+                            return;
+                        }
+                    }
+                    SET_GPR_U32(ctx, h.reg, rosterxTemplateCode(rdram, *s, c));
+                }
+        }
+        else if (const RosterxSlot *s = rosterxById(v))
+            SET_GPR_U32(ctx, h.reg, s->tmpl);
+        h.orig(rdram, ctx, runtime);
+    }
+    template <size_t... I>
+    void rosterxInstallSubs(PS2Runtime &runtime, std::index_sequence<I...>)
+    {
+        ((g_rxSubs[I].orig = runtime.lookupFunction(g_rxSubs[I].addr),
+          g_rxSubs[I].orig && runtime.replaceFunction(g_rxSubs[I].addr, rosterxSub<I>)),
+         ...);
+    }
+    // CCharProp ctor 0x1cd1d0 (a0 prop, a1 CChar): copies the roster record (now the slot's) to prop+0x20, then the
+    // media-defaults wrapper applies MEDIA_DEFAULTS by code/100 (skips codes >= 8600). Slots: apply the template's row.
+    // MOVESET (Nov 5, code read): GetWazaTbl 0x1e44b0 = CChar+0x1B4 chunk 'CPRO' (0x4350524F = this CCharProp), table
+    // at prop+0x30 = record+0x10 (u16 per move). The ctor copies a2 (0x170) to prop+0x20. CreateGameChar 0x1fb150 fills
+    // a2 (its sp+0xD0) from 0x4C0F54 + (code/100)*0x170 DIRECTLY (not GetCharaGameProp): code 8600 -> record 86 = not
+    // the template (CAM moveset preset area). Same buffer goes to CComCommon::CreateACom 0x2313a0 (AI). Fix: point a2 /
+    // a1 at the slot's record (template org record + slot fields) -> template moves, stats, AI.
+    RosterxSlot *rosterxFromChara(const uint8_t *rdram, uint32_t chara)
+    {
+        if (!chara || chara > 0x2000000u - 0x34u)
+            return nullptr;
+        uint32_t code;
+        std::memcpy(&code, rdram + chara + 0x30u, 4);
+        return code < 10000u ? rosterxFromCodeId(rdram, code / 100u) : nullptr;
+    }
+    PS2Runtime::RecompiledFunction g_rxOrigPropCtor = nullptr, g_rxOrigCreateACom = nullptr, g_rxOrigWinnerProp = nullptr,
+                                   g_rxOrigSuccessAct = nullptr;
+    void rosterxCreateACom(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (RosterxSlot *s = rosterxFromChara(rdram, rxArg(ctx, 4) & 0x1FFFFFFu))
+            if (const uint32_t rec = rosterxRecord(rdram, runtime, *s))
+                SET_GPR_U32(ctx, 5, rec);
+        g_rxOrigCreateACom(rdram, ctx, runtime);
+    }
+    // tagWinner::GetProp 0x39b480 (a0 tagWinner, a1 slot): code = *(*(a0+a1*4)+0xA); code/100 = 86 fails slti 0x56 ->
+    // CAW block index 86-100 = -14 (garbage record on the results/doramock path). Slot -> its record.
+    void rosterxWinnerProp(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        uint32_t sel;
+        std::memcpy(&sel, rdram + ((rxArg(ctx, 4) + rxArg(ctx, 5) * 4u) & 0x1FFFFFFu), 4);
+        sel &= 0x1FFFFFFu;
+        if (sel && sel < 0x2000000u - 0xCu)
+        {
+            uint16_t code;
+            std::memcpy(&code, rdram + sel + 0xAu, 2);
+            if (code < 10000u)
+                if (RosterxSlot *s = rosterxFromCodeId(rdram, code / 100u))
+                    if (const uint32_t rec = rosterxRecord(rdram, runtime, *s))
+                    {
+                        SET_GPR_U32(ctx, 2, rec);
+                        ctx->pc = rxArg(ctx, 31);
+                        return;
+                    }
+        }
+        g_rxOrigWinnerProp(rdram, ctx, runtime);
+    }
+    // IsSuccessAct 0x39d1a0 (a0 tagWinner): reads both codes (+0xA of *(a0), *(a0+4)) ONLY in its first block, then uses
+    // registers -> swap slot codes to the template's for the call, restore after (safe even if it pauses later).
+    void rosterxSuccessAct(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        uint32_t at[2] = {};
+        uint16_t old[2] = {};
+        for (uint32_t i = 0; i < 2; ++i)
+        {
+            uint32_t sel;
+            std::memcpy(&sel, rdram + ((rxArg(ctx, 4) + i * 4u) & 0x1FFFFFFu), 4);
+            sel &= 0x1FFFFFFu;
+            if (!sel || sel >= 0x2000000u - 0xCu)
+                continue;
+            std::memcpy(&old[i], rdram + sel + 0xAu, 2);
+            if (old[i] < 10000u)
+                if (const RosterxSlot *s = rosterxFromCodeId(rdram, old[i] / 100u))
+                {
+                    const uint16_t t = static_cast<uint16_t>(rosterxTemplateCode(rdram, *s, old[i]));
+                    std::memcpy(rdram + sel + 0xAu, &t, 2);
+                    at[i] = sel;
+                }
+        }
+        g_rxOrigSuccessAct(rdram, ctx, runtime);
+        for (uint32_t i = 0; i < 2; ++i)
+            if (at[i])
+                std::memcpy(rdram + at[i] + 0xAu, &old[i], 2);
+    }
+    void rosterxPropCtor(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = rxArg(ctx, 4) & 0x1FFFFFFu, chara = rxArg(ctx, 5) & 0x1FFFFFFu;
+        if (RosterxSlot *s = rosterxFromChara(rdram, chara))
+            if (const uint32_t rec = rosterxRecord(rdram, runtime, *s))
+            {
+                SET_GPR_U32(ctx, 6, rec);
+                static std::set<uint16_t> told;
+                if (told.insert(s->id).second)
+                    std::fprintf(stderr, "[rosterx] %s: CCharProp from slot record (template 0x%X moveset)%c", s->name.c_str(),
+                                 s->tmpl, 10);
+            }
+        g_rxOrigPropCtor(rdram, ctx, runtime);
+        if (!self || self > 0x2000000u - 0x190u || !chara || chara > 0x2000000u - 0x34u)
+            return;
+        uint32_t code;
+        std::memcpy(&code, rdram + chara + 0x30u, 4);
+        if (code < 10000u)
+            if (const RosterxSlot *s = rosterxFromCodeId(rdram, code / 100u))
+            {
+                const bool ok = applyMediaDefaults(rdram, self + 0x20u, rosterxTemplateCode(rdram, *s, code));
+                std::fprintf(stderr, "[rosterx] %s media: template row %s, music %u video %u%c", s->name.c_str(),
+                             ok ? "applied" : "none", rdram[self + 0x20u + 0x15fu], rdram[self + 0x20u + 0x15eu], 10);
+            }
+    }
+    // Installed LAST in applyHctp so it wraps the cut-roster / Hogan / media hooks on the same functions.
+    void installRosterExpansion(PS2Runtime &runtime)
+    {
+        if (const char *e = std::getenv("HCTP_ROSTER_EXPAND"); !e || e[0] != '1')
+            return;
+        if (rosterxScan() == 0)
+        {
+            std::cerr << "[rosterx] roster expansion on, no MODS\\ROSTER\\*\\slot.txt slots" << std::endl;
+            return;
+        }
+        auto hook = [&runtime](uint32_t addr, PS2Runtime::RecompiledFunction &orig, PS2Runtime::RecompiledFunction fn)
+        { return (orig = runtime.lookupFunction(addr)) != nullptr && runtime.replaceFunction(addr, fn); };
+        bool ok = hook(0x12cec0u, g_rxOrigGetCharaGameProp, rosterxGetCharaGameProp);
+        ok = hook(0x12cde0u, g_rxOrigName, rosterxName) && ok;
+        ok = hook(0x12ce50u, g_rxOrigRing, rosterxRing) && ok;
+        ok = hook(0x12cfd0u, g_rxOrigSdEntry, rosterxSdEntry) && ok;
+        ok = hook(0x12d3c0u, g_rxOrigExist, rosterxExist) && ok;
+        ok = hook(0x12d050u, g_rxOrigSeason, rosterxSeason) && ok;
+        ok = hook(0x12cce0u, g_rxOrigMatchNo, rosterxMatchNo) && ok;
+        rosterxInstallSubs(runtime, std::make_index_sequence<std::size(g_rxSubs)>{});
+        ok = hook(0x1cd1d0u, g_rxOrigPropCtor, rosterxPropCtor) && ok;
+        ok = hook(0x2313a0u, g_rxOrigCreateACom, rosterxCreateACom) && ok;
+        ok = hook(0x39b480u, g_rxOrigWinnerProp, rosterxWinnerProp) && ok;
+        ok = hook(0x39d1a0u, g_rxOrigSuccessAct, rosterxSuccessAct) && ok;
+        std::cerr << "[rosterx] roster expansion: " << g_rosterx.size() << " new slots" << (ok ? "" : " (a hook FAILED)")
+                  << std::endl;
+        installSelectList(runtime); // no-op when the cut-roster restore installed it
+        // Nov 7: slot entrance attires (<a>4.pac) ride the cut-roster GetEntranceCastNo hook (the CAW branch of
+        // 0x2af480 returns the ring code for model nos >= 0x56); install it here when no cut wrestler did.
+        if (!g_cutEntranceCodes.empty() && g_origGetEntranceCastNo == nullptr &&
+            hook(0x2af480u, g_origGetEntranceCastNo, getEntranceCastNoCutRoster))
+            std::cerr << "[rosterx] entrance attire hook on (" << g_cutEntranceCodes.size() << " codes)" << std::endl;
+    }
+    // ===================== end ROSTER EXPANSION =====================
+    uint32_t rosterxCodeIdImpl(const uint8_t *rdram, uint32_t code)
+    {
+        if (code >= 10000u)
+            return (code - 10000u) / 100u + 0x56u;
+        if (const RosterxSlot *s = rosterxFromCodeId(rdram, code / 100u))
+            return s->tmpl;
+        return code / 100u;
+    }
+
+    // ===================== ANY-BONE PHASE 1 (HCTP_ANYBONE=0 off; Nov 6, spec notes\ANY_BONE_ANIMATION_RESEARCH_20261106.md s9) =====
+    // CSkinModel::FastUpdate 0x151160 (a0 = model): +0xEC bone count, +0xF0 -> bone records (80 B: name @0, parent @0x30),
+    // +0xCC -> LOCAL matrices (64 B, 4x4 floats) written by motion/face/IK before FastUpdate (verified: lw 0xCC/0xEC/0xF0($s1)).
+    // Host prelude only, no guest calls: SvR-only face bones get their bind local rotation times the driver bone's rotation
+    // change from bind (slerp-scaled), recomputed from cached binds every frame. Stock/SYM models have none of these names.
+    struct AnyBoneRule
+    {
+        uint16_t bone, driver;
+        float scale;
+        float bind[16], driverBind[16];
+    };
+    // Nov 6 FACE FIX: HCTP face motion writes u/d_kuchi, l/r_kuchi, l/r_mabuta, l/r_eye, l/r_mayu as an atama-space
+    // rotation from HCTP's bind (identity; d_kuchi Y 0.1396). SvR binds those bones at (-90,90,0) (kuchi under d_kuchi),
+    // so the raw write threw the lips/eyes off. Retarget: rel_atama = svrBindRel * (hctpBind^T * motion), local =
+    // rel_atama * parentRel^T, SvR bind translation kept. lastOut/lastIn keep it idempotent when motion skips a frame.
+    struct AnyBoneFace
+    {
+        uint16_t bone;
+        int16_t parentFace; // index into faces[] or -1 (= parent is atama)
+        float bindRel[9], hctpBind[9], localBind[9], pos[4];
+        float lastIn[16], lastOut[16];
+        bool have = false;
+        float rel[9];
+    };
+    struct AnyBoneModel
+    {
+        uint32_t bones = 0, count = 0;
+        std::vector<AnyBoneRule> rules;
+        std::vector<AnyBoneFace> faces;
+    };
+    void abEuler(float rx, float ry, float rz, float *m) // row-vector X*Y*Z (tools\retarget_svr_molly.py rot), 3x3
+    {
+        const float cx = std::cos(rx), sx = std::sin(rx), cy = std::cos(ry), sy = std::sin(ry), cz = std::cos(rz), sz = std::sin(rz);
+        const float X[9] = {1, 0, 0, 0, cx, sx, 0, -sx, cx}, Y[9] = {cy, 0, -sy, 0, 1, 0, sy, 0, cy}, Z[9] = {cz, sz, 0, -sz, cz, 0, 0, 0, 1};
+        float t[9];
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                t[i * 3 + j] = X[i * 3] * Y[j] + X[i * 3 + 1] * Y[3 + j] + X[i * 3 + 2] * Y[6 + j];
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                m[i * 3 + j] = t[i * 3] * Z[j] + t[i * 3 + 1] * Z[3 + j] + t[i * 3 + 2] * Z[6 + j];
+    }
+    void abMul3(const float *a, const float *b, float *o, bool bT = false) // o = a * b (or a * b^T)
+    {
+        float t[9];
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                t[i * 3 + j] = bT ? a[i * 3] * b[j * 3] + a[i * 3 + 1] * b[j * 3 + 1] + a[i * 3 + 2] * b[j * 3 + 2]
+                                  : a[i * 3] * b[j] + a[i * 3 + 1] * b[3 + j] + a[i * 3 + 2] * b[6 + j];
+        std::memcpy(o, t, sizeof(t));
+    }
+    std::map<uint32_t, AnyBoneModel> g_anyBone;
+    PS2Runtime::RecompiledFunction g_origFastUpdate = nullptr;
+    void abQuat(const float *m, float q[4]) // 3x3 rotation (rows 0..2 of a 4x4) -> quaternion (x, y, z, w)
+    {
+        const float t = m[0] + m[5] + m[10];
+        if (t > 0.f)
+        {
+            const float s = std::sqrt(t + 1.f) * 2.f;
+            q[3] = 0.25f * s, q[0] = (m[6] - m[9]) / s, q[1] = (m[8] - m[2]) / s, q[2] = (m[1] - m[4]) / s;
+        }
+        else if (m[0] > m[5] && m[0] > m[10])
+        {
+            const float s = std::sqrt(1.f + m[0] - m[5] - m[10]) * 2.f;
+            q[3] = (m[6] - m[9]) / s, q[0] = 0.25f * s, q[1] = (m[4] + m[1]) / s, q[2] = (m[8] + m[2]) / s;
+        }
+        else if (m[5] > m[10])
+        {
+            const float s = std::sqrt(1.f + m[5] - m[0] - m[10]) * 2.f;
+            q[3] = (m[8] - m[2]) / s, q[0] = (m[4] + m[1]) / s, q[1] = 0.25f * s, q[2] = (m[9] + m[6]) / s;
+        }
+        else
+        {
+            const float s = std::sqrt(1.f + m[10] - m[0] - m[5]) * 2.f;
+            q[3] = (m[1] - m[4]) / s, q[0] = (m[8] + m[2]) / s, q[1] = (m[9] + m[6]) / s, q[2] = 0.25f * s;
+        }
+    }
+    void abQuatMat(const float q[4], float *m) // inverse of abQuat (writes the 3x3 part)
+    {
+        const float x = q[0], y = q[1], z = q[2], w = q[3];
+        m[0] = 1 - 2 * (y * y + z * z), m[1] = 2 * (x * y + z * w), m[2] = 2 * (x * z - y * w);
+        m[4] = 2 * (x * y - z * w), m[5] = 1 - 2 * (x * x + z * z), m[6] = 2 * (y * z + x * w);
+        m[8] = 2 * (x * z + y * w), m[9] = 2 * (y * z - x * w), m[10] = 1 - 2 * (x * x + y * y);
+    }
+    bool abSided(const std::string &s, const char *rest) // "l_<rest>" / "r_<rest>" prefix match
+    {
+        return s.size() > 2 && (s[0] == 'l' || s[0] == 'r') && s[1] == '_' && s.compare(2, std::strlen(rest), rest) == 0;
+    }
+    bool abForeignName(const std::string &s)
+    {
+        for (const char *p : {"sita_", "u_kuchi_0", "d_kuchi_0", "hana", "kami_b", "hira_", "momo_x", "kubi_x", "kote_x2"})
+            if (s.rfind(p, 0) == 0 || abSided(s, p))
+                return true;
+        return abSided(s, "u_kuchi") || abSided(s, "mayu_0") || s == "l_hoho" || s == "r_hoho" || s == "l_meziri" ||
+               s == "r_meziri";
+    }
+    bool abRule(const std::string &s, std::string &driver, float &scale) // spec s9 step 3 follow rules
+    {
+        scale = 1.f;
+        if (s.size() == 7 && s.rfind("sita_0", 0) == 0 && s[6] >= '0' && s[6] <= '5')
+            return driver = "d_kuchi", scale = 1.f - 0.1f * float(s[6] - '0'), true;
+        if (s.rfind("d_kuchi_0", 0) == 0)
+            return driver = "d_kuchi", true;
+        if (s.rfind("u_kuchi_0", 0) == 0 || s == "l_u_kuchi" || s == "r_u_kuchi")
+            return driver = "u_kuchi", true;
+        if (abSided(s, "mayu_0"))
+            return driver = s.substr(0, 2) + "mayu", true;
+        if (s == "l_hoho" || s == "r_hoho")
+            return driver = s.substr(0, 2) + "kuchi", scale = 0.5f, true;
+        if (s == "l_meziri" || s == "r_meziri")
+            return driver = s.substr(0, 2) + "mabuta", scale = 0.5f, true;
+        return false; // momo_x / kubi_x / kote_x2 / hana / kami / hira: follow their parent unchanged
+    }
+    void fastUpdateAnyBone(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t model = rxArg(ctx, 4) & 0x1FFFFFFu;
+        if (model && model < 0x2000000u - 0x100u)
+        {
+            const uint32_t count = rdU32(rdram, model + 0xECu), bones = rdU32(rdram, model + 0xF0u) & 0x1FFFFFFu,
+                           locals = rdU32(rdram, model + 0xCCu) & 0x1FFFFFFu;
+            if (count > 0 && count <= 256 && bones && locals && bones + count * 80u < 0x2000000u &&
+                locals + count * 64u < 0x2000000u)
+            {
+                AnyBoneModel &m = g_anyBone[model];
+                if (m.bones != bones || m.count != count)
+                {
+                    m = AnyBoneModel{bones, count, {}};
+                    auto name = [&](uint32_t i) {
+                        char n[17] = {};
+                        std::memcpy(n, rdram + bones + i * 80u, 16);
+                        return std::string(n);
+                    };
+                    int foreign = 0;
+                    for (uint32_t i = 0; i < count; ++i)
+                    {
+                        const std::string n = name(i);
+                        std::string drv;
+                        float sc;
+                        if (!abForeignName(n))
+                            continue;
+                        ++foreign;
+                        if (!abRule(n, drv, sc))
+                            continue;
+                        for (uint32_t d = 0; d < count; ++d)
+                            if (name(d) == drv)
+                            {
+                                // Nov 6: a child of its driver (d_kuchi_0N, sita_*, u_kuchi_00) already follows it by FK;
+                                // a rule would apply the jaw motion twice (Jordan: lips deform weirdly on SvR faces).
+                                bool ancestor = false;
+                                for (int32_t p = static_cast<int32_t>(rdU32(rdram, bones + i * 80u + 0x30u)), g = 0;
+                                     p >= 0 && p < static_cast<int32_t>(count) && g < 64; ++g,
+                                             p = static_cast<int32_t>(rdU32(rdram, bones + uint32_t(p) * 80u + 0x30u)))
+                                    if (uint32_t(p) == d)
+                                        ancestor = true;
+                                if (ancestor)
+                                    break;
+                                AnyBoneRule r{static_cast<uint16_t>(i), static_cast<uint16_t>(d), sc, {}, {}};
+                                std::memcpy(r.bind, rdram + locals + i * 64u, 64);
+                                std::memcpy(r.driverBind, rdram + locals + d * 64u, 64);
+                                m.rules.push_back(r);
+                                break;
+                            }
+                    }
+                    // FACE FIX set (foreign models only): HCTP face names whose bind rotation is not HCTP's.
+                    int atama = -1;
+                    for (uint32_t i = 0; i < count && foreign; ++i)
+                        if (name(i) == "atama")
+                            atama = static_cast<int>(i);
+                    if (foreign && atama >= 0 && !(std::getenv("HCTP_ANYBONE_FACE") && std::getenv("HCTP_ANYBONE_FACE")[0] == '0'))
+                        for (uint32_t i = 0; i < count; ++i)
+                        {
+                            const std::string n = name(i);
+                            static const char *kFace[] = {"u_kuchi", "d_kuchi", "l_kuchi", "r_kuchi", "l_mabuta", "r_mabuta",
+                                                          "l_eye", "r_eye", "l_mayu", "r_mayu"};
+                            if (std::find_if(std::begin(kFace), std::end(kFace), [&](const char *f) { return n == f; }) == std::end(kFace))
+                                continue;
+                            const int32_t par = static_cast<int32_t>(rdU32(rdram, bones + i * 80u + 0x30u));
+                            AnyBoneFace f{};
+                            f.bone = static_cast<uint16_t>(i);
+                            f.parentFace = -1;
+                            if (par != atama)
+                            {
+                                for (size_t k = 0; k < m.faces.size(); ++k)
+                                    if (m.faces[k].bone == uint32_t(par))
+                                        f.parentFace = static_cast<int16_t>(k);
+                                if (f.parentFace < 0)
+                                    continue; // parent neither atama nor a fixed face bone: leave as is
+                            }
+                            float r3[3];
+                            std::memcpy(r3, rdram + bones + i * 80u + 0x20u, 12);
+                            std::memcpy(f.pos, rdram + bones + i * 80u + 0x10u, 12);
+                            f.pos[3] = 1.f;
+                            // Nov 7 JAW FIX: SvR builds bind rotations with objMatrix::RotZYX (SvR04 0x1105a0, labels csv),
+                            // not abEuler's order -> d_kuchi (-90,125,0) came out wrong = jaw inside the head. Take the
+                            // atama-relative bind straight from the model's inverse binds (+0xD4, skin = invBind * world):
+                            // bindRel = inv(IB_bone) * IB_atama; localBind = bindRel * parentRel^T for face children.
+                            const uint32_t ibs = rdU32(rdram, model + 0xD4u) & 0x1FFFFFFu;
+                            float b[9];
+                            abEuler(r3[0], r3[1], r3[2], b);
+                            if (ibs && ibs + count * 64u < 0x2000000u)
+                            {
+                                float ib[16], ia[16];
+                                std::memcpy(ib, rdram + ibs + i * 64u, 64);
+                                std::memcpy(ia, rdram + ibs + uint32_t(atama) * 64u, 64);
+                                const float B[9] = {ib[0], ib[1], ib[2], ib[4], ib[5], ib[6], ib[8], ib[9], ib[10]};
+                                const float A[9] = {ia[0], ia[1], ia[2], ia[4], ia[5], ia[6], ia[8], ia[9], ia[10]};
+                                const float det = B[0] * (B[4] * B[8] - B[5] * B[7]) - B[1] * (B[3] * B[8] - B[5] * B[6]) +
+                                                  B[2] * (B[3] * B[7] - B[4] * B[6]);
+                                if (std::fabs(det) > 1e-6f)
+                                {
+                                    const float k = 1.f / det;
+                                    const float Bi[9] = {(B[4] * B[8] - B[5] * B[7]) * k, (B[2] * B[7] - B[1] * B[8]) * k,
+                                                         (B[1] * B[5] - B[2] * B[4]) * k, (B[5] * B[6] - B[3] * B[8]) * k,
+                                                         (B[0] * B[8] - B[2] * B[6]) * k, (B[2] * B[3] - B[0] * B[5]) * k,
+                                                         (B[3] * B[7] - B[4] * B[6]) * k, (B[1] * B[6] - B[0] * B[7]) * k,
+                                                         (B[0] * B[4] - B[1] * B[3]) * k};
+                                    abMul3(Bi, A, f.bindRel);
+                                    if (f.parentFace >= 0)
+                                        abMul3(f.bindRel, m.faces[f.parentFace].bindRel, b, true);
+                                    else
+                                        std::memcpy(b, f.bindRel, sizeof(b));
+                                }
+                                else if (f.parentFace >= 0)
+                                    abMul3(b, m.faces[f.parentFace].bindRel, f.bindRel);
+                                else
+                                    std::memcpy(f.bindRel, b, sizeof(b));
+                            }
+                            else if (f.parentFace >= 0)
+                                abMul3(b, m.faces[f.parentFace].bindRel, f.bindRel);
+                            else
+                                std::memcpy(f.bindRel, b, sizeof(b));
+                            std::memcpy(f.localBind, b, sizeof(b));
+                            const bool hctpLike = std::fabs(r3[0]) < 0.01f && std::fabs(r3[2]) < 0.01f &&
+                                                  std::fabs(r3[1] - (n == "d_kuchi" ? 0.1396f : 0.f)) < 0.01f && f.parentFace < 0;
+                            if (hctpLike)
+                                continue; // already HCTP convention
+                            abEuler(0.f, n == "d_kuchi" ? 0.1396f : 0.f, 0.f, f.hctpBind);
+                            m.faces.push_back(f);
+                        }
+                    if (foreign)
+                        std::fprintf(stderr, "[anybone] model 0x%X %d foreign bones, %zu driven, %zu face retargeted%c", model,
+                                     foreign, m.rules.size(), m.faces.size(), 10);
+                }
+                for (const AnyBoneRule &r : m.rules)
+                {
+                    float cur[16], d[16] = {}, q[4], out[16];
+                    std::memcpy(cur, rdram + locals + r.driver * 64u, 64);
+                    for (int i = 0; i < 3; ++i) // delta = driverBind^T * cur (rotation part)
+                        for (int j = 0; j < 3; ++j)
+                            d[i * 4 + j] = r.driverBind[i] * cur[j] + r.driverBind[4 + i] * cur[4 + j] +
+                                           r.driverBind[8 + i] * cur[8 + j];
+                    abQuat(d, q);
+                    if (r.scale != 1.f)
+                    {
+                        if (q[3] < 0.f)
+                            for (float &c : q)
+                                c = -c;
+                        const float ang = std::acos(std::min(1.f, q[3])), sa = std::sin(ang);
+                        if (sa > 1e-5f)
+                        {
+                            const float k = std::sin(ang * r.scale) / sa;
+                            q[0] *= k, q[1] *= k, q[2] *= k, q[3] = std::cos(ang * r.scale);
+                        }
+                    }
+                    abQuatMat(q, d);
+                    std::memcpy(out, r.bind, 64); // keep the bind translation; rotation = bind * delta
+                    for (int i = 0; i < 3; ++i)
+                        for (int j = 0; j < 3; ++j)
+                            out[i * 4 + j] = r.bind[i * 4] * d[j] + r.bind[i * 4 + 1] * d[4 + j] + r.bind[i * 4 + 2] * d[8 + j];
+                    std::memcpy(rdram + locals + r.bone * 64u, out, 64);
+                }
+                for (AnyBoneFace &f : m.faces) // after the follow rules (they read the raw motion values)
+                {
+                    float cur[16];
+                    std::memcpy(cur, rdram + locals + f.bone * 64u, 64);
+                    if (f.have && std::memcmp(cur, f.lastOut, 64) == 0)
+                        std::memcpy(cur, f.lastIn, 64); // motion skipped this bone this frame: reuse its last input
+                    else
+                        std::memcpy(f.lastIn, cur, 64);
+                    float rh[9] = {cur[0], cur[1], cur[2], cur[4], cur[5], cur[6], cur[8], cur[9], cur[10]};
+                    float diff = 0.f; // untouched SvR bind local (no face motion yet, e.g. menus) = HCTP rest
+                    for (int i = 0; i < 9; ++i)
+                        diff = std::max(diff, std::fabs(rh[i] - f.localBind[i]));
+                    if (diff < 1e-3f)
+                        std::memcpy(rh, f.hctpBind, sizeof(rh));
+                    float p[9], loc[9];
+                    for (int i = 0; i < 3; ++i)
+                        for (int j = 0; j < 3; ++j)
+                            p[i * 3 + j] = f.hctpBind[i] * rh[j] + f.hctpBind[3 + i] * rh[3 + j] + f.hctpBind[6 + i] * rh[6 + j];
+                    abMul3(f.bindRel, p, f.rel);
+                    if (f.parentFace >= 0)
+                        abMul3(f.rel, m.faces[f.parentFace].rel, loc, true);
+                    else
+                        std::memcpy(loc, f.rel, sizeof(loc));
+                    float out[16] = {loc[0], loc[1], loc[2], 0.f, loc[3], loc[4], loc[5], 0.f, loc[6], loc[7], loc[8], 0.f,
+                                     f.pos[0], f.pos[1], f.pos[2], 1.f};
+                    std::memcpy(rdram + locals + f.bone * 64u, out, 64);
+                    if (static int s_jawLog = 0; (s_jawLog++ % 2400) < 8 && s_jawLog < 30000) // Nov 7 TEMP jaw diag (8 faces every ~5 s)
+                        std::fprintf(stderr, "[anybone] face bone %u in [%.3f %.3f %.3f|%.3f %.3f %.3f|%.3f %.3f %.3f] "
+                                     "bindRel [%.3f %.3f %.3f|%.3f %.3f %.3f|%.3f %.3f %.3f] out [%.3f %.3f %.3f|%.3f %.3f %.3f|%.3f %.3f %.3f] par %d%c",
+                                     f.bone, rh[0], rh[1], rh[2], rh[3], rh[4], rh[5], rh[6], rh[7], rh[8], f.bindRel[0], f.bindRel[1],
+                                     f.bindRel[2], f.bindRel[3], f.bindRel[4], f.bindRel[5], f.bindRel[6], f.bindRel[7], f.bindRel[8],
+                                     out[0], out[1], out[2], out[4], out[5], out[6], out[8], out[9], out[10], f.parentFace, 10);
+                    std::memcpy(f.lastOut, out, 64);
+                    f.have = true;
+                }
+            }
+        }
+        g_origFastUpdate(rdram, ctx, runtime);
+    }
+    // Nov 7 SvR THIGH LENGTH (SvR04 CCharIK ctor 0x1ab200, svr_all.c): IK limb lengths are sums of bone record offsets
+    // (+0x10). SvR: left thigh +0x140 = rec(29 l_momo_x).x + rec(14 l_sune).x, right +0x144 = rec(30 r_momo_x) + rec(18).
+    // HCTP ctor 0x1b83d0 (0x1b86c0 / 0x1b8710) takes only sune -> on SvR models the IK thigh is half length (Bret 2.18
+    // instead of 4.35) = broken knees. After the ctor, add momo_x's offset for models that have it.
+    PS2Runtime::RecompiledFunction g_origIkCtor = nullptr;
+    void ikCtorSvrThigh(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = rxArg(ctx, 4) & 0x1FFFFFFu, ra = rxArg(ctx, 31);
+        g_origIkCtor(rdram, ctx, runtime);
+        if (ctx->pc != ra || !self || self > 0x2000000u - 0x160u)
+            return;
+        const uint32_t link = rdU32(rdram, self + 0x2Cu) & 0x1FFFFFFu;
+        const uint32_t model = link ? rdU32(rdram, link + 0x20u) & 0x1FFFFFFu : 0u;
+        if (!model || !hctpIkSvrTwistBone(rdram, model, 0))
+            return;
+        const uint32_t recs = rdU32(rdram, model + 0xF0u) & 0x1FFFFFFu;
+        for (int side = 0; side < 2; ++side)
+        {
+            const int b = hctpIkSvrTwistBone(rdram, model, side + 1);
+            if (b < 0 || !recs)
+                continue;
+            float x, len;
+            std::memcpy(&x, rdram + recs + uint32_t(b) * 80u + 0x10u, 4);
+            std::memcpy(&len, rdram + self + 0x140u + side * 4u, 4);
+            const float before = len;
+            len += x;
+            std::memcpy(rdram + self + 0x140u + side * 4u, &len, 4);
+            std::fprintf(stderr, "[svrtwist] IK 0x%X %s thigh %.3f -> %.3f (+momo_x, SvR04 ctor 0x1ab200)%c", self,
+                         side ? "right" : "left", before, len, 10);
+        }
+    }
+    void installAnyBone(PS2Runtime &runtime)
+    {
+        if (const char *e = std::getenv("HCTP_ANYBONE"); e && e[0] == '0')
+            return;
+        if ((g_origFastUpdate = runtime.lookupFunction(0x151160u)) != nullptr &&
+            runtime.replaceFunction(0x151160u, fastUpdateAnyBone))
+            std::cerr << "[anybone] FastUpdate prelude on (SvR face bones follow HCTP drivers)" << std::endl;
+        if ((g_origIkCtor = runtime.lookupFunction(0x1b83d0u)) != nullptr && runtime.replaceFunction(0x1b83d0u, ikCtorSvrThigh))
+            std::cerr << "[svrtwist] CCharIK ctor thigh-length fix on (SvR momo_x)" << std::endl;
+        if (!(std::getenv("HCTP_SVR_BLOOD") && std::getenv("HCTP_SVR_BLOOD")[0] == '0') &&
+            (g_origDrawCharBlood = runtime.lookupFunction(0x155dc0u)) != nullptr &&
+            runtime.replaceFunction(0x155dc0u, drawCharSvrBlood))
+            std::cerr << "[svrblood] DrawChar blood-layer skip on (SvR 'blood' textures until bleeding)" << std::endl;
+    }
+    // ===================== end ANY-BONE =====================
+
     void applyHctp(PS2Runtime &runtime)
     {
         installOptionRestore(runtime);
@@ -4001,6 +7003,17 @@ namespace
         // waited for the whole chain worker (7 + 4 s per 260 s demo run). Same exemption as Vendetta's 0x1A16C0.
         runtime.chain().allowUnfencedCsrRead(0x14c664u);
         runtime.chain().allowUnfencedCsrRead(0x15881cu);
+        // In-game interlace shake (Nov 4): GameRender::FlickerFree 0x1fea60 (called by CRender::Synch every frame in
+        // a match) copies the 512-line scene into the 256-line display buffer with a bilinear sprite whose V starts
+        // at 0 when CSR.FIELD = 1 (ld at 0x1feb0c) and at 1 source line when FIELD = 0 - half a TV line, cancelled
+        // by the field's own offset on a CRT, a half-line bounce every frame here (worst on still screens/pause).
+        // Pin FIELD = 1 there (centred: each output line = rows 2y/2y+1). HCTP_FLICKER_FIELD=0 = raw (still counted).
+        {
+            const char *ff = std::getenv("HCTP_FLICKER_FIELD");
+            const bool pin = !(ff && *ff == '0');
+            ps2PinCsrField(0x1feb0cu, pin, true);
+            std::cerr << "[hctp] flicker-free field pin " << (pin ? "on (FIELD=1)" : "off") << std::endl;
+        }
         // DIAG [adxmon] (HCTP_ADXMON=1): every 5 s the first 0x40 bytes of the 4 ADXT handles (0x425cc8 + i*0xc4;
         // byte 0 = used, byte 1 = stat 0 stop 1 decinfo 2 prep 3 playing 4 end 5 error) - finds stuck music streams.
         if (std::getenv("HCTP_ADXMON"))
@@ -4221,16 +7234,28 @@ namespace
             installNativeAdx(runtime);
         else if (std::getenv("HCTP_ADXTLOG"))
             installAdxtLog(runtime, std::make_integer_sequence<int, 15>{});
+        if (std::getenv("HCTP_CHEERLOG"))
+            installCheerLog(runtime, std::make_integer_sequence<int, 17>{});
         if (!std::getenv("HCTP_NO_CUT_ROSTER"))
         {
             g_origGetCharaGameProp = runtime.lookupFunction(0x12cec0u);
             const int slots = scanCutRosterModels();
-            const bool ok = slots == 0 || (g_origGetCharaGameProp &&
-                                           runtime.replaceFunction(0x12cec0u, getCharaGamePropCutRoster));
+            // Nov 6: always hooked (the Rosey name fix in restoreCutRoster must run with stock PACs too)
+            const bool ok = g_origGetCharaGameProp &&
+                            runtime.replaceFunction(0x12cec0u, getCharaGamePropCutRoster);
             if (slots > 0 && (g_origIsSeasonEntry = runtime.lookupFunction(0x12d050u)) != nullptr)
                 runtime.replaceFunction(0x12d050u, isSeasonEntryCutRoster);
             if (slots > 0 && (g_origSeasonCharaFrameCtor = runtime.lookupFunction(0x316ba0u)) != nullptr)
-                runtime.replaceFunction(0x316ba0u, seasonCharaFrameCtorCutRoster);
+                runtime.replaceFunction(0x316ba0u, seasonCharaFrameCtorCutRoster); // Nov 5: drops NPC slots only
+            // Season roster: one Undertaker / one Hogan / ... (kOneOfGroups)
+            runtime.replaceFunction(0x34ffe0u, checkRosterSpecialConditionGroups);
+            runtime.replaceFunction(0x12d200u, isLegendExtended); // LEGEND banner list (kExtraLegends)
+            if ((g_origSetRosterSpecialCondition = runtime.lookupFunction(0x34fd10u)) != nullptr)
+                runtime.replaceFunction(0x34fd10u, setRosterSpecialConditionGroups);
+            if ((g_origGetWarningMsg = runtime.lookupFunction(0x168e40u)) != nullptr)
+                runtime.replaceFunction(0x168e40u, getWarningMsgGroups);
+            if (slots > 0 && (g_origGetMatchWrestlerNo = runtime.lookupFunction(0x12cce0u)) != nullptr)
+                runtime.replaceFunction(0x12cce0u, getMatchWrestlerNoCutRoster);
             std::cerr << "[hctp] cut roster restore: " << slots << " slots with models"
                       << (ok ? "" : " (hook FAILED)") << std::endl;
             if (slots > 0)
@@ -4242,6 +7267,20 @@ namespace
         if ((g_origInitEventSystem = runtime.lookupFunction(0x2ad340u)) != nullptr &&
             runtime.replaceFunction(0x2ad340u, initEventSystemShirtTear))
             std::cerr << "[hctp] Hogan shirt-tear dress routing on" << std::endl;
+        if ((g_origReallocatePage = runtime.lookupFunction(0x140c90u)) != nullptr &&
+            runtime.replaceFunction(0x140c90u, reallocatePageBigModels))
+            std::cerr << "[hctp] big-model char pages (SvR Molly) on" << std::endl;
+        if (!(std::getenv("HCTP_KAMI_EXTRA") && std::getenv("HCTP_KAMI_EXTRA")[0] == '0') &&
+            (g_origKamiMake = runtime.lookupFunction(0x1c5f50u)) != nullptr &&
+            (g_origKamiAction = runtime.lookupFunction(0x1c5d70u)) != nullptr &&
+            (g_origKamiDtor = runtime.lookupFunction(0x1c5cc0u)) != nullptr)
+        {
+            runtime.replaceFunction(0x1c5f50u, kamiMakeExtra);
+            runtime.replaceFunction(0x1c5d70u, kamiActionExtra);
+            runtime.replaceFunction(0x1c5cc0u, kamiDtorExtra);
+            runtime.replaceFunction(0x1c6160u, kamiInitSeen);
+            std::cerr << "[hctp] hair chains past 14 kept on host (Nero 3X Warrior) on" << std::endl;
+        }
         if (!std::getenv("HCTP_INTERLACE_OFFSET"))
         {
             runtime.replaceFunction(0x102660u, gsSetHalfOffsetEven);
@@ -4272,6 +7311,8 @@ namespace
         installImportedMedia(runtime);
         installHostMedia(runtime);
         installMediaDefaults(runtime);
+        installAnyBone(runtime);
+        installRosterExpansion(runtime); // keep LAST: wraps the hooks above on the same functions
         std::cerr << "[hctp] overrides applied" << std::endl;
     }
 }
@@ -4308,4 +7349,50 @@ uint32_t hctpEasyListAddr(uint32_t obj, uint32_t addr)
         return addr;
     const uint32_t index = (addr - obj - 0x2Cu) / kSelectRec;
     return index < g_selectCount ? it->second + index * kSelectRec : addr;
+}
+
+uint32_t hctpRosterCodeId(const uint8_t *rdram, uint32_t code) { return rosterxCodeIdImpl(rdram, code); }
+
+// Nov 7 SvR TWIST LIST (notes\ANY_BONE_ANIMATION_RESEARCH_20261106.md s17): CCharIK::ActionLink 0x1b8860 re-solves
+// the bones of the 12-entry twist list 0x4129f0 after the limb IK (loop 0x1b933c..0x1b95c4). SvR04 ActionLink 0x1ab6f0
+// uses 14 entries 0x346020 = HCTP's with l/r_momo_x (enum 29/30) between momo and sune, limb groups >3,>7,>10, group
+// ends 3,7,10,13. HCTP has no enum 29/30 (name table 0x4127c0 = 29 names), so those two are found by bone name.
+// Hand edit in the runner ActionLink file calls these. Only for models that have "l_momo_x"; HCTP_ANYBONE=0 = off.
+namespace
+{
+    std::map<uint32_t, std::pair<int, int>> g_svrTwistModels; // key = bone records ptr ^ count -> (l, r momo_x) or (-1,-1)
+}
+int hctpIkSvrTwistBone(const uint8_t *rdram, uint32_t model, int which) // which 0 = probe (returns 1 if SvR), 1 = l, 2 = r
+{
+    static const int s_off = (std::getenv("HCTP_ANYBONE") && std::getenv("HCTP_ANYBONE")[0] == '0') ? 1 : 0;
+    if (s_off || model == 0u || model > PS2_RAM_SIZE - 0xF4u)
+        return which ? -1 : 0;
+    uint32_t count = 0u, recs = 0u;
+    std::memcpy(&count, rdram + model + 0xECu, 4);
+    std::memcpy(&recs, rdram + model + 0xF0u, 4);
+    recs &= PS2_RAM_MASK;
+    const uint32_t key = recs ^ (count << 24);
+    auto it = g_svrTwistModels.find(key);
+    if (it == g_svrTwistModels.end())
+    {
+        std::pair<int, int> v{-1, -1};
+        if (count < 512u && recs != 0u && recs <= PS2_RAM_SIZE - count * 80u)
+            for (uint32_t b = 0; b < count; ++b)
+            {
+                char nm[17] = {};
+                std::memcpy(nm, rdram + recs + b * 80u, 16);
+                if (std::strcmp(nm, "l_momo_x") == 0) v.first = static_cast<int>(b);
+                if (std::strcmp(nm, "r_momo_x") == 0) v.second = static_cast<int>(b);
+            }
+        if (v.first < 0 || v.second < 0)
+            v = {-1, -1};
+        else
+            std::fprintf(stderr, "[svrtwist] model 0x%X: SvR04 14-entry twist list (l_momo_x %d, r_momo_x %d)%c", model, v.first, v.second, 10);
+        if (g_svrTwistModels.size() > 4096u)
+            g_svrTwistModels.clear();
+        it = g_svrTwistModels.emplace(key, v).first;
+    }
+    if (which == 0)
+        return it->second.first >= 0 ? 1 : 0;
+    return which == 1 ? it->second.first : it->second.second;
 }

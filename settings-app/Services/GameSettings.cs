@@ -23,7 +23,7 @@ public sealed class GameSettings
     public string Shape = "widescreen";     // widescreen (the default) | 4:3 | stretch
     // [graphics]
     public string Renderer = "gpu";         // gpu | cpu
-    public int Scale = 16;                  // 1 2 4 8 16 (16 the default)
+    public int Scale = 16;                  // 1 2 4 8 5 6 16 (= 1x 2x 3x 4x 5x 6x auto; 16 the default)
     public string Filter = "fsr";           // fsr | smooth | blocky
     public int Sharpening = 75;             // 0-100
     public bool HighPoly = true;            // High Poly wrestlers and arenas in every match
@@ -62,7 +62,7 @@ public sealed class GameSettings
         "\n" +
         "[graphics]\n" +
         "renderer = \"gpu\"         # \"gpu\" (the graphics card) or \"cpu\"\n" +
-        "scale = 16               # how much sharper than the PS2: 1, 2, 4, 8 or 16 (16: four times its detail)\n" +
+        "scale = 16               # how much sharper than the PS2: 1, 2, 4, 8 = 1x 2x 3x 4x, 5 = 5x, 6 = 6x, 16 = auto\n" +
         "filter = \"fsr\"           # scaling to the window: \"fsr\", \"smooth\" or \"blocky\"\n" +
         "sharpening = 75          # 0-100, with \"fsr\"\n" +
         "sharp_2d = true          # the HUD, text and menus in the same detail as the 3-D (as PCSX2 upscales them); false = as on the PS2\n" +
@@ -115,7 +115,7 @@ public sealed class GameSettings
                 case "graphics.renderer": s.Renderer = OneOf(value, s.Renderer, "gpu", "cpu"); break;
                 case "graphics.scale":
                     var scale = Int(value, s.Scale, 1, 16);
-                    s.Scale = scale is 1 or 2 or 4 or 8 or 16 ? scale : s.Scale;
+                    s.Scale = scale is 1 or 2 or 4 or 8 or 5 or 6 or 16 ? scale : s.Scale;
                     break;
                 case "graphics.filter": s.Filter = OneOf(value, s.Filter, "fsr", "smooth", "blocky"); break;
                 case "graphics.sharpening": s.Sharpening = Int(value, s.Sharpening, 0, 100); break;

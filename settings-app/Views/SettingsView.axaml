@@ -147,6 +147,8 @@
                                 <ListBoxItem Content="2×" />
                                 <ListBoxItem Content="3×" />
                                 <ListBoxItem Content="4×" />
+                                <ListBoxItem Content="5×" />
+                                <ListBoxItem Content="6×" />
                                 <ListBoxItem Content="Auto" />
                             </ListBox>
                         </Grid>

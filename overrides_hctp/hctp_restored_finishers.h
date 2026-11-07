@@ -8,7 +8,8 @@ inline bool restored(uint16_t id) {
     switch (id) {
     case 13: case 17: case 24: case 32: case 33: case 35:
     case 36: case 41: case 43: case 57: case 77: case 78:
-    case 50: case 52: case 53: case 54: case 55: case 65: return true;
+    case 50: case 52: case 53: case 54: case 55: case 65:
+    case 63: return true; // Al Snow (Nov 5: was missing -> select screen showed template Rey's 619)
     default: return false;
     }
 }

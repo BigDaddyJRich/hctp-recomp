@@ -11,7 +11,7 @@ public sealed record Choice(string Label, int Value, int Value2 = 0);
 /// <summary>The Settings page: every change is written to settings.toml at once (the game reads it when it starts).</summary>
 public partial class SettingsViewModel : ObservableObject
 {
-    private static readonly int[] Scales = { 1, 2, 4, 8, 16 };
+    private static readonly int[] Scales = { 1, 2, 4, 8, 5, 6, 16 }; // 5/6 = 5x/6x (Nov 4 2026)
     private static readonly string[] Modes = { "window", "borderless", "fullscreen" };
     private static readonly string[] Filters = { "fsr", "smooth", "blocky" };
     private static readonly string[] Cameras = { "vendetta", "nomercy", "wk2" };
@@ -90,7 +90,7 @@ public partial class SettingsViewModel : ObservableObject
 
     public string SummaryPicture =>
         (ShapeIndex switch { 1 => "4:3", 2 => "Stretched", _ => "Widescreen" }) + " · " +
-        (RendererIndex == 0 ? $"graphics card · {new[] { "1×", "2×", "3×", "4×", "auto" }[Math.Clamp(ScaleIndex, 0, 4)]}" : "CPU");
+        (RendererIndex == 0 ? $"graphics card · {new[] { "1×", "2×", "3×", "4×", "5×", "6×", "auto" }[Math.Clamp(ScaleIndex, 0, 6)]}" : "CPU");
 
     public string SummaryPlayers =>
         (Multitap ? "Up to 4" : "2") + " · vibration " +
@@ -222,6 +222,8 @@ public partial class SettingsViewModel : ObservableObject
         1 => "A little sharper",
         2 => "Sharp",
         3 => "Very sharp, heavier on the graphics card",
+        4 => "Like PCSX2 at 5×, needs a strong graphics card",
+        5 => "Sharpest, for 4K screens and strong graphics cards",
         _ => "Default: picked from your screen (1080p 3×, 1440p 4×, 4K 6×)",
     };
 
@@ -247,7 +249,7 @@ public partial class SettingsViewModel : ObservableObject
                 2 => $"Fullscreen · {ChosenRate} Hz",
                 _ => Maximised ? "Maximised" : "Window",
             };
-            var renderer = RendererIndex == 0 ? $"graphics card · {new[] { "1×", "2×", "3×", "4×", "auto" }[Math.Clamp(ScaleIndex, 0, 4)]}" : "CPU";
+            var renderer = RendererIndex == 0 ? $"graphics card · {new[] { "1×", "2×", "3×", "4×", "5×", "6×", "auto" }[Math.Clamp(ScaleIndex, 0, 6)]}" : "CPU";
             return $"{mode} · {renderer}";
         }
     }
@@ -392,7 +394,7 @@ public partial class SettingsViewModel : ObservableObject
         ShowFps = ShowFps,
         Shape = ShapeIndex switch { 1 => "4:3", 2 => "stretch", _ => "widescreen" },
         Renderer = RendererIndex == 1 ? "cpu" : "gpu",
-        Scale = Scales[Math.Clamp(ScaleIndex, 0, 4)],
+        Scale = Scales[Math.Clamp(ScaleIndex, 0, 6)],
         Filter = Filters[Math.Clamp(FilterIndex, 0, 2)],
         Sharpening = (int)Math.Round(Sharpening),
         HighPoly = HighPoly,

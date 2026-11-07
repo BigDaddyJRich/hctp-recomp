@@ -185,7 +185,7 @@ public partial class MainViewModel : ObservableObject
 
     public bool HasGame => Folder.HasGame;
     public string DiscTitle => Folder.HasGame ? "SmackDown! Here Comes the Pain · PS2 · USA" : "Not set up yet";
-    public const string PacksUrl = "https://discord.com/users/531701434597638165";
+    public const string PacksUrl = "https://discord.gg/z39SWwQDq";
     public string ContentPackLine => Folder.HasContentPack ? "✓ installed" : "Not found";
     public string CommentaryPackLine => Folder.HasCommentaryPack ? "✓ installed" : "Not found";
     public bool PacksMissing => !Folder.HasContentPack || !Folder.HasCommentaryPack;

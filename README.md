@@ -83,7 +83,7 @@ Near-term plan: roster expansion (new wrestler slots) over the following weeks, 
 a fuller launcher with a mod manager, along the lines of the SvR 2011 recomp's; then PPV mode and online.
 
 Found a bug? Write down exactly what you did and what happened, and send it to jrich102948@gmail.com,
-[Discord](https://discord.com/users/531701434597638165) or [GitHub Issues](https://github.com/BigDaddyJRich/hctp-recomp/issues).
+[Discord](https://discord.gg/z39SWwQDq) or [GitHub Issues](https://github.com/BigDaddyJRich/hctp-recomp/issues).
 
 ## Layout
 
