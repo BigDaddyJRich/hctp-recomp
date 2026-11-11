@@ -1018,6 +1018,28 @@ void hctpPyroArm(PS2Runtime *runtime, const char *id, uint32_t common)
     std::fprintf(stderr, "[pyro] armed %s: %zu files, %zu textures, %zu instances (start tick %d)\n", id, files.size(), g_tex.size(), g_inst.size(), startBase);
 }
 
+// Nov 10 STEP 2: SvR06 event id has a pyro pack (prtcls.pac PCEN/<id> dir entry + gm.pac GMEV/<id>); cached per id.
+bool hctpPyroHas(const char *id)
+{
+    static std::map<std::string, bool> cache;
+    std::lock_guard<std::mutex> lock(g_mx);
+    auto it = cache.find(id);
+    if (it != cache.end()) return it->second;
+    bool has = false;
+    {
+        std::ifstream f("MODS/SVR06/prtcls.pac", std::ios::binary);
+        Bytes dir;
+        if (f && readAt(f, 0x808, 41 * 8, dir))
+            for (int i = 0; i < 41 && !has; ++i)
+                has = std::memcmp(&dir[i * 8], id, 4) == 0;
+    }
+    Bytes gm;
+    if (has) has = loadGmev(id, gm);
+    cache[id] = has;
+    std::fprintf(stderr, "[pyro] SvR06 %s pyro pack: %s\n", id, has ? "yes" : "no");
+    return has;
+}
+
 void hctpPyroDisarm()
 {
     std::lock_guard<std::mutex> lock(g_mx);

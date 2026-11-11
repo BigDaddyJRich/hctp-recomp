@@ -11,6 +11,7 @@
 void hctpPyroArm(PS2Runtime *runtime, const char *id, uint32_t common); // hctp_svr06_pyro.cpp
 bool hctpPyroEventTick(uint32_t scene, uint32_t frame, uint32_t frameMax); // hctp_svr06_pyro.cpp
 void hctpPyroDisarm();
+bool hctpPyroHas(const char *id); // hctp_svr06_pyro.cpp: PCEN + GMEV pack exists for this SvR06 event id
 static int g_svr06CamEvent = 0; // Nov 9: HCTP event no of the SvR06 4044 reader event (CAM row 3944), 0 = none
 #include "runtime/ee_scheduler.h"
 #include "game_overrides.h"
@@ -3614,7 +3615,7 @@ namespace
                     if (v == 3944u) std::memcpy(rdram + a + 0xEAu, &stock, 2), ++props;
                 }
                 std::fprintf(stderr, "[pyro] CAM row 3944 -> %u (param %u, common %u, props %d)%c", unsigned(stock), pnum, cur, props, 10);
-                hctpPyroArm(runtime, "4044", common);
+                // STEP 2: SetEvent of the SvR06 event arms the pyro (hctpPyroHas); 3944 = old Brock row (old CAM saves)
             }
             else
                 hctpPyroDisarm();
@@ -7621,8 +7622,15 @@ namespace
     // TODO) get no scenes; belt 2021 -> HCTP 2019. Effects (BGM/tron) = donor HCTP event's row. Camera 29 B keys
     // [c][f32 pos x3][f32 rot rad x3][f32 fov] -> camAnalyzeSvr. Source: Mod Maker svr06_entrance.py + 4044 dump.
     std::map<uint16_t, std::vector<uint8_t>> g_svr06Script;
-    int svr06Register(unsigned no, uint8_t tmpl)
+    std::vector<uint8_t> g_svr06Cache;                                  // STEP 2: combined patched banks (CEVN.PAC)
+    std::map<uint16_t, std::pair<uint32_t, uint32_t>> g_svr06Raw;      // virtual ev -> raw evt.pac (sector, size/0x100)
+    std::map<uint16_t, uint16_t> g_svr06Registered;                    // SvR06 event no -> virtual event
+    std::map<uint16_t, std::pair<std::vector<uint8_t>, uint8_t>> g_svr06Lights; // SvR06 no -> host light bank + mask
+    size_t g_svr06LightMax = 0;
+    int svr06Register(unsigned no, uint8_t tmpl, uint16_t fixedEv = 0, int16_t donorEv = 0)
     {
+        if (auto done = g_svr06Registered.find(static_cast<uint16_t>(no)); done != g_svr06Registered.end())
+            return done->second;
         std::ifstream f("MODS/SVR06/evt.pac", std::ios::binary);
         std::vector<uint8_t> h(0x4000);
         if (!f || !f.read(reinterpret_cast<char *>(h.data()), 0x4000) || std::memcmp(h.data(), "DPAC", 4) != 0)
@@ -7676,14 +7684,24 @@ namespace
         f.clear();
         f.seekg(static_cast<std::streamoff>(bSec) * 0x800);
         f.read(reinterpret_cast<char *>(bk.data()), static_cast<std::streamsize>(bk.size()));
+        // Nov 10 STEP 2: pass 0 = stage/ramp arenas (event v), pass 1 = plane arenas (v+100, floor level: no stage shift,
+        // resample + camera split kept). Both banks go into ONE host cache MODS\SVR06\CEVN.PAC (one loose entry slot for
+        // all SvR06 events), written once after the boot table (svr06CacheFlush).
         int fileIdx = 2;
-        uint32_t serveSec = bSec;
+        uint32_t passSec[2] = {bSec, bSec}, passSz[2] = {bSz, bSz};
+        const std::vector<uint8_t> bkRaw = bk;
+        const uint32_t bSzRaw = bSz;
+        for (int pass = 0; pass < 2; ++pass)
         if (f && bk.size() > 0x104u && !(std::getenv("HCTP_SVR06_GROUND") && std::getenv("HCTP_SVR06_GROUND")[0] == '0'))
         {
+            if (pass == 1)
+                bk = bkRaw, bSz = bSzRaw;
             uint32_t n = 0;
             std::memcpy(&n, &bk[0x100], 4);
             const size_t data0 = 0x104u + 16u * size_t(n);
-            auto shift = [](float zUnits) {
+            auto shift = [pass](float zUnits) {
+                if (pass == 1)
+                    return 0.f; // plane arena: SvR06 floor-level stage = HCTP floor
                 const float z = zUnits * 0.01f, F = 11.8f, top = 237.f, foot = 87.f;
                 const float g = z >= top ? 0.f : (z <= foot ? F : F * (top - z) / (top - foot));
                 return (F - g) / 0.01f;
@@ -7727,6 +7745,7 @@ namespace
                 }
                 return true;
             };
+            if (pass == 0)
             {
                 // Nov 10 LIGHTS: global obj 0xB, scene x 0, tracks y1..y8 = the 8 CMotionLight slots, same key stream
                 // CMotionLight::Action 0x1ff9d0 reads ([count][s16 dir x3][u16 RGB x3]). -> own CEKey bank with light
@@ -7756,6 +7775,8 @@ namespace
                 g_svr06LightHost.resize(g_svr06LightHost.size() + 32u, 0);
                 if (lcnt == 0) g_svr06LightHost.clear();
                 std::fprintf(stderr, "[svr06light] %u light tracks (mask %02x, bank %zu B)%c", lcnt, g_svr06LightMask, g_svr06LightHost.size(), 10);
+                g_svr06Lights[static_cast<uint16_t>(no)] = {g_svr06LightHost, g_svr06LightMask}; // STEP 2: per event
+                g_svr06LightMax = std::max(g_svr06LightMax, g_svr06LightHost.size());
             }
             std::map<uint32_t, std::vector<float>> shiftAt; // scene x -> per frame entrant shift
             std::set<uint32_t> entrantOffs;
@@ -8012,31 +8033,63 @@ namespace
                          camKeys, added, bk.size(), 10);
             std::fprintf(stderr, "[svr06ent] nov10 cam resample: %u camera keys split (count0 %u count1 %u count2+ %u)%c",
                          camAdded, camCnt[0], camCnt[1], camCnt[2], 10);
-            const std::string cache = "MODS/SVR06/C" + std::to_string(no) + ".EVN";
             bk.resize((bk.size() + 0x7FFu) & ~size_t(0x7FFu));
-            std::ofstream o(cache, std::ios::binary | std::ios::trunc);
-            if (o.write(reinterpret_cast<const char *>(bk.data()), static_cast<std::streamsize>(bk.size())))
-            {
-                if (g_svrPacFiles.size() < 4u)
-                    g_svrPacFiles.resize(4u);
-                g_svrPacFiles[3] = {cache, "MODS\\SVR06\\C" + std::to_string(no) + ".EVN"};
-                fileIdx = 3, serveSec = 0;
-            }
-            std::fprintf(stderr, "[svr06ent] stage height: %u entrant tracks, %u root keys moved to HCTP stage/ramp (%s)%c", tracks,
-                         keys, fileIdx == 3 ? "cache ok" : "cache write FAILED, raw bank", 10);
+            passSec[pass] = static_cast<uint32_t>(g_svr06Cache.size() / 0x800u);
+            passSz[pass] = bSz;
+            g_svr06Cache.insert(g_svr06Cache.end(), bk.begin(), bk.end());
+            fileIdx = 3;
+            std::fprintf(stderr, "[svr06ent] %s: %u entrant tracks, %u root keys moved (cache sector %u)%c",
+                         pass == 0 ? "stage height" : "plane (no shift)", tracks, keys, passSec[pass], 10);
         }
-        if (g_svrPacFiles.size() < 3u)
-            g_svrPacFiles.resize(3u);
+        if (g_svrPacFiles.size() < 4u)
+            g_svrPacFiles.resize(4u);
         g_svrPacFiles[2] = {"MODS/SVR06/evt.pac", "MODS\\SVR06\\EVT.PAC"};
-        const uint16_t v = static_cast<uint16_t>(g_svr06NextEv++);
-        for (uint16_t ev : {v, uint16_t(v + 100u)})
+        g_svrPacFiles[3] = {"MODS/SVR06/CEVN.PAC", "MODS\\SVR06\\CEVN.PAC"};
+        const uint16_t v = fixedEv != 0u ? fixedEv : static_cast<uint16_t>(g_svr06NextEv++);
+        for (int pass = 0; pass < 2; ++pass)
         {
-            g_svrEvents[ev] = {static_cast<uint16_t>(no), tmpl, 6};
-            g_svrPac["/EVET/" + std::to_string(ev)] = {fileIdx, serveSec, bSz};
+            const uint16_t ev = static_cast<uint16_t>(v + 100u * pass);
+            g_svrEvents[ev] = {static_cast<uint16_t>(no), tmpl, 6, donorEv};
+            g_svrPac["/EVET/" + std::to_string(ev)] = {fileIdx, passSec[pass], passSz[pass]};
+            g_svr06Raw[ev] = {bSec, bSzRaw};
         }
-        std::fprintf(stderr, "[svr06ent] SvR06 event %u -> HCTP event %u/%u (bank %u B, donor template 0x%02X)%c", no, v,
-                     unsigned(v + 100u), bSz * 0x100u, tmpl, 10);
+        g_svr06Registered[static_cast<uint16_t>(no)] = v;
+        std::fprintf(stderr, "[svr06ent] SvR06 event %u -> HCTP event %u/%u (bank %u/%u B, donor ev %d / template 0x%02X)%c", no, v,
+                     unsigned(v + 100u), passSz[0] * 0x100u, passSz[1] * 0x100u, donorEv, tmpl, 10);
         return v;
+    }
+    // STEP 2: write the combined host cache once; on failure every SvR06 event falls back to its raw evt.pac bank.
+    void svr06CacheFlush()
+    {
+        if (g_svr06Cache.empty())
+            return;
+        std::ofstream o("MODS/SVR06/CEVN.PAC", std::ios::binary | std::ios::trunc);
+        const bool ok = static_cast<bool>(o.write(reinterpret_cast<const char *>(g_svr06Cache.data()), static_cast<std::streamsize>(g_svr06Cache.size())));
+        if (!ok)
+            for (const auto &kv : g_svr06Raw)
+                g_svrPac["/EVET/" + std::to_string(kv.first)] = {2, kv.second.first, kv.second.second};
+        std::fprintf(stderr, "[svr06ent] CEVN.PAC cache %zu B for %zu events: %s%c", g_svr06Cache.size(), g_svr06Registered.size(),
+                     ok ? "ok" : "WRITE FAILED, raw banks (no stage shift)", 10);
+        std::vector<uint8_t>().swap(g_svr06Cache);
+    }
+    // STEP 2: MODS\SVR06\entrances.txt "<svr06 no> <hctp event> <donor hctp event> <name>" (tools\stage_entrance_port.py)
+    void svr06TableLoad()
+    {
+        std::ifstream f("MODS/SVR06/entrances.txt");
+        const bool opened = static_cast<bool>(f);
+        int rows = 0, ok = 0;
+        for (std::string line; f && std::getline(f, line);)
+        {
+            unsigned no, ev; int donor;
+            if (line.empty() || line[0] == '#' || std::sscanf(line.c_str(), "%u %u %d", &no, &ev, &donor) < 3 || ev < 3000u || ev > 32000u)
+                continue;
+            ++rows;
+            ok += svr06Register(no, 0x2Du, static_cast<uint16_t>(ev), static_cast<int16_t>(donor)) > 0 ? 1 : 0;
+        }
+        if (!g_svr06Registered.count(4044u)) // no table: keep the Nov 9 Brock proof row (CAM 3944 sentinel)
+            svr06Register(4044u, 0xFFu, 0, 3044);
+        svr06CacheFlush();
+        std::fprintf(stderr, "[svr06ent] table: %d SvR06 rows, %d registered%s%c", rows, ok, opened ? "" : " (MODS\\SVR06\\entrances.txt missing)", 10);
     }
     void svr06EnsureRow(uint8_t *rdram, PS2Runtime *runtime, uint32_t header, uint16_t ev, const SvrEvent &se)
     {
@@ -8113,8 +8166,8 @@ namespace
         gPut(rdram, header + 0xC, &rows, 4);
         gPut(rdram, header + 8, &evCount1, 4);
         // effects = the donor HCTP event's own row (BGM + titantron of the template)
-        int16_t donor = 3044; // tmpl 0xFF = CAM proof row: Brock's own HCTP entrance 3044 gives BGM + tron
-        if (se.tmpl != 0xFFu)
+        int16_t donor = se.donorEv != 0 ? se.donorEv : int16_t(3044); // STEP 2: table donor (BGM/tron rows), else
+        if (se.donorEv == 0 && se.tmpl != 0xFFu)                        // tmpl 0xFF = CAM proof row (Brock 3044)
             std::memcpy(&donor, rdram + 0x4C0F54u + se.tmpl * 0x170u + 0xECu, 2);
         const uint32_t efCount = gU16(rdram, header + 0x10), efRows = gU32(rdram, header + 0x14);
         uint32_t donorEnt = 0, donorN = 0;
@@ -8143,6 +8196,21 @@ namespace
         g_svrEventActive = it != g_svrEvents.end();
         g_svr06Active = g_svrEventActive && it->second.game == 6;
         g_svr06LightsSet = false;
+        // STEP 2: per-event SvR06 light bank + pyro armed by the SvR06 event id (any PCEN/GMEV pack), previews and matches
+        static const bool pyroOn = !(std::getenv("HCTP_SVR06_PYRO") && std::getenv("HCTP_SVR06_PYRO")[0] == '0');
+        if (g_svr06Active)
+        {
+            auto lt = g_svr06Lights.find(it->second.svrNo);
+            g_svr06LightHost = lt != g_svr06Lights.end() ? lt->second.first : std::vector<uint8_t>();
+            g_svr06LightMask = lt != g_svr06Lights.end() ? lt->second.second : uint8_t(0);
+            const std::string id = std::to_string(it->second.svrNo);
+            if (pyroOn && hctpPyroHas(id.c_str()))
+                hctpPyroArm(runtime, id.c_str(), 0u);
+            else
+                hctpPyroDisarm();
+        }
+        else if (ev >= 3000u && ev < 8000u)
+            hctpPyroDisarm();
         if (ev >= 3000u && ev < 8000u)
             std::fprintf(stderr, "[svrent] SetEvent call ev %u (svr %d)%c", ev, g_svrEventActive ? 1 : 0, 10);
         if (g_svrEventActive)
@@ -8567,7 +8635,7 @@ namespace
         }
         if (g_svr06LightBank == 0u)
         {
-            const uint32_t g = runtime->guestMalloc(static_cast<uint32_t>(g_svr06LightHost.size()), 64u);
+            const uint32_t g = runtime->guestMalloc(static_cast<uint32_t>(std::max(g_svr06LightMax, g_svr06LightHost.size())), 64u);
             if (g == 0u)
             {
                 std::fprintf(stderr, "[svr06light] guestMalloc failed%c", 10);
@@ -9203,8 +9271,13 @@ namespace
         // Nov 9 SvR06 proof: CAM row 3944 plays the ORIGINAL SvR06 Brock 4044 (evt.pac) + its pyro. HCTP_SVR06_ENT=0 -> old
         // behaviour (stock 3044 + pyro overlay).
         // Nov 10: default on (CAM row "Brock Lesnar 2" in the normal launch); HCTP_SVR06_PYRO=0 off
-        if (!(std::getenv("HCTP_SVR06_PYRO") && std::getenv("HCTP_SVR06_PYRO")[0] == '0') && !(std::getenv("HCTP_SVR06_ENT") && std::getenv("HCTP_SVR06_ENT")[0] == '0'))
-            g_svr06CamEvent = svr06Register(4044u, 0xFFu);
+        // Nov 10 STEP 2: every SvR06 single from MODS\SVR06\entrances.txt at its fixed 7400+ number; 3944 -> Brock's number.
+        if (!(std::getenv("HCTP_SVR06_ENT") && std::getenv("HCTP_SVR06_ENT")[0] == '0'))
+        {
+            svr06TableLoad();
+            if (auto b = g_svr06Registered.find(4044u); b != g_svr06Registered.end())
+                g_svr06CamEvent = b->second;
+        }
         svrEntranceInstall(runtime); // SvR04 table + slot.txt entrance=svr04:<no> -> SvR entrance reader
         if (!rx)
             return;
