@@ -25,6 +25,7 @@
 
 extern std::atomic<void (*)()> g_hctpPrePresentHook;
 
+bool hctpGetCharProj(float out[4][4]); // hctp_native_vu1.cpp (Nov 11 pyro depth)
 namespace
 {
 using Bytes = std::vector<uint8_t>;
@@ -616,12 +617,25 @@ Cam buildCam(const float E[4][4], const float A[4][4], int var)
     c.ok = true;
     return c;
 }
+// Nov 11 PYRO DEPTH: HCTP's character view->clip matrix (hctp_native_vu1.cpp); z = clip.z / clip.w of view = v * E,
+// the same value the wrestlers get (FTOI4 -> zMul 16), so particles behind a wrestler are hidden. HCTP_PYRO_HCTPZ=0 -> old z.
+float g_pm[4][4];
+bool g_pmOk = false;
 bool project(const Cam &c, const float v[3], float o[4])
 {
     float r[4];
     for (int j = 0; j < 4; ++j) r[j] = v[0] * c.M[0][j] + v[1] * c.M[1][j] + v[2] * c.M[2][j] + c.M[3][j];
     if (r[3] <= 0.01f) return false;
     o[0] = r[0] / r[3]; o[1] = r[1] / r[3]; o[2] = r[2] / r[3]; o[3] = r[3];
+    if (g_pmOk)
+    {
+        float vw[4];
+        for (int j = 0; j < 3; ++j) vw[j] = v[0] * c.E[0][j] + v[1] * c.E[1][j] + v[2] * c.E[2][j] + c.E[3][j];
+        vw[3] = 1.0f;
+        float cz = 0, cw = 0;
+        for (int i = 0; i < 4; ++i) { cz += vw[i] * g_pm[i][2]; cw += vw[i] * g_pm[i][3]; }
+        if (std::fabs(cw) > 1e-6f) o[2] = cz / cw;
+    }
     return std::isfinite(o[0]) && std::isfinite(o[1]);
 }
 Cam readCam(uint8_t *rdram)
@@ -735,7 +749,11 @@ void prePresent()
     const Cam cam = readCam(rdram);
     if (!cam.ok) return;
     static const float K = envF("HCTP_PYRO_SIZE", 1.0f); // Nov 10: SvR06 CalcOffest 0x1bb110 corners = unit right/up -> half-size = scale (6.0 compensated the old broken axes)
-    static const float zMul = envF("HCTP_PYRO_ZMUL", 16.0f); // HCTP p16 particles write FTOI4(xyz/w): GS z = 16 * z
+    static const float zMul = envF("HCTP_PYRO_ZMUL", 1.0f); // Nov 11: GS z = (FTOI4(P.z) >> 4) = P.z (XYZF2 packed field;
+    // gs_d3d11_backend.cpp GPU char shader zi). Was 16 -> pyro 16x nearer than the wrestlers (drawn over them). [pyroz] log
+    // proved pm*V == P and pyro z == HCTP z (both ~16.7M/w).
+    static const bool useHctpZ = !(std::getenv("HCTP_PYRO_HCTPZ") && std::getenv("HCTP_PYRO_HCTPZ")[0] == '0');
+    g_pmOk = useHctpZ && hctpGetCharProj(g_pm);
     // group by (texture, blend)
     std::map<uint32_t, std::vector<GS::HostTri>> groups;
     std::map<uint32_t, std::pair<uint16_t, uint16_t>> dims;
