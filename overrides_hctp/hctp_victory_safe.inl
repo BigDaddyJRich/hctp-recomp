@@ -24,7 +24,8 @@ void convertDoramockFromMoves(uint8_t *rdram, R5900Context *ctx, PS2Runtime *run
         g_origConvertDoramock(rdram,ctx,runtime);
         return;
     }
-    if (event<6200 || event>6455)
+    static const bool evtk=std::getenv("HCTP_VICTORY_EVTK")!=nullptr; // Nov 7 opt-in: 4000-4999 = evtTkme scenes
+    if ((event<6000 || event>6455) && !(evtk && event>=4000 && event<=4999)) // Nov 7: whole EVDR range 6000-6350
     {
         std::fprintf(stderr,"[victory] unsupported list %d / event %d; using safe default\n",n,event);
         event=6259;
