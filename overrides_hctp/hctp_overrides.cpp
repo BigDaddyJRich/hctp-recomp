@@ -7284,6 +7284,9 @@ namespace
     // fixed number ranges (ENTRANCE_PORT_MASTER): 7000 SvR04 singles, 7200 SvR04 tags, 7400 SvR06 singles, 7600 SvR06 tags
     uint8_t svrKindOf(uint16_t ev) { return ((ev >= 7200u && ev < 7400u) || (ev >= 7600u && ev < 7800u)) ? uint8_t(2) : uint8_t(1); }
     std::map<uint16_t, SvrEvent> g_svrEvents;      // virtual event no (and +100 variant) -> SvR event
+    // Nov 10 Mr. America: virtual event -> HCTP light motion that replaces the SvR lights (entrances.txt light=<n>)
+    std::map<uint16_t, uint16_t> g_svrLightOverride;
+    uint16_t g_svrCurEv = 0;                       // event of the last CEventSystem::SetEvent
     // MODS\SVR04\entrances.txt (tools\stage_entrance_port.py from notes\ENTRANCE_PORT_MASTER_20261110.csv):
     // "<svr04 no> <hctp event> <donor hctp event> <name>" -> fixed virtual numbers (7000+, plane +100).
     struct SvrTableRow { uint16_t ev; int16_t donor; std::string name; };
@@ -8231,7 +8234,34 @@ namespace
             if (line.empty() || line[0] == '#' || std::sscanf(line.c_str(), "%u %u %d", &no, &ev, &donor) < 3 || ev < 3000u || ev > 32000u)
                 continue;
             ++rows;
-            ok += svr06Register(no, 0x2Du, static_cast<uint16_t>(ev), static_cast<int16_t>(donor)) > 0 ? 1 : 0;
+            unsigned light = 0;
+            if (const size_t lp = line.find("light="); lp != std::string::npos)
+                light = static_cast<unsigned>(std::strtoul(line.c_str() + lp + 6, nullptr, 10));
+            // Nov 10 Mr. America: a 2nd row of an already registered SvR06 event = alias (same bank/row/props/pyro), own
+            // number; light=<HCTP light motion> replaces the SvR06 lights on that number (svr06LightsStart)
+            if (auto base = g_svr06Registered.find(static_cast<uint16_t>(no)); base != g_svr06Registered.end() && base->second != ev)
+            {
+                for (uint16_t d : {uint16_t(0u), uint16_t(100u)})
+                    if (auto be = g_svrEvents.find(static_cast<uint16_t>(base->second + d)); be != g_svrEvents.end())
+                    {
+                        const uint16_t ae = static_cast<uint16_t>(ev + d);
+                        g_svrEvents[ae] = be->second;
+                        g_svrEvents[ae].donorEv = static_cast<int16_t>(donor);
+                        if (auto bp = g_svrPac.find("/EVET/" + std::to_string(base->second + d)); bp != g_svrPac.end())
+                            g_svrPac["/EVET/" + std::to_string(ae)] = bp->second;
+                        if (light != 0u)
+                            g_svrLightOverride[ae] = static_cast<uint16_t>(light);
+                    }
+                std::fprintf(stderr, "[svr06ent] alias %u/%u = SvR06 %u (event %u), light override %u%c", ev, ev + 100u, no,
+                             unsigned(base->second), light, 10);
+                ++ok;
+                continue;
+            }
+            const int got = svr06Register(no, 0x2Du, static_cast<uint16_t>(ev), static_cast<int16_t>(donor));
+            ok += got > 0 ? 1 : 0;
+            if (got > 0 && light != 0u)
+                g_svrLightOverride[static_cast<uint16_t>(got)] = g_svrLightOverride[static_cast<uint16_t>(got + 100)] =
+                    static_cast<uint16_t>(light);
         }
         if (!g_svr06Registered.count(4044u)) // no table: keep the Nov 9 Brock proof row (CAM 3944 sentinel)
             svr06Register(4044u, 0xFFu, 0, 3044);
@@ -8411,6 +8441,7 @@ namespace
         g_svrEventActive = it != g_svrEvents.end();
         g_svr06Active = g_svrEventActive && it->second.game == 6;
         g_svr06LightsSet = false;
+        g_svrCurEv = ev;
         // STEP 2: per-event SvR06 light bank + pyro armed by the SvR06 event id (any PCEN/GMEV pack), previews and matches
         static const bool pyroOn = !(std::getenv("HCTP_SVR06_PYRO") && std::getenv("HCTP_SVR06_PYRO")[0] == '0');
         if (g_svr06Active)
@@ -8836,6 +8867,11 @@ namespace
     {
         const uint32_t ra = regU(ctx, 31);
         g_motionLightThis = regU(ctx, 4) & 0x1FFFFFFu;
+        if (g_svrEventActive && ra >= 0x1b3120u && ra < 0x1b4e30u && g_svrLightOverride.count(g_svrCurEv))
+        {
+            ctx->pc = ra; // Nov 10 Mr. America: light override owns the lights; the bank's own light ops are dropped
+            return;
+        }
         if (g_svrEventActive && ra >= 0x1b3120u && ra < 0x1b4e30u && svrLightsEnabled())
         {
             svrLightSwapIn(rdram, runtime);
@@ -8872,6 +8908,32 @@ namespace
         if (g_svr06LightsSet)
             return;
         g_svr06LightsSet = true;
+        // Nov 10 Mr. America (Jordan): same SvR06 entrance, lights replaced by one HCTP light motion (3052 = the unused
+        // red/white/blue motion, notes\LIGHTING_LIST_20261026.md) on the colour slots 0-2 (wrestler) + 4-6 (arena);
+        // ambients 3/7 keep the current lighting. HCTP's own light banks stay in the CEKeys (no SvR06 bank swap).
+        if (auto lo = g_svrLightOverride.find(g_svrCurEv); lo != g_svrLightOverride.end())
+        {
+            if (g_motionLightThis == 0u || g_origMotionLightSet == nullptr)
+            {
+                std::fprintf(stderr, "[svr06light] override %u skipped (CMotionLight %08x)%c", lo->second, g_motionLightThis, 10);
+                return;
+            }
+            const __m128i a0 = ctx->r[4], a1 = ctx->r[5], a2 = ctx->r[6], a3 = ctx->r[7];
+            const uint32_t pc = ctx->pc;
+            for (uint32_t slot : {0u, 1u, 2u, 4u, 5u, 6u})
+            {
+                SET_GPR_U32(ctx, 4, g_motionLightThis);
+                SET_GPR_U32(ctx, 5, slot);
+                SET_GPR_U32(ctx, 6, lo->second);
+                SET_GPR_U32(ctx, 7, 0u);
+                g_origMotionLightSet(rdram, ctx, runtime); // leaf (no calls)
+            }
+            ctx->r[4] = a0, ctx->r[5] = a1, ctx->r[6] = a2, ctx->r[7] = a3;
+            ctx->pc = pc;
+            std::fprintf(stderr, "[svr06light] event %u: HCTP light %u on slots 0-2,4-6 (SvR06 lights replaced)%c", g_svrCurEv,
+                         lo->second, 10);
+            return;
+        }
         static const bool on = !(std::getenv("HCTP_SVR06_LIGHTS") && std::getenv("HCTP_SVR06_LIGHTS")[0] == '0');
         if (!on || g_svr06LightHost.empty() || g_motionLightThis == 0u || g_origMotionLightSet == nullptr || g_svrLightSwapped)
         {
