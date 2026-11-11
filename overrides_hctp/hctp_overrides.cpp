@@ -1462,11 +1462,12 @@ namespace
     // A group with one id does nothing until its second slot is added (roster expansion): just add the new id.
     constexpr OneOfGroup kOneOfGroups[] = {
         {{0x03, 0x48, kNoId, kNoId}, "You can't enter Undertaker and", "The Undertaker at the same time."}, // stock
-        {{0x20, 0x4E, kNoId, kNoId}, "You can't enter Hulk Hogan and", "Legend Hulk Hogan at the same time."},
-        {{0x07, kNoId, kNoId, kNoId}, "You can't enter Kane and", "Legend Kane at the same time."},           // + 90s Kane
-        {{0x00, kNoId, kNoId, kNoId}, "You can't enter The Rock and", "Legend The Rock at the same time."},   // + SvR 90s Rock
+        // Nov 11 (Jordan): Hogan group = Hulk Hogan, Legend, Hollywood 0xC1, Mr. America 0xC2.
+        {{0x20, 0x4E, 0xC1, 0xC2}, "You can't enter two versions of", "Hulk Hogan at the same time."},
+        {{0x07, 0xD2, kNoId, kNoId}, "You can't enter Kane and", "Masked Kane at the same time."},           // D2 = SvR04 Masked Kane
+        {{0x00, 0xD1, kNoId, kNoId}, "You can't enter The Rock and", "Legend The Rock at the same time."},   // D1 = SvR04 Rock (Legend)
         {{0x44, 0xA2, kNoId, kNoId}, "You can't enter Roddy Piper and", "Legend Roddy Piper at the same time."}, // Piper = 0x44 (0x45 = DiBiase); 0xA2 = new Modern Piper slot
-        // Mr. America: add 0x20's group if he should count as a Hogan.
+        {{0xD3, 0xAA, kNoId, kNoId}, "You can't enter Mick Foley and", "Mankind at the same time."},          // D3 Foley (Nero 3X), AA Mankind
     };
     int g_oneOfHit = -1;          // group of the last refusal (GetWarningMsg reads it)
     uint32_t g_oneOfMsg[std::size(kOneOfGroups)] = {}; // guest {char *lines[5], count} per group
@@ -1484,7 +1485,9 @@ namespace
     // (CRoyalRumbleFrame::ElectRumbleStar 0x300690). Stock list below; add new legend slot ids to kExtraLegends
     // (90s Rock, 90s Kane, Andre...). Modern Piper / Modern Hogan 0x20 stay out.
     constexpr uint16_t kStockLegends[] = {0x3A, 0x44, 0x45, 0x46, 0x48, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50, 0x51, 0x52};
-    constexpr uint16_t kExtraLegends[] = {kNoId};
+    // Nov 11: every legend slot (record brand +0x163 = 5): Bret, Andre, Beefcake, Bulldog, JYD, Jake, Hollywood Hogan,
+    // Mr. America, Mankind, Rock (Legend) D1, Masked Kane D2.
+    constexpr uint16_t kExtraLegends[] = {0xA3, 0xAB, 0xAC, 0xAD, 0xBE, 0xBF, 0xC1, 0xC2, 0xAA, 0xD1, 0xD2};
     void isLegendExtended(uint8_t *, R5900Context *ctx, PS2Runtime *)
     {
         const uint32_t id = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0xFFFFu;
