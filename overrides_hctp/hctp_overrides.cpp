@@ -11589,6 +11589,49 @@ bool hctpCodeLt10k(int64_t v)
     }
     return v < 10000;
 }
+// Nov 11 EVENT PROP TEXTURE WINDOW (runner patch, tools\patch_prop_texwindow.py, MakeWeapon__FiiPib 0x2117a4).
+// Event props (CEventInfo::CreateEventObject 0x224950 -> MakeWeapon(id, 0x3000, &out, 1)) all share one VRAM base
+// [0x526D48]; MakeWeapon saves/restores a VRAM window there (sceGsSetDefStoreImage 0x101c70 / LoadImage 0x101a88 at
+// 0x21184c/0x211874). Window size comes from a HARD-CODED id list (0x2117a0: id-0x82A < 5, 0x83F, 0x843 -> 0x100x0xC0 CT32
+// = 0x300 blocks; else 0x80x0x80 = 0x100 blocks). Same code + list in SvR04 proto MakeWeapon 0x2199d0 (0x219c3c).
+// Ported props are served under new ids (SvR04 +800, SvR06/SYM 2200+..2600+), so textures above block 0x100 were cut
+// (SvR04 2092/2093/2111/2112/2113, SYM 0x101/0x103: windshield/top garbled, body fine). Fix: big window when the prop's
+// texpack (entry 10, copied to $fp by CDataC::Copy at 0x2116ec) really spans > 0x100 blocks. HCTP_PROP_TEXWINDOW=0 = stock.
+bool hctpPropBigWindow(const uint8_t *rdram, uint32_t id, uint32_t texpack, bool stockBig)
+{
+    static const bool on = !(std::getenv("HCTP_PROP_TEXWINDOW") && std::getenv("HCTP_PROP_TEXWINDOW")[0] == '0');
+    if (stockBig || !on || texpack == 0u || texpack >= 0x2000000u - 0x40u)
+        return stockBig;
+    auto u32 = [&](uint32_t a) { uint32_t v; std::memcpy(&v, rdram + a, 4); return v; };
+    const uint32_t n = u32(texpack);
+    if (n == 0u || n > 256u)
+    {
+        std::fprintf(stderr, "[propwin] MakeWeapon id %u: texpack 0x%X unreadable (count %u, %.4s)%c", id, texpack, n,
+                     reinterpret_cast<const char *>(rdram + texpack), 10);
+        return false;
+    }
+    uint32_t end = 0;
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        const uint32_t off = u32(texpack + 0x10u + 0x20u * i + 0x18u);
+        const uint32_t t = texpack + off;
+        if (off == 0u || t + 0x40u >= 0x2000000u || std::memcmp(rdram + t, "RTX3", 4) != 0)
+            continue;
+        const uint64_t tex0 = uint64_t(u32(t + 8u)) | (uint64_t(u32(t + 12u)) << 32);
+        const uint32_t tbp = uint32_t(tex0 & 0x3FFFu), psm = uint32_t((tex0 >> 20) & 0x3Fu);
+        const uint32_t w = 1u << ((tex0 >> 26) & 0xFu), h = 1u << ((tex0 >> 30) & 0xFu);
+        const uint32_t cbp = uint32_t((tex0 >> 37) & 0x3FFFu);
+        const uint32_t bpp = psm == 0x14u ? 4u : psm == 0x13u ? 8u : psm == 0x02u ? 16u : 32u;
+        const uint32_t blocks = (w * h * bpp / 8u + 255u) / 256u;
+        end = std::max(end, tbp + blocks);
+        if (psm == 0x13u || psm == 0x14u)
+            end = std::max(end, cbp + (psm == 0x13u ? 4u : 1u));
+    }
+    const bool big = end > 0x100u;
+    std::fprintf(stderr, "[propwin] MakeWeapon id %u texpack span 0x%X blocks -> %s window%s%c", id, end, big ? "BIG 0x300" : "small 0x100",
+                 end > 0x300u ? " (EXCEEDS 0x300: still cut)" : "", 10);
+    return big;
+}
 
 // Nov 7 SvR TWIST LIST (notes\ANY_BONE_ANIMATION_RESEARCH_20261106.md s17): CCharIK::ActionLink 0x1b8860 re-solves
 // the bones of the 12-entry twist list 0x4129f0 after the limb IK (loop 0x1b933c..0x1b95c4). SvR04 ActionLink 0x1ab6f0
