@@ -7293,6 +7293,7 @@ namespace
     std::vector<uint8_t> g_svrSevp;                // SvR ENTR/SEVP bytes (base = +8)
     std::map<uint16_t, std::pair<uint32_t, uint32_t>> g_svrEvetDir; // SvR EVET no -> (sector, size/0x100)
     std::map<uint16_t, std::pair<uint32_t, uint32_t>> g_svrSobjDir; // SvR SOBJ hex id -> (sector, size/0x100)
+    std::map<uint16_t, std::pair<uint32_t, uint32_t>> g_svr06SobjDir; // SvR06 bg.pac SOBJ hex id -> (sector, size/0x100)
     bool g_svrEventActive = false;
     // Nov 10 SvR06 build 10: reader event playing (game 6), CMotionLight ('CMOL' link, seen at CMotionLight::Set),
     // host light bank built from the SvR06 bank's global obj 0xB tracks y1..y8 (see svr06Register / svr06LightsStart).
@@ -7391,8 +7392,43 @@ namespace
             if (std::strcmp(tag, "SOBJ") == 0)
                 g_svrSobjDir[id] = {sec, sz};
         });
-        if (g_svrPacFiles.size() < 3u)
-            g_svrPacFiles.resize(3u); // [2] = SvR06 evt.pac (svr06Register)
+        // Nov 10 STEP 5: SvR06 bg.pac (props 2024..2083, vehicles 2500-2503) = file 4, same id-form SOBJ group
+        // SvR06 DPAC named groups carry DOUBLED counts (evt.pac too) -> own walk: named = n/2 x 8 B, id-form = n&0x7FFF x 4 B
+        auto readDir06 = [](const char *file) -> bool {
+            std::ifstream f6(file, std::ios::binary);
+            std::vector<uint8_t> h6(0x4000);
+            if (!f6 || !f6.read(reinterpret_cast<char *>(h6.data()), 0x4000) || std::memcmp(h6.data(), "DPAC", 4) != 0)
+                return false;
+            for (uint32_t off = 0x800; off + 8 <= 0x4000 && std::memcmp(&h6[off], "\0\0\0\0", 4) != 0;)
+            {
+                uint16_t n, start;
+                std::memcpy(&n, &h6[off + 4], 2);
+                std::memcpy(&start, &h6[off + 6], 2);
+                if (n & 0x8000u)
+                {
+                    const uint32_t cnt = n & 0x7FFFu;
+                    uint32_t sec = 8u + start;
+                    for (uint32_t i = 0; i < cnt && off + 12 + 4 * i <= 0x4000; ++i)
+                    {
+                        uint16_t id, sz;
+                        std::memcpy(&id, &h6[off + 8 + 4 * i], 2);
+                        std::memcpy(&sz, &h6[off + 10 + 4 * i], 2);
+                        if (std::memcmp(&h6[off], "SOBJ", 4) == 0)
+                            g_svr06SobjDir[id] = {sec, sz};
+                        sec += (sz * 0x100u + 0x7FFu) >> 11;
+                    }
+                    off += 8 + 4 * cnt;
+                }
+                else
+                    off += 8 + 8 * (n / 2u);
+            }
+            return true;
+        };
+        if (!readDir06("MODS/SVR06/bg.pac"))
+            std::fprintf(stderr, "[svr06ent] MODS\\SVR06\\bg.pac missing: SvR06 entrance props hidden (copy SvR06 PAC\\BG.PAC there)%c", 10);
+        if (g_svrPacFiles.size() < 5u)
+            g_svrPacFiles.resize(5u); // [2] = SvR06 evt.pac, [3] = CEVN.PAC cache (svr06Register), [4] = SvR06 bg.pac
+        g_svrPacFiles[4] = {"MODS/SVR06/bg.pac", "MODS\\SVR06\\BG.PAC"};
         g_svrPacFiles[0] = {"MODS/SVR04/evtEnt.pac", "MODS\\SVR04\\EVTENT.PAC"};
         g_svrPacFiles[1] = {"MODS/SVR04/bg.pac", "MODS\\SVR04\\BG.PAC"};
         std::fprintf(stderr, "[svrent] SvR04 evtEnt.pac: %zu EVET banks, SEVP %zu B; bg.pac %zu SOBJ%c", g_svrEvetDir.size(),
@@ -7412,6 +7448,16 @@ namespace
         return 0;
     }
     uint16_t svrPropId(uint16_t model) { return (model >= 2000u && model < 2200u && model != 2019u) ? uint16_t(model + 800u) : model; }
+    // Nov 10 STEP 5: SvR06 props -> free SOBJ ids (HCTP stock 2001-2116, SvR04 2800-2999): 2000-2199 -> +400 (2400-2599),
+    // vehicles 2500-2599 -> +100 (2600-2699); belts 2019/2021 stay the engine belt (2021 -> 2019 in svr06EnsureRow).
+    uint16_t svr06PropId(uint16_t model)
+    {
+        if (model >= 2000u && model < 2200u && model != 2019u && model != 2021u)
+            return static_cast<uint16_t>(model + 400u);
+        if (model >= 2500u && model < 2600u)
+            return static_cast<uint16_t>(model + 100u);
+        return model;
+    }
     int svrEntranceRegister(unsigned svrNo, uint8_t tmpl)
     {
         if (std::getenv("HCTP_SVRENT") && std::strcmp(std::getenv("HCTP_SVRENT"), "0") == 0)
@@ -7635,6 +7681,15 @@ namespace
     std::map<uint16_t, uint16_t> g_svr06Registered;                    // SvR06 event no -> virtual event
     std::map<uint16_t, std::pair<std::vector<uint8_t>, uint8_t>> g_svr06Lights; // SvR06 no -> host light bank + mask
     size_t g_svr06LightMax = 0;
+    // Nov 10 STEP 5 nWo GRAYSCALE (Hollywood Hogan 2 = SvR06 4071): SvR06 camera attr op 0x3A = MotionCameraBase::SetAttr
+    // -> MakeCamEff(a, b) (SvR06 0x5020d0): a 31..38 = CGrayscaleFast SetClut(a-30) + fade in over b frames, a 30 = fade
+    // back to colour over b frames (4071: on scene 0 f30, off scene 4 (x 20) f280). Not in the SvR06 script effect table
+    // (types 1/8 only; SvR06 effect 6 ScreenColor is unused by retail). HCTP: effect type 6 CEventColorFilter (start/stop
+    // scene+frame = entry +2/+4 and +6/+8) param 1 = PalleteChange 0x195c60 grayscale (2R+4G+B)/7 on registered CLUTs.
+    // No fade in HCTP (switch at the fade midpoint). End/Release force ChangeColorPallte(0) (skipped entrances).
+    struct Svr06Gray { uint16_t onSc = 0xFFFF, onFr = 0, offSc = 100, offFr = 0; };
+    std::map<uint16_t, Svr06Gray> g_svr06Gray; // SvR06 event no -> grayscale window
+    bool g_svrGrayArmed = false;
     int svr06Register(unsigned no, uint8_t tmpl, uint16_t fixedEv = 0, int16_t donorEv = 0)
     {
         if (auto done = g_svr06Registered.find(static_cast<uint16_t>(no)); done != g_svr06Registered.end())
@@ -7785,6 +7840,40 @@ namespace
                 std::fprintf(stderr, "[svr06light] %u light tracks (mask %02x, bank %zu B)%c", lcnt, g_svr06LightMask, g_svr06LightHost.size(), 10);
                 g_svr06Lights[static_cast<uint16_t>(no)] = {g_svr06LightHost, g_svr06LightMask}; // STEP 2: per event
                 g_svr06LightMax = std::max(g_svr06LightMax, g_svr06LightHost.size());
+                // STEP 5: grayscale window from the camera track (obj 0x0A, take y0) attr blocks: 3A <type> <frames>
+                Svr06Gray gw;
+                for (uint32_t i = 0; i < n; ++i)
+                {
+                    const uint32_t key = dir[i].key;
+                    if (((key >> 16) & 0x3FFFu) != 0x0Au || (key & 0xFFu) != 0u || dir[i].off == 0xFFFFFu || data0 + dir[i].off >= bk.size())
+                        continue;
+                    const uint16_t sc = static_cast<uint16_t>(((key >> 8) & 0xFFu) / 5u);
+                    walk(data0 + dir[i].off, data0 + segEnd(dir[i].off), [&](uint32_t fr, size_t p, size_t sz) {
+                        if (!sz || !(bk[p] & 0x80u))
+                            return;
+                        const size_t b1 = std::min(p + 1u + (bk[p] & 0x7Fu), std::min(p + sz, bk.size()));
+                        for (size_t q = p + 1u; q + 2u < b1 + 1u; ++q)
+                        {
+                            if (bk[q] != 0x3Au || bk[q + 1] < 0x1Eu || bk[q + 1] > 0x26u)
+                                continue;
+                            const uint16_t at = static_cast<uint16_t>(fr + bk[q + 2] / 2u); // fade midpoint
+                            if (bk[q + 1] >= 0x1Fu)
+                            {
+                                if (gw.onSc == 0xFFFFu || sc < gw.onSc || (sc == gw.onSc && at < gw.onFr))
+                                    gw.onSc = sc, gw.onFr = at;
+                            }
+                            else if (gw.onSc != 0xFFFFu && (sc > gw.onSc || at > gw.onFr))
+                                gw.offSc = sc, gw.offFr = at;
+                            q += 2u;
+                        }
+                    });
+                }
+                if (gw.onSc != 0xFFFFu)
+                {
+                    g_svr06Gray[static_cast<uint16_t>(no)] = gw;
+                    std::fprintf(stderr, "[svr06ent] event %u grayscale (SvR06 MakeCamEff 31): on scene %u f%u, off scene %u f%u%c", no,
+                                 gw.onSc, gw.onFr, gw.offSc, gw.offFr, 10);
+                }
             }
             std::map<uint32_t, std::vector<float>> shiftAt; // scene x -> per frame entrant shift
             std::set<uint32_t> entrantOffs;
@@ -8084,6 +8173,34 @@ namespace
             g_svr06Raw[ev] = {bSec, bSzRaw};
         }
         g_svr06Registered[static_cast<uint16_t>(no)] = v;
+        // STEP 5: props with a slot on -> SvR06 bg.pac SOBJ under svr06PropId (served from file 4, nothing copied)
+        if (auto sit = g_svr06Script.find(static_cast<uint16_t>(no)); sit != g_svr06Script.end() && svrLoadPacs())
+        {
+            const std::vector<uint8_t> &d = sit->second;
+            auto u16 = [&d](uint32_t o) { uint16_t x = 0; if (o + 2 <= d.size()) std::memcpy(&x, &d[o], 2); return x; };
+            auto u32 = [&d](uint32_t o) { uint32_t x = 0; if (o + 4 <= d.size()) std::memcpy(&x, &d[o], 4); return x; };
+            const uint32_t t = u32(0x48) + 8u;
+            for (uint32_t c = 0; c < u16(0x42) && t + 28u * c + 28u <= d.size(); ++c)
+            {
+                const uint32_t q = t + 28u * c, nsl = u32(q + 20) & 0xFFFFu, bp = u32(q + 24) + 8u;
+                const uint16_t model = u16(q + 2);
+                bool anyOn = false;
+                for (uint32_t k = 0; k < 5u && 5u * k < nsl; ++k)
+                    anyOn |= bp + 212u * 5u * k + 3u <= d.size() && d[bp + 212u * 5u * k + 2u] != 0u;
+                if (d[q + 6] != 1u || !anyOn || svr06PropId(model) == model)
+                    continue;
+                const uint16_t hexId = static_cast<uint16_t>(std::stoul(std::to_string(model), nullptr, 16));
+                auto so = g_svr06SobjDir.find(hexId);
+                if (so == g_svr06SobjDir.end())
+                {
+                    std::fprintf(stderr, "[svr06ent] event %u prop %u: not in SvR06 bg.pac%c", no, model, 10);
+                    continue;
+                }
+                g_svrPac["/SOBJ/" + std::to_string(svr06PropId(model))] = {4, so->second.first, so->second.second};
+                std::fprintf(stderr, "[svr06ent] event %u prop %u -> SOBJ %u (%u B)%c", no, model, svr06PropId(model),
+                             so->second.second * 0x100u, 10);
+            }
+        }
         std::fprintf(stderr, "[svr06ent] SvR06 event %u -> HCTP event %u/%u (bank %u/%u B, donor ev %d / template 0x%02X)%c", no, v,
                      unsigned(v + 100u), passSz[0] * 0x100u, passSz[1] * 0x100u, donorEv, tmpl, 10);
         return v;
@@ -8158,6 +8275,8 @@ namespace
             }
             else if (isProp && model == 2021u)
                 model = 2019u;                 // SvR06 belt -> HCTP belt (op 0xB6 = HCTP belt op)
+            else if (isProp && keep)
+                model = svr06PropId(model);    // STEP 5: SvR06 bg.pac prop (was: same-number HCTP stock prop)
             std::memcpy(ch + 2, &model, 2);
             const uint32_t w4 = 0xFFFFFFFFu, w5 = 0u, ns = keep ? 5u : 0u;
             std::memcpy(ch + 12, &w4, 4);
@@ -8204,6 +8323,29 @@ namespace
         for (uint32_t i = 0; i < efCount; ++i)
             if (gU16(rdram, efRows + 8u * i) == static_cast<uint16_t>(donor))
                 donorN = gU16(rdram, efRows + 8u * i + 2), donorEnt = gU32(rdram, efRows + 8u * i + 4);
+        if (auto gw = g_svr06Gray.find(se.svrNo); gw != g_svr06Gray.end())
+        {
+            // STEP 5: donor entries + HCTP type 6 ColorFilter {type, on sc, on fr, off sc, off fr, npar 1, params}
+            const uint32_t ents = runtime->guestMalloc(16u * (donorN + 1u) + 32u);
+            for (uint32_t j = 0; j < donorN; ++j)
+            {
+                uint8_t e[16];
+                std::memcpy(e, rdram + ((donorEnt + 16u * j) & 0x1FFFFFFu), 16);
+                gPut(rdram, ents + 16u * j, e, 16);
+            }
+            const uint32_t par = ents + 16u * (donorN + 1u);
+            const uint32_t kind = 3u, valAt = par + 8u, gray = 1u;
+            gPut(rdram, par, &kind, 4);
+            gPut(rdram, par + 4u, &valAt, 4);
+            gPut(rdram, valAt, &gray, 4);
+            const uint16_t e16[6] = {6u, gw->second.onSc, gw->second.onFr, gw->second.offSc, gw->second.offFr, 1u};
+            gPut(rdram, ents + 16u * donorN, e16, 12);
+            gPut(rdram, ents + 16u * donorN + 12u, &par, 4);
+            donorEnt = ents;
+            ++donorN;
+            std::fprintf(stderr, "[svr06ent] event %u: + ColorFilter grayscale effect (scene %u f%u -> scene %u f%u)%c", ev,
+                         gw->second.onSc, gw->second.onFr, gw->second.offSc, gw->second.offFr, 10);
+        }
         const uint32_t frows = runtime->guestMalloc(8u * (efCount + 1u) + 16u);
         std::vector<uint8_t> ftmp(8u * efCount);
         std::memcpy(ftmp.data(), rdram + (efRows & 0x1FFFFFFu), ftmp.size());
@@ -8273,6 +8415,7 @@ namespace
         static const bool pyroOn = !(std::getenv("HCTP_SVR06_PYRO") && std::getenv("HCTP_SVR06_PYRO")[0] == '0');
         if (g_svr06Active)
         {
+            g_svrGrayArmed = g_svrGrayArmed || g_svr06Gray.count(it->second.svrNo) != 0;
             auto lt = g_svr06Lights.find(it->second.svrNo);
             g_svr06LightHost = lt != g_svr06Lights.end() ? lt->second.first : std::vector<uint8_t>();
             g_svr06LightMask = lt != g_svr06Lights.end() ? lt->second.second : uint8_t(0);
@@ -8491,19 +8634,48 @@ namespace
         g_svrLightSwapped = false;
         std::fprintf(stderr, "[svrlight] HCTP light banks restored%c", 10);
     }
+    // STEP 5: palette back to normal after a grayscale SvR06 entrance (CColorFilterMangaer::GetInstance 0x196270,
+    // ChangeColorPallte 0x1962e0 (inst, 0)); only when the hooked original really returned (ctx->pc == ra).
+    void svrGrayRestore(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t ra)
+    {
+        if (!g_svrGrayArmed || ctx->pc != ra)
+            return;
+        g_svrGrayArmed = false;
+        PS2Runtime::RecompiledFunction inst = runtime->lookupFunction(0x196270u), change = runtime->lookupFunction(0x1962e0u);
+        if (inst == nullptr || change == nullptr)
+            return;
+        const __m128i a0 = ctx->r[4], a1 = ctx->r[5], v0 = ctx->r[2], v1 = ctx->r[3], r31 = ctx->r[31];
+        SET_GPR_U32(ctx, 31, ra);
+        inst(rdram, ctx, runtime);
+        const uint32_t mgr = regU(ctx, 2);
+        if (mgr != 0u)
+        {
+            SET_GPR_U32(ctx, 4, mgr);
+            SET_GPR_U32(ctx, 5, 0u);
+            SET_GPR_U32(ctx, 31, ra);
+            change(rdram, ctx, runtime);
+        }
+        ctx->r[4] = a0, ctx->r[5] = a1, ctx->r[2] = v0, ctx->r[3] = v1, ctx->r[31] = r31;
+        ctx->pc = ra;
+        std::fprintf(stderr, "[svr06ent] grayscale palette restored (filter manager %08x)%c", mgr, 10);
+    }
     void evsEndSvr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         g_svrEventActive = false;
         g_svr06Active = false;
         svrLightRestore(rdram);
+        const uint32_t ra = regU(ctx, 31);
         g_origEvsEnd(rdram, ctx, runtime);
+        svrGrayRestore(rdram, ctx, runtime, ra);
     }
     void evsReleaseSvr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         g_svrEventActive = false;
         g_svr06Active = false;
         svrLightRestore(rdram);
+        const uint32_t ra = regU(ctx, 31);
         g_origEvsRelease(rdram, ctx, runtime);
+        svrGrayRestore(rdram, ctx, runtime, ra);
     }
     // ---- Nov 10 RAMP JITTER fix (camera 30 Hz vs body 60 Hz, [camroot] TEST 11). Code read (hctp_dis/svr06_dis):
     // HCTP CEventMotionCamera::FrameActive 0x1646f0 runs every tick but SetNextFrame 0x164b60 lets it read a key only on
