@@ -3149,8 +3149,11 @@ namespace
                 g_loosePac["/" + tag + "/" + key] = {static_cast<uint32_t>(f.file_size(ec)), -1};
             }
         }
-        for (const char *k : {"WAZA", "LIST"}) // Nov 7/8: HCTP_VICTORY_EVTK add-on lists MODS/PAC/MOVK/<k>
-            if (std::getenv("HCTP_VICTORY_EVTK") != nullptr && std::filesystem::exists(std::string("MODS/PAC/MOVK/") + k, ec))
+        // Nov 7/8: HCTP_VICTORY_EVTK add-on lists MODS/PAC/MOVK/<k>. Nov 10 entrance port: MOVK/LIST (CAM entrance list,
+        // tools\stage_entrance_port.py) is served in EVERY run; WAZA stays opt-in.
+        for (const char *k : {"WAZA", "LIST"})
+            if ((std::getenv("HCTP_VICTORY_EVTK") != nullptr || std::strcmp(k, "LIST") == 0) &&
+                std::filesystem::exists(std::string("MODS/PAC/MOVK/") + k, ec))
                 g_loosePac[std::string("/MOVE/") + k] = {
                     static_cast<uint32_t>(std::filesystem::file_size(std::string("MODS/PAC/MOVK/") + k, ec)), -1};
     }
@@ -3239,8 +3242,8 @@ namespace
             const bool device = sepAt != std::string::npos && (sepAt == 0 || stock[sepAt - 1] == ':'); // "\" / "cdrom0:\"
             std::string name = (device ? stock.substr(0, sepAt + 1) : std::string()) + "MODS" + sep +
                                "PAC" + (path + 0) + (stock.find(";1") != std::string::npos ? ";1" : "");
-            if ((std::strcmp(path, "/MOVE/WAZA") == 0 || std::strcmp(path, "/MOVE/LIST") == 0) &&
-                std::getenv("HCTP_VICTORY_EVTK") != nullptr &&
+            if ((std::strcmp(path, "/MOVE/LIST") == 0 || (std::strcmp(path, "/MOVE/WAZA") == 0 &&
+                                                         std::getenv("HCTP_VICTORY_EVTK") != nullptr)) &&
                 std::filesystem::exists(std::string("MODS/PAC/MOVK/") + (path + 6)))
                 name.replace(name.find("MOVE"), 4, "MOVK"); // Nov 7: HCTP_VICTORY_EVTK add-on victory list
             for (char &c : name)
@@ -3581,7 +3584,7 @@ namespace
             std::memcpy(&cur, rdram + common + 0x56u, 2);
         // Nov 9 HCTP_SVR06_PYRO: CAM entrance row 3944 = Brock's stock 3044 + SvR06 PCEN/GMEV 4044 pyro (host-drawn,
         // hctp_svr06_pyro.cpp). Any other entrance preview clears it. Stock 3044 (Brock's slot) never arms it.
-        if (type == 2u && std::getenv("HCTP_SVR06_PYRO") != nullptr)
+        if (type == 2u && !(std::getenv("HCTP_SVR06_PYRO") && std::getenv("HCTP_SVR06_PYRO")[0] == '0')) // Nov 10: default on
         {
             // CAM entrance preview: MovesNext 0x3425a0 -> InitEventParam 0x342e30 puts the number at param(a3)+4 and in
             // the cast's game prop +0xEA (prop = 0x4C0F54 + id*0x170, or GetCommon+0x12F44 for the CAW/edit slot).
@@ -7269,8 +7272,15 @@ namespace
     // (template's own entrance); SvR light ops (0x11, SvR light motion ids) -> HCTP lighting stays (CMotionLight::Set
     // from SetAttr skipped while an SvR event runs). TODO: camera ops 0x80/0x82 SetHOff/SetHBetween (skipped by size
     // table today), glasses handoff ops 0xB7/0xBA/0xBC, SvR light id -> HCTP light motion table, SvR06.
-    struct SvrEvent { uint16_t svrNo; uint8_t tmpl; uint8_t game = 4; }; // game 4 = SvR04, 6 = SvR06
+    // Nov 10 STEP 1 entrance port: donorEv != 0 = fixed HCTP donor event for BGM/tron (else roster tmpl +0xEC).
+    struct SvrEvent { uint16_t svrNo; uint8_t tmpl; uint8_t game = 4; int16_t donorEv = 0; }; // game 4 = SvR04, 6 = SvR06
     std::map<uint16_t, SvrEvent> g_svrEvents;      // virtual event no (and +100 variant) -> SvR event
+    // MODS\SVR04\entrances.txt (tools\stage_entrance_port.py from notes\ENTRANCE_PORT_MASTER_20261110.csv):
+    // "<svr04 no> <hctp event> <donor hctp event> <name>" -> fixed virtual numbers (7000+, plane +100).
+    struct SvrTableRow { uint16_t ev; int16_t donor; std::string name; };
+    std::map<uint16_t, SvrTableRow> g_svrTable;    // SvR04 event no -> fixed row
+    std::map<uint16_t, uint16_t> g_svrRegistered;  // SvR04 event no -> registered virtual event
+    int g_svr06NextEv = 3870;                      // SvR06 reader (step 2 gives fixed numbers); 3850 = old Bret alias
     std::vector<uint8_t> g_svrSevp;                // SvR ENTR/SEVP bytes (base = +8)
     std::map<uint16_t, std::pair<uint32_t, uint32_t>> g_svrEvetDir; // SvR EVET no -> (sector, size/0x100)
     std::map<uint16_t, std::pair<uint32_t, uint32_t>> g_svrSobjDir; // SvR SOBJ hex id -> (sector, size/0x100)
@@ -7399,6 +7409,8 @@ namespace
             return 0;
         if (!svrLoadPacs())
             return 0;
+        if (auto done = g_svrRegistered.find(static_cast<uint16_t>(svrNo)); done != g_svrRegistered.end())
+            return done->second; // table row already registered at boot (slot.txt entrance=svr04:<no> reuses it)
         const uint32_t row = svrFindRow(static_cast<uint16_t>(svrNo));
         auto bank = g_svrEvetDir.find(static_cast<uint16_t>(svrNo));
         if (row == 0 || bank == g_svrEvetDir.end())
@@ -7406,12 +7418,30 @@ namespace
             std::fprintf(stderr, "[svrent] SvR04 event %u not in MODS\\SVR04\\evtEnt.pac%c", svrNo, 10);
             return 0;
         }
-        const uint16_t v = static_cast<uint16_t>(3850u + g_svrEvents.size() / 2u);
+        // fixed number from the table, else first free 3850+k (pre-table behaviour, below 3870 = SvR06 counter start)
+        auto trow = g_svrTable.find(static_cast<uint16_t>(svrNo));
+        uint16_t v = 0;
+        if (trow != g_svrTable.end())
+            v = trow->second.ev;
+        else
+            for (uint16_t c = 3851u; c < 3870u && v == 0; ++c)
+                if (!g_svrEvents.count(c))
+                    v = c;
+        if (v == 0)
+            return 0;
+        const int16_t donorEv = trow != g_svrTable.end() ? trow->second.donor : int16_t(0);
         for (uint16_t ev : {v, uint16_t(v + 100u)})
         {
-            g_svrEvents[ev] = {static_cast<uint16_t>(svrNo), tmpl};
+            g_svrEvents[ev] = {static_cast<uint16_t>(svrNo), tmpl, 4, donorEv};
             g_svrPac["/EVET/" + std::to_string(ev)] = {0, bank->second.first, bank->second.second};
         }
+        g_svrRegistered[static_cast<uint16_t>(svrNo)] = v;
+        if (svrNo == 3077u) // Nov 9-10 CAM saves hold Bret's old number 3850 (+100): keep it playing
+            for (uint16_t ev : {uint16_t(3850u), uint16_t(3950u)})
+            {
+                g_svrEvents[ev] = {static_cast<uint16_t>(svrNo), tmpl, 4, donorEv};
+                g_svrPac["/EVET/" + std::to_string(ev)] = {0, bank->second.first, bank->second.second};
+            }
         // props of the event: SvR model ids -> free SOBJ ids served from SvR bg.pac
         const uint32_t nChar = svrU16(row + 2), pChar = svrU32(row + 8) + 8u;
         for (uint32_t c = 0; c < nChar; ++c)
@@ -7427,9 +7457,35 @@ namespace
             else
                 g_svrPac["/SOBJ/" + std::to_string(svrPropId(model))] = {1, so->second.first, so->second.second};
         }
-        std::fprintf(stderr, "[svrent] SvR04 event %u -> HCTP event %u/%u (%u objs, donor template 0x%02X)%c", svrNo, v,
-                     unsigned(v + 100u), nChar, tmpl, 10);
+        std::fprintf(stderr, "[svrent] SvR04 event %u -> HCTP event %u/%u '%s' (%u objs, donor ev %d / template 0x%02X)%c", svrNo, v,
+                     unsigned(v + 100u), trow != g_svrTable.end() ? trow->second.name.c_str() : "-", nChar, donorEv, tmpl, 10);
         return v;
+    }
+    // Nov 10 STEP 1: register every table row at boot (hooks install with no slot.txt user; CAM-saved numbers play in matches)
+    void svrEntranceTableLoad()
+    {
+        std::ifstream f("MODS/SVR04/entrances.txt");
+        if (!f)
+        {
+            std::fprintf(stderr, "[svrent] MODS\\SVR04\\entrances.txt missing: no fixed SvR04 entrance numbers%c", 10);
+            return;
+        }
+        for (std::string line; std::getline(f, line);)
+        {
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
+                line.pop_back();
+            unsigned no, ev; int donor, used = 0;
+            if (line.empty() || line[0] == '#' || std::sscanf(line.c_str(), "%u %u %d %n", &no, &ev, &donor, &used) < 3)
+                continue;
+            if (ev < 3000u || ev > 32000u)
+                continue;
+            g_svrTable[static_cast<uint16_t>(no)] = {static_cast<uint16_t>(ev), static_cast<int16_t>(donor),
+                                                     used > 0 ? line.substr(static_cast<size_t>(used)) : std::string()};
+        }
+        int ok = 0;
+        for (const auto &kv : g_svrTable)
+            ok += svrEntranceRegister(kv.first, 0x2Du) > 0 ? 1 : 0;
+        std::fprintf(stderr, "[svrent] table: %zu SvR04 rows, %d registered%c", g_svrTable.size(), ok, 10);
     }
     uint32_t gU32(uint8_t *rdram, uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & 0x1FFFFFFu), 4); return v; }
     uint16_t gU16(uint8_t *rdram, uint32_t a) { uint16_t v; std::memcpy(&v, rdram + (a & 0x1FFFFFFu), 2); return v; }
@@ -7494,8 +7550,9 @@ namespace
         gPut(rdram, header + 0xC, &rows, 4);
         gPut(rdram, header + 8, &evCount1, 4);
         // effects: SvR entries (timing), BGM/tron values from the donor HCTP event (template's own entrance)
-        int16_t donor = 0;
-        std::memcpy(&donor, rdram + 0x4C0F54u + se.tmpl * 0x170u + 0xECu, 2);
+        int16_t donor = se.donorEv;
+        if (donor == 0)
+            std::memcpy(&donor, rdram + 0x4C0F54u + se.tmpl * 0x170u + 0xECu, 2);
         const uint32_t efCount = gU16(rdram, header + 0x10), efRows = gU32(rdram, header + 0x14);
         uint32_t donorEnt = 0, donorN = 0;
         for (uint32_t i = 0; i < efCount; ++i)
@@ -7971,7 +8028,7 @@ namespace
         if (g_svrPacFiles.size() < 3u)
             g_svrPacFiles.resize(3u);
         g_svrPacFiles[2] = {"MODS/SVR06/evt.pac", "MODS\\SVR06\\EVT.PAC"};
-        const uint16_t v = static_cast<uint16_t>(3850u + g_svrEvents.size() / 2u);
+        const uint16_t v = static_cast<uint16_t>(g_svr06NextEv++);
         for (uint16_t ev : {v, uint16_t(v + 100u)})
         {
             g_svrEvents[ev] = {static_cast<uint16_t>(no), tmpl, 6};
@@ -8086,7 +8143,7 @@ namespace
         g_svrEventActive = it != g_svrEvents.end();
         g_svr06Active = g_svrEventActive && it->second.game == 6;
         g_svr06LightsSet = false;
-        if (ev >= 3000u && ev < 4000u)
+        if (ev >= 3000u && ev < 8000u)
             std::fprintf(stderr, "[svrent] SetEvent call ev %u (svr %d)%c", ev, g_svrEventActive ? 1 : 0, 10);
         if (g_svrEventActive)
         {
@@ -9137,18 +9194,25 @@ namespace
     // Installed LAST in applyHctp so it wraps the cut-roster / Hogan / media hooks on the same functions.
     void installRosterExpansion(PS2Runtime &runtime)
     {
-        if (const char *e = std::getenv("HCTP_ROSTER_EXPAND"); !e || e[0] != '1')
+        // Nov 10 STEP 1: SvR04 entrance table registers at boot, independent of roster expansion; slot.txt
+        // entrance=svr04:<no> then reuses the table number.
+        svrEntranceTableLoad();
+        const char *rxEnv = std::getenv("HCTP_ROSTER_EXPAND");
+        const bool rx = rxEnv != nullptr && rxEnv[0] == '1';
+        const int rxSlots = rx ? rosterxScan() : 0;
+        // Nov 9 SvR06 proof: CAM row 3944 plays the ORIGINAL SvR06 Brock 4044 (evt.pac) + its pyro. HCTP_SVR06_ENT=0 -> old
+        // behaviour (stock 3044 + pyro overlay).
+        // Nov 10: default on (CAM row "Brock Lesnar 2" in the normal launch); HCTP_SVR06_PYRO=0 off
+        if (!(std::getenv("HCTP_SVR06_PYRO") && std::getenv("HCTP_SVR06_PYRO")[0] == '0') && !(std::getenv("HCTP_SVR06_ENT") && std::getenv("HCTP_SVR06_ENT")[0] == '0'))
+            g_svr06CamEvent = svr06Register(4044u, 0xFFu);
+        svrEntranceInstall(runtime); // SvR04 table + slot.txt entrance=svr04:<no> -> SvR entrance reader
+        if (!rx)
             return;
-        if (rosterxScan() == 0)
+        if (rxSlots == 0)
         {
             std::cerr << "[rosterx] roster expansion on, no MODS\\ROSTER\\*\\slot.txt slots" << std::endl;
             return;
         }
-        // Nov 9 SvR06 proof: CAM row 3944 plays the ORIGINAL SvR06 Brock 4044 (evt.pac) + its pyro. HCTP_SVR06_ENT=0 -> old
-        // behaviour (stock 3044 + pyro overlay).
-        if (std::getenv("HCTP_SVR06_PYRO") != nullptr && !(std::getenv("HCTP_SVR06_ENT") && std::getenv("HCTP_SVR06_ENT")[0] == '0'))
-            g_svr06CamEvent = svr06Register(4044u, 0xFFu);
-        svrEntranceInstall(runtime); // slot.txt entrance=svr04:<no> -> SvR entrance reader
         auto hook = [&runtime](uint32_t addr, PS2Runtime::RecompiledFunction &orig, PS2Runtime::RecompiledFunction fn)
         { return (orig = runtime.lookupFunction(addr)) != nullptr && runtime.replaceFunction(addr, fn); };
         bool ok = hook(0x12cec0u, g_rxOrigGetCharaGameProp, rosterxGetCharaGameProp);
