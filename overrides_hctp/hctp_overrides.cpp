@@ -84,6 +84,12 @@ void ps2PinCsrField(uint32_t pc, bool pin, bool field) noexcept;
 // Roster expansion: cast code -> roster id for host code (commentary, PPV). Slot model nos (8600..9999) give the slot's
 // TEMPLATE id (its Finkel/commentary rows), else code/100 / the CAW id. Defined in the ROSTER EXPANSION section.
 uint32_t hctpRosterCodeId(const uint8_t *rdram, uint32_t code);
+// Nov 10 STEP A (permanent codes): slot model no = slot id (0xA2..654) -> slot codes 16200..65499 (code/100 = slot id).
+// hctpIsSlotCode: code belongs to a registered slot. hctpIsCawCode: real CAW code (10000..13199 or 0x639C), never a slot.
+// hctpCodeLt10k: replacement for the guest "slti code, 0x2710" (stock path) at the 24 patched runner sites.
+bool hctpIsSlotCode(uint32_t code);
+inline bool hctpIsCawCode(uint32_t code) { return code >= 10000u && !hctpIsSlotCode(code); }
+inline bool hctpIsStockOrSlotCode(uint32_t code) { return code < 10000u || hctpIsSlotCode(code); }
 
 // Royal Rumble entrant (called from the hand-edited Draw__9CGameSyncFv_0x1f5c50.cpp right after CGameSync::Draw stores the
 // slot popped from the entry queue 0x527A90 into 0x527AB8, store at 0x1f65c0). Host code only, no guest calls.
@@ -97,7 +103,7 @@ void hctpRumbleSpawn(uint8_t *rdram, uint32_t slot)
     if (chara >= 0x100000u && chara < 0x2000000u)
         std::memcpy(&cast, rdram + chara + 0x30u, 2);
     std::fprintf(stderr, "[hctp-pbp] rumble spawn: slot %u chara 0x%X cast %u%c", slot, chara, cast, 10);
-    if (cast < 10000u)
+    if (hctpIsStockOrSlotCode(cast))
         hctpCommentaryRumbleEntrant(hctpRosterCodeId(rdram, cast));
 }
 
@@ -799,7 +805,7 @@ namespace
         const uint32_t code = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5])) & 0xFFFFu;
         g_origGetEntranceCastNo(rdram, ctx, runtime);
         const uint32_t entrance = code - code % 10u + 4u;
-        if (code < 10000u && g_cutEntranceCodes.count(static_cast<uint16_t>(entrance)))
+        if (hctpIsStockOrSlotCode(code) && g_cutEntranceCodes.count(static_cast<uint16_t>(entrance)))
             SET_GPR_U32(ctx, 2, entrance);
     }
     // Molly Holly SvR port (Nov 5): GameMem::Setup 0x1feed0 sizes the 7 character pages (KB, table 0x419d68[slot],
@@ -807,6 +813,54 @@ namespace
     // ymemReallocatePage(2, 0x419d60). SvR Molly (3754 verts) needs ~535 KB without textures -> give her ring attires
     // (41x0) the part-1/2 size 0x290 when the loose SvR model (> 512 KB) is installed in MODS/PAC/EMD2.
     PS2Runtime::RecompiledFunction g_origReallocatePage = nullptr;
+    // Nov 10 YMEM PROBE (log only, HCTP_YMEM_PROBE=0 off): reads the game's page table 0x500E00 (+0 start, +4 end, 16 B/page) and
+    // walks the block list like ymemGetInfo 0x140b40 (hdr w0 = index of next block in qwords from the page start,
+    // w2 != 0 = free). Logs every page after GameMem::Setup's re-cut and each char page + the common page just before
+    // GameMem::ClearChar frees it (= the load-time footprint of the models in that match).
+    PS2Runtime::RecompiledFunction g_origClearChar = nullptr;
+    void ymemProbeLog(uint8_t *rdram, const char *tag, uint32_t page)
+    {
+        auto rd = [&](uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & 0x1FFFFFFu), 4); return v; };
+        const uint32_t start = rd(0x500E00u + page * 16u), end = rd(0x500E04u + page * 16u);
+        if (!start || end <= start || (end & 0xFE000000u))
+        {
+            std::fprintf(stderr, "[ymem] %s page %u empty/invalid (%08X-%08X)%c", tag, page, start, end, 10);
+            return;
+        }
+        uint64_t used = 0, freeb = 0, largest = 0;
+        uint32_t cur = start;
+        for (int guard = 0; cur < end && guard < 200000; ++guard)
+        {
+            const uint32_t next = rd(cur);
+            const uint32_t idx = (cur - start) >> 4;
+            if (next <= idx) break;
+            const uint64_t payload = uint64_t(next - idx - 1u) * 16u;
+            if (rd(cur + 8u)) { freeb += payload; if (payload > largest) largest = payload; }
+            else used += payload;
+            cur = start + next * 16u;
+        }
+        std::fprintf(stderr, "[ymem] %s page %u: size %u KB used %llu KB free %llu KB largest free %llu KB%c", tag, page,
+                     (end - start) >> 10, (unsigned long long)(used >> 10), (unsigned long long)(freeb >> 10),
+                     (unsigned long long)(largest >> 10), 10);
+    }
+    void clearCharProbe(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t i = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4]));
+        uint32_t base = 0, count = 0;
+        std::memcpy(&base, rdram + 0x526D60u, 4);
+        std::memcpy(&count, rdram + 0x40F190u, 4);
+        if (i < 8u && base < 16u)
+        {
+            uint16_t code = 0;
+            std::memcpy(&code, rdram + 0x4920C0u + i * 32u + 0x10Au, 2);
+            char tag[40];
+            std::snprintf(tag, sizeof tag, "clearchar slot %u cast %u", i, unsigned(code));
+            ymemProbeLog(rdram, tag, base + i);
+            if (i == 0u && count > 0u)
+                ymemProbeLog(rdram, "common", count - 1u);
+        }
+        g_origClearChar(rdram, ctx, runtime);
+    }
     void reallocatePageBigModels(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         // Nov 5 (Hogan session): generalised from SvR Molly (41x0) to every loose ring model > 512 KB (Hogan WM19 graft
@@ -836,7 +890,7 @@ namespace
                 std::memcpy(&code, rdram + 0x4920C0u + slot * 32u + 0x10Au, 2);
                 uint32_t size = 0;
                 std::memcpy(&size, rdram + table + 8u + slot * 4u, 4);
-                if (code < 10000u && code % 10u == 0u && size == 0x1E0u && looseBigFn(code))
+                if (hctpIsStockOrSlotCode(code) && code % 10u == 0u && size == 0x1E0u && looseBigFn(code))
                 {
                     // Nov 7 Legend arms/turn lock: SvR06 beta 7800 (642 KB, 109 bones) in a 0x290 page = stuck
                     // pose + no turning; in A4 the same file got 0x350 via its 794 KB entrance attire and was fine.
@@ -847,7 +901,27 @@ namespace
                 // Nov 7: loose entrance attires (XXa4, e.g. SvR06 Hogan 80s 7204 = 776 KB decoded) larger than the
                 // 0x290 page get the B&P part-3 size 0x350 (848 KB), whether the page is keyed by the entrance code
                 // or by the ring code whose entrance attire is armed.
-                if (code < 10000u && (code % 10u == 4u || code % 10u == 0u) && size < 0x350u)
+                // Nov 10 MOLLY B&P: GameMem::Setup 0x1feed0 gives attire digit 3 (bra & panties) a fixed 0x350 KB page; the SvR
+                // Molly B&P files (4103/4113, ~914 KB) overflow it (Nov 6 crash). Grow that slot's page to fit the loose file.
+                if (hctpIsStockOrSlotCode(code) && code % 10u == 3u)
+                {
+                    const uint64_t bytes = looseSize(code);
+                    if (bytes > uint64_t(size) * 1024u)
+                    {
+                        uint32_t need = static_cast<uint32_t>((bytes + 1023u) / 1024u) + 16u;
+                        need = (need + 15u) & ~15u;
+                        if (need > 0x400u)
+                            need = 0x400u;
+                        if (need > size)
+                        {
+                            std::fprintf(stderr, "[mem] slot %u cast %u big B&P model 0x%X -> 0x%X (%llu bytes)%c", slot,
+                                         unsigned(code), size, need, static_cast<unsigned long long>(bytes), 10);
+                            size = need;
+                            std::memcpy(rdram + table + 8u + slot * 4u, &size, 4);
+                        }
+                    }
+                }
+                if (hctpIsStockOrSlotCode(code) && (code % 10u == 4u || code % 10u == 0u) && size < 0x350u)
                 {
                     const uint16_t ent = static_cast<uint16_t>(code - code % 10u + 4u);
                     // Nov 7 Legend: SvR06 7804 (651 KB) fits 0x290 but not a 0x1E0 page -> pick the smallest that fits.
@@ -865,6 +939,13 @@ namespace
             }
         }
         g_origReallocatePage(rdram, ctx, runtime);
+        if (first == 2u && table == 0x419d60u && !(std::getenv("HCTP_YMEM_PROBE") && std::getenv("HCTP_YMEM_PROBE")[0] == '0'))
+        {
+            uint32_t count = 0;
+            std::memcpy(&count, rdram + 0x40F190u, 4);
+            for (uint32_t pg = 2; pg < count && pg < 16u; ++pg)
+                ymemProbeLog(rdram, "after Setup", pg);
+        }
     }
     // Hair chains (Nov 6): CKami (hair physics, 0x1F0 B, ctor 0x1c5980) keeps its CKami1 chain pointers at +0x1C,
     // null-terminated, and +0x58 is its "reinit" flag -> room for 14 chains. The ctor loop calls CKami1::Make
@@ -1207,6 +1288,44 @@ namespace
     // rec+0x114 * 100 + attire*10, +1 when a2 is set and that backstage pack exists (MakeCharName + CFile::ExistenceCheck).
     // Season casts (nvCast 0x258a30) set a2. Restored wrestlers have no XX01 backstage pack: use their entrance attire
     // (XXn4, Jordan Nov 5), or keep the ring attire when they have none (Jeff).
+    // Decimal model code -> exists in stock ch.pac/ch2.pac (BCD keys) or loose MODS/PAC/EMD|EMD2/<code>.
+    bool stockModelKeyExists(uint32_t code)
+    {
+        static std::set<uint32_t> keys;
+        static bool built = false;
+        if (!built)
+        {
+            built = true;
+            for (const char *pac : {"pac/ch.pac", "pac/ch2.pac"})
+            {
+                std::ifstream f(pac, std::ios::binary);
+                std::vector<uint8_t> dir(0x4000);
+                if (!f.read(reinterpret_cast<char *>(dir.data()), dir.size()))
+                    continue;
+                uint16_t n;
+                std::memcpy(&n, dir.data() + 0x804, 2);
+                n &= 0x7FFFu;
+                for (uint32_t e = 0; e < n && 0x808u + e * 4u + 2u <= dir.size(); ++e)
+                {
+                    uint16_t k;
+                    std::memcpy(&k, dir.data() + 0x808 + e * 4, 2);
+                    char hex[8];
+                    std::snprintf(hex, sizeof(hex), "%04X", unsigned(k));
+                    if (std::string(hex).find_first_not_of("0123456789") == std::string::npos)
+                        keys.insert(static_cast<uint32_t>(std::stoul(hex)));
+                }
+            }
+            std::error_code ec;
+            for (const char *d : {"MODS/PAC/EMD", "MODS/PAC/EMD2"})
+                for (const auto &e : std::filesystem::directory_iterator(d, ec))
+                {
+                    const std::string name = e.path().filename().string();
+                    if (name.size() == 4 && name.find_first_not_of("0123456789") == std::string::npos)
+                        keys.insert(static_cast<uint32_t>(std::stoul(name)));
+                }
+        }
+        return keys.count(code) != 0;
+    }
     PS2Runtime::RecompiledFunction g_origGetMatchWrestlerNo = nullptr;
     void getMatchWrestlerNoCutRoster(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
@@ -1233,6 +1352,18 @@ namespace
             static int logged = 0;
             if (logged++ < 16)
                 std::fprintf(stderr, "[season] backstage cast %u -> entrance attire %u%c", code, code + 4u, 10);
+        }
+        // Nov 10 BACKSTAGE RULE (Jordan, whole roster): backstage = casual XXa1 (stock formula above) > the wrestler's
+        // full entrance model XXa3 (what GetMatchWrestlerNo serves with a3 set) > ring attire. Only for Season casts
+        // (ra inside nvCast 0x258a30..0x259840): exhibition callers also pass a2 (Nov 7 Legend Hogan bug).
+        const uint32_t ra = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
+        const uint32_t now = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[2])) & 0xFFFFu;
+        if (now == code && ctx->pc == ra && ra >= 0x258a30u && ra < 0x259840u && stockModelKeyExists(code + 3u))
+        {
+            SET_GPR_U32(ctx, 2, code + 3u);
+            static int loggedB = 0;
+            if (loggedB++ < 32)
+                std::fprintf(stderr, "[season] backstage cast %u -> entrance model %u (no casual)%c", code, code + 3u, 10);
         }
     }
     // CSeasonCharaFrame ctor 0x316ba0 (a0 this): builds its pickable roster (u16 list at +0x88, count +0x1EC) from
@@ -2630,7 +2761,7 @@ namespace
                     continue;
                 const uint32_t id = hctpRosterCodeId(rdram, code);
                 if (id < 0x56u || (id >= 0xA2u && id < 0x100u))
-                    ids[n++] = code < 10000u ? id | (code % 100u) << 8 : id; // + attire variant (nWo Hogan)
+                    ids[n++] = hctpIsStockOrSlotCode(code) ? id | (code % 100u) << 8 : id; // + attire variant (nWo Hogan)
             }
             const int8_t stage = int8_t(rdram[0x4922C0u]); // GetNowStage 0x1f53d0 (arena / PPV)
             // rule byte too: cage / Hell in a Cell / Elimination Chamber have no entrances, so the bell is the only
@@ -2789,11 +2920,11 @@ namespace
             for (uint32_t i = 0; i < 8u; ++i)
             {
                 uint16_t candidate = g_entranceCast[i]; // setup snapshot first: the live table changes during entrances
-                if (candidate >= 25500u)
+                if (candidate == 0x639Cu || candidate == 0xFFFFu)
                     std::memcpy(&candidate, rdram + 0x4921CAu + i * 0x20u, 2);
-                if (candidate >= 25500u)
+                if (candidate == 0x639Cu || candidate == 0xFFFFu)
                     continue;
-                const uint32_t id = candidate >= 10000u ? 0x100u + (candidate - 10000u) / 100u : candidate / 100u;
+                const uint32_t id = hctpIsCawCode(candidate) ? 0x100u + (candidate - 10000u) / 100u : candidate / 100u;
                 if (!(hctpRuleWrestlerSlotMask(rdram, g_entranceRule != 0xFFu ? g_entranceRule : rdram[0x4920C0u]) & (1u << i)))
                     continue;
                 if (id == 0x31u || id == 0x33u || std::find(seen.begin(), seen.begin() + present, id) != seen.begin() + present)
@@ -2833,8 +2964,8 @@ namespace
                     const uint16_t c = g_entranceCast[i];
                     if (!(g_entranceSlotMask & (1u << i)))
                         continue;
-                    const uint32_t id = c >= 10000u ? 0x100u : c / 100u;
-                    if (c >= 25500u || id == 0x31u || id == 0x33u || g_entranceTeam[i] < 0 || g_entranceTeam[i] >= 8)
+                    const uint32_t id = hctpIsCawCode(c) ? 0x100u : c / 100u;
+                    if (c == 0x639Cu || c == 0xFFFFu || id == 0x31u || id == 0x33u || g_entranceTeam[i] < 0 || g_entranceTeam[i] >= 8)
                         continue;
                     ++sizes[g_entranceTeam[i]], ++known;
                 }
@@ -2913,7 +3044,7 @@ namespace
         // belt held (CTitleHistoryData::CheckTitleHold 0x324110): u16 holder ids at GetSaveData() 0x4B6450 + 0x9EFC,
         // 11 slots for 9 belts (belts 2 and 3 = tag titles, two holders each) -> belt + 1 above bit 16 for Finkel
         auto rosterOf = [&](uint16_t c, int &belt) {
-            const int r = c >= 10000u ? int((c - 10000u) / 100u + 0x56u) : int(hctpRosterCodeId(rdram, c) | (c % 100u) << 8);
+            const int r = hctpIsCawCode(c) ? int((c - 10000u) / 100u + 0x56u) : int(hctpRosterCodeId(rdram, c) | (c % 100u) << 8);
             static const uint8_t kSlotBelt[11] = {0, 1, 2, 2, 3, 3, 4, 5, 6, 7, 8};
             belt = -1;
             for (uint32_t s = 0; s < 11u && belt < 0; ++s)
@@ -3319,7 +3450,7 @@ namespace
                      g_entranceTeam[4], g_entranceTeam[5], 10);
         uint32_t season; std::memcpy(&season, rdram + self + order * 0xD4u + 0x14Cu, 4);
         uint16_t code; std::memcpy(&code, rdram + 0x4921CAu + order * 0x20u, 2);
-        if (season != 0 || code >= 10000u)
+        if (season != 0 || hctpIsCawCode(code))
             return;
         // Nov 7: slot code (model 86..99 * 100, < 10000 = never a CAW code) -> slot entrance. The GetCharaGameProp
         // redirect refuses id 0x56+ while that CAW block is used, so the stock path read the CAW's event (3071).
@@ -7076,8 +7207,8 @@ namespace
     struct RosterxSlot
     {
         uint16_t id = 0;
-        uint8_t tmpl = 0x2D, modelNo = 0, attires = 0; // modelNo 0 = unbound (Nov 10 step 3 pool)
-        uint64_t lastUse = 0; // pool LRU stamp
+        uint8_t tmpl = 0x2D, attires = 0;
+        uint16_t modelNo = 0; // STEP A: == id (permanent); 0 = slot refused (id > 654 or 255)
         int music = -1, video = -1; // slot.txt music=/video= (MEDIA ids): written into the record; template MEDIA_DEFAULTS row skipped
         uint8_t portrait = 0; // slot.txt portrait=<stock id>: select-screen face (0 = template's); 31 = blank NPC placeholder
         int16_t entrance = 0; // 0 = template's entrance (slot.txt entrance=3071 = O'Haire walk-down)
@@ -7088,42 +7219,13 @@ namespace
     };
     std::vector<RosterxSlot> g_rosterx;
     constexpr uint16_t kRosterxFirstId = 0xA2;
-    constexpr uint8_t kRosterxModelFirst = 86, kRosterxModelLast = 99;
+    constexpr uint32_t kRosterxMaxId = 654; // code = id*100 + 99 must stay <= 65535 (u16 cast code)
     // ra sites that call GetCharaGameProp(cast code / 100): GetEntranceEventNoFromSystem 0x2ad230
     // A CAW in slot 0 also gives (10000-10000)/100 + 0x56 = 0x56 at these sites: map only when a live cast code is the
     // slot's model no (8600..8699), never when that code is a CAW one.
-    bool rosterxCastHasModel(const uint8_t *rdram, uint32_t modelNo)
-    {
-        for (uint32_t i = 0; i < 8; ++i)
-        {
-            uint16_t code;
-            std::memcpy(&code, rdram + 0x4921CAu + i * 0x20u, 2);
-            if (code < 10000u && code / 100u == modelNo)
-                return true;
-        }
-        return false;
-    }
-    RosterxSlot *rosterxByModel(uint32_t no);
-    // Code paths turn cast code 8600 into id 86 = CAW id 0x56 (~36 functions do code/100, see plan). Treat that id as the
-    // slot only while a live cast code uses the slot's model no, no CAW code of that index is cast, and that CAW block is
-    // empty (a real CAW is never shadowed). Nov 5: the ra-site list was wrong (ResetRosterUseType / DrawAbility /
-    // GetTotalAbility loop over real CAW ids).
-    RosterxSlot *rosterxFromCodeId(const uint8_t *rdram, uint32_t id)
-    {
-        if (id < kRosterxModelFirst || id > kRosterxModelLast)
-            return nullptr;
-        RosterxSlot *m = rosterxByModel(id);
-        if (!m || !rosterxCastHasModel(rdram, id) || rdram[0x4B6450u + (id - 0x56u) * 0x460u + 0x126u] != 0)
-            return nullptr;
-        for (uint32_t i = 0; i < 8; ++i)
-        {
-            uint16_t code;
-            std::memcpy(&code, rdram + 0x4921CAu + i * 0x20u, 2);
-            if (code != 0x639Cu && code >= 10000u && (code - 10000u) / 100u == id - 0x56u)
-                return nullptr;
-        }
-        return m;
-    }
+    RosterxSlot *rosterxById(uint32_t id);
+    // STEP A: model no == slot id, so code/100 IS the slot id (>= 0xA2: never a CAW id, never shared, no pool).
+    RosterxSlot *rosterxFromCodeId(const uint8_t *, uint32_t id) { return rosterxById(id); }
     // Template's cast code for a slot's code (same attire/part digits): for per-model tables keyed on cast codes.
     uint32_t rosterxTemplateCode(const uint8_t *rdram, const RosterxSlot &s, uint32_t code)
     {
@@ -7165,7 +7267,7 @@ namespace
     }
     int rosterxEntranceForModel(uint32_t model)
     {
-        const RosterxSlot *s = (model >= kRosterxModelFirst && model <= kRosterxModelLast) ? rosterxByModel(model) : nullptr;
+        const RosterxSlot *s = model >= kRosterxFirstId ? rosterxByModel(model) : nullptr;
         return s ? s->entrance : 0;
     }
     uint32_t rosterxRecord(uint8_t *rdram, PS2Runtime *runtime, RosterxSlot &s)
@@ -7183,7 +7285,7 @@ namespace
             r[0x15F] = static_cast<uint8_t>(s.music);
         if (s.video >= 0)
             r[0x15E] = static_cast<uint8_t>(s.video);
-        if (s.modelNo != 0u) // unbound pool slot keeps the template's model no until rosterxBind
+        if (s.modelNo != 0u)
         {
             const int16_t model = s.modelNo;
             std::memcpy(r + 0x114, &model, 2);
@@ -9217,23 +9319,21 @@ namespace
                 s.id = nextId;
                 used.insert(nextId);
             }
-        // Step 1: static model numbers 86..99 (14 slots). Step 3 replaces this with a per-match pool.
-        uint8_t model = kRosterxModelFirst;
+        // STEP A (Nov 10): permanent unique model no = slot id -> codes id*100.. (no pool, no sharing). Id 255 would make
+        // attire 0 = 25500 = 0x639C (the "no cast" code) and ids > 654 overflow the u16 code -> refused.
         for (auto it = g_rosterx.begin(); it != g_rosterx.end();)
         {
-            if (model > kRosterxModelLast)
+            if (it->id == 0xFFu || it->id > kRosterxMaxId)
             {
-                // Nov 10 step 3: more slots than model numbers -> unbound now, bound on demand (rosterxBind).
-                it->modelNo = 0;
-                std::fprintf(stderr, "[rosterx] slot %s id 0x%X template 0x%X pooled (model no bound per match)%c",
-                             it->name.c_str(), it->id, it->tmpl, 10);
-                ++it;
+                std::fprintf(stderr, "[rosterx] slot %s id 0x%X REFUSED (id 255 / > %u cannot have a u16 cast code)%c",
+                             it->name.c_str(), it->id, kRosterxMaxId, 10);
+                it = g_rosterx.erase(it);
                 continue;
             }
-            it->modelNo = model++;
+            it->modelNo = it->id;
             rosterxInstallModels(*it);
-            std::fprintf(stderr, "[rosterx] slot %s id 0x%X template 0x%X model %u (%u attires)%c", it->name.c_str(), it->id,
-                         it->tmpl, it->modelNo, it->attires, 10);
+            std::fprintf(stderr, "[rosterx] slot %s id 0x%X template 0x%X model %u code %u (%u attires)%c", it->name.c_str(),
+                         it->id, it->tmpl, it->modelNo, it->modelNo * 100u, it->attires, 10);
             ++it;
         }
         return static_cast<int>(g_rosterx.size());
@@ -9345,94 +9445,11 @@ namespace
     void rosterxSeason(uint8_t *rdram, R5900Context *ctx, PS2Runtime *rt) { rosterxConst<0>(ctx, rdram, rt, g_rxOrigSeason); }
     // GetMatchWrestlerNo 0x12cce0 (a0 id, a1 attire, a2 backstage, a3 entrance, t0 special, t1 CAW): stock formula on the
     // slot's model no (special -> 90 instead of attire*10, entrance +3, backstage +1 when that loose key exists).
-    // ---- Nov 10 step 3: per-match model-number pool (86..99 = 14 numbers, > 14 slots) ----
-    // A slot without a number takes the least recently used number whose model is not in a live cast code.
-    // The game's CFile cache (list *(0x524E18)+4, node {+4 next, +8 entry}, entry name at +0, CompareKeyword
-    // 0x147350) may still hold the old slot's "/EMD2/<no>xx" data: those entries get their name spoiled so the
-    // next search misses and loads the new files.
-    uint64_t g_rosterxUseClock = 0;
-    void rosterxSpoilCache(uint8_t *rdram, uint32_t modelNo)
-    {
-        char key[8];
-        std::snprintf(key, sizeof(key), "%02u", modelNo);
-        uint32_t head;
-        std::memcpy(&head, rdram + 0x524E18u, 4);
-        if (head == 0u || head >= 0x2000000u - 8u)
-            return;
-        uint32_t node;
-        std::memcpy(&node, rdram + head + 4u, 4);
-        for (int guard = 0; node != 0u && node < 0x2000000u - 0x10u && guard < 4096; ++guard)
-        {
-            uint32_t entry, next;
-            std::memcpy(&entry, rdram + node + 8u, 4);
-            std::memcpy(&next, rdram + node + 4u, 4);
-            if (entry != 0u && entry < 0x2000000u - 0x40u)
-            {
-                char *n = reinterpret_cast<char *>(rdram + entry);
-                const std::string name(n, strnlen(n, 0x3F));
-                std::string up = name;
-                for (char &c : up)
-                    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
-                const size_t at = up.find("EMD2");
-                if (at != std::string::npos && up.size() >= at + 9u && up.compare(at + 5u, 2, key) == 0)
-                {
-                    n[0] = '~';
-                    std::fprintf(stderr, "[rosterx] pool: cache entry %s dropped%c", name.c_str(), 10);
-                }
-            }
-            node = next;
-        }
-    }
-    void rosterxBind(uint8_t *rdram, RosterxSlot &s)
-    {
-        s.lastUse = ++g_rosterxUseClock;
-        if (s.modelNo != 0u)
-            return;
-        RosterxSlot *victim = nullptr;
-        bool used[100] = {};
-        for (auto &o : g_rosterx)
-            if (o.modelNo != 0u)
-                used[o.modelNo] = true;
-        uint8_t no = 0;
-        for (uint8_t m = kRosterxModelFirst; m <= kRosterxModelLast && no == 0u; ++m)
-            if (!used[m])
-                no = m;
-        if (no == 0u)
-        {
-            for (auto &o : g_rosterx)
-                if (o.modelNo != 0u && !rosterxCastHasModel(rdram, o.modelNo) && (!victim || o.lastUse < victim->lastUse))
-                    victim = &o;
-            if (!victim)
-            {
-                std::fprintf(stderr, "[rosterx] pool: %s has no free model number (all 14 live)%c", s.name.c_str(), 10);
-                return;
-            }
-            no = victim->modelNo;
-            victim->modelNo = 0;
-            if (victim->rec != 0u)
-            {
-                int16_t t;
-                std::memcpy(&t, rdram + 0x4C0F54u + victim->tmpl * 0x170u + 0x114u, 2);
-                std::memcpy(rdram + victim->rec + 0x114u, &t, 2);
-            }
-        }
-        s.modelNo = no;
-        if (s.rec != 0u)
-        {
-            const int16_t m = no;
-            std::memcpy(rdram + s.rec + 0x114u, &m, 2);
-        }
-        rosterxSpoilCache(rdram, no);
-        rosterxInstallModels(s, true);
-        std::fprintf(stderr, "[rosterx] pool: %s -> model %u%s%s%c", s.name.c_str(), unsigned(no), victim ? " from " : "",
-                     victim ? victim->name.c_str() : "", 10);
-    }
     void rosterxMatchNo(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         RosterxSlot *s = rosterxById(rxArg(ctx, 4));
         if (!s)
             return g_rxOrigMatchNo(rdram, ctx, runtime);
-        rosterxBind(rdram, *s);
         if (s->modelNo == 0u)
             return g_rxOrigMatchNo(rdram, ctx, runtime);
         const uint32_t attire = rxArg(ctx, 5) < s->attires ? rxArg(ctx, 5) : 0u;
@@ -9479,7 +9496,7 @@ namespace
         if (h.code)
         {
             const uint32_t c = v & 0xFFFFu;
-            if (c < 10000u)
+            if (hctpIsSlotCode(c))
                 // Nov 9: IsDress gets the live cast code (8600 < 10000 can never be a CAW, CAWs are 10000+), so take
                 // the slot by model even when CAW block 0 is in use (rosterxFromCodeId refused it -> no jacket).
                 if (const RosterxSlot *s = (h.addr == 0x2af300u && rosterxByModel(c / 100u)) ? rosterxByModel(c / 100u)
@@ -9531,7 +9548,7 @@ namespace
             return nullptr;
         uint32_t code;
         std::memcpy(&code, rdram + chara + 0x30u, 4);
-        return code < 10000u ? rosterxFromCodeId(rdram, code / 100u) : nullptr;
+        return hctpIsSlotCode(code) ? rosterxFromCodeId(rdram, code / 100u) : nullptr;
     }
     PS2Runtime::RecompiledFunction g_rxOrigPropCtor = nullptr, g_rxOrigCreateACom = nullptr, g_rxOrigWinnerProp = nullptr,
                                    g_rxOrigSuccessAct = nullptr;
@@ -9553,7 +9570,7 @@ namespace
         {
             uint16_t code;
             std::memcpy(&code, rdram + sel + 0xAu, 2);
-            if (code < 10000u)
+            if (hctpIsSlotCode(code))
                 if (RosterxSlot *s = rosterxFromCodeId(rdram, code / 100u))
                     if (const uint32_t rec = rosterxRecord(rdram, runtime, *s))
                     {
@@ -9578,7 +9595,7 @@ namespace
             if (!sel || sel >= 0x2000000u - 0xCu)
                 continue;
             std::memcpy(&old[i], rdram + sel + 0xAu, 2);
-            if (old[i] < 10000u)
+            if (hctpIsSlotCode(old[i]))
                 if (const RosterxSlot *s = rosterxFromCodeId(rdram, old[i] / 100u))
                 {
                     const uint16_t t = static_cast<uint16_t>(rosterxTemplateCode(rdram, *s, old[i]));
@@ -9608,7 +9625,7 @@ namespace
             return;
         uint32_t code;
         std::memcpy(&code, rdram + chara + 0x30u, 4);
-        if (code < 10000u)
+        if (hctpIsSlotCode(code))
             if (const RosterxSlot *s = rosterxFromCodeId(rdram, code / 100u))
             {
                 const bool ok = (s->music < 0 && s->video < 0) && applyMediaDefaults(rdram, self + 0x20u, rosterxTemplateCode(rdram, *s, code));
@@ -9730,7 +9747,7 @@ namespace
     // ===================== end ROSTER EXPANSION =====================
     uint32_t rosterxCodeIdImpl(const uint8_t *rdram, uint32_t code)
     {
-        if (code >= 10000u)
+        if (hctpIsCawCode(code))
             return (code - 10000u) / 100u + 0x56u;
         if (const RosterxSlot *s = rosterxFromCodeId(rdram, code / 100u))
             return s->id; // Nov 9: the slot's own id (commentary / Finkel rows, names); was the template's (Piper lines for Bret)
@@ -10505,6 +10522,9 @@ namespace
         if ((g_origInitEventSystem = runtime.lookupFunction(0x2ad340u)) != nullptr &&
             runtime.replaceFunction(0x2ad340u, std::getenv("HCTP_VICTORY_EVTK") ? initEventSystemEvtk : initEventSystemShirtTear))
             std::cerr << "[hctp] Hogan shirt-tear dress routing on" << std::endl;
+        if (!(std::getenv("HCTP_YMEM_PROBE") && std::getenv("HCTP_YMEM_PROBE")[0] == '0') &&
+            (g_origClearChar = runtime.lookupFunction(0x1ff130u)) != nullptr)
+            runtime.replaceFunction(0x1ff130u, clearCharProbe);
         if ((g_origReallocatePage = runtime.lookupFunction(0x140c90u)) != nullptr &&
             runtime.replaceFunction(0x140c90u, reallocatePageBigModels))
             std::cerr << "[hctp] big-model char pages (SvR Molly) on" << std::endl;
@@ -10590,6 +10610,23 @@ uint32_t hctpEasyListAddr(uint32_t obj, uint32_t addr)
 }
 
 uint32_t hctpRosterCodeId(const uint8_t *rdram, uint32_t code) { return rosterxCodeIdImpl(rdram, code); }
+bool hctpIsSlotCode(uint32_t code)
+{
+    return code >= 16200u && code != 0x639Cu && code != 0xFFFFu && rosterxById(code / 100u) != nullptr;
+}
+// Runner patch target (tools\patch_rosterx_cawcheck.py): guest "slti rd, code, 0x2710" -> stock path for slot codes too.
+bool hctpCodeLt10k(int64_t v)
+{
+    static bool logged = false;
+    if (v >= 16200 && v <= 65535 && hctpIsSlotCode(static_cast<uint32_t>(v)))
+    {
+        if (!logged)
+            std::fprintf(stderr, "[rosterx] CAW check: slot code %lld -> stock path%c", static_cast<long long>(v), 10);
+        logged = true;
+        return true;
+    }
+    return v < 10000;
+}
 
 // Nov 7 SvR TWIST LIST (notes\ANY_BONE_ANIMATION_RESEARCH_20261106.md s17): CCharIK::ActionLink 0x1b8860 re-solves
 // the bones of the 12-entry twist list 0x4129f0 after the limb IK (loop 0x1b933c..0x1b95c4). SvR04 ActionLink 0x1ab6f0
