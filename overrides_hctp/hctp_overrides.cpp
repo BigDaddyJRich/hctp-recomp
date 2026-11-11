@@ -7274,7 +7274,15 @@ namespace
     // from SetAttr skipped while an SvR event runs). TODO: camera ops 0x80/0x82 SetHOff/SetHBetween (skipped by size
     // table today), glasses handoff ops 0xB7/0xBA/0xBC, SvR light id -> HCTP light motion table, SvR06.
     // Nov 10 STEP 1 entrance port: donorEv != 0 = fixed HCTP donor event for BGM/tron (else roster tmpl +0xEC).
-    struct SvrEvent { uint16_t svrNo; uint8_t tmpl; uint8_t game = 4; int16_t donorEv = 0; }; // game 4 = SvR04, 6 = SvR06
+    struct SvrEvent { uint16_t svrNo; uint8_t tmpl; uint8_t game = 4; int16_t donorEv = 0; uint8_t kind = 1; }; // game 4 = SvR04, 6 = SvR06; kind 1 single, 2 tag
+    // Nov 10 STEP 3: cast objects of an appended SvR row (virtual ev -> guest chars, {obj, cast order, scene count}).
+    // Visibility is re-applied at EVERY SetEvent (the row is appended once per run; before, a tag match after a singles
+    // one kept the partners hidden). SetCast index k -> k-th cast object (SvR06 tag partner = obj 4, HCTP casts obj 1).
+    struct SvrCastObj { uint16_t obj, order, ns; };
+    std::map<uint16_t, std::pair<uint32_t, std::vector<SvrCastObj>>> g_svrRowCast;
+    std::vector<uint16_t> g_svrCastMap; // active SvR event: HCTP SetCast index -> object index
+    // fixed number ranges (ENTRANCE_PORT_MASTER): 7000 SvR04 singles, 7200 SvR04 tags, 7400 SvR06 singles, 7600 SvR06 tags
+    uint8_t svrKindOf(uint16_t ev) { return ((ev >= 7200u && ev < 7400u) || (ev >= 7600u && ev < 7800u)) ? uint8_t(2) : uint8_t(1); }
     std::map<uint16_t, SvrEvent> g_svrEvents;      // virtual event no (and +100 variant) -> SvR event
     // MODS\SVR04\entrances.txt (tools\stage_entrance_port.py from notes\ENTRANCE_PORT_MASTER_20261110.csv):
     // "<svr04 no> <hctp event> <donor hctp event> <name>" -> fixed virtual numbers (7000+, plane +100).
@@ -7433,7 +7441,7 @@ namespace
         const int16_t donorEv = trow != g_svrTable.end() ? trow->second.donor : int16_t(0);
         for (uint16_t ev : {v, uint16_t(v + 100u)})
         {
-            g_svrEvents[ev] = {static_cast<uint16_t>(svrNo), tmpl, 4, donorEv};
+            g_svrEvents[ev] = {static_cast<uint16_t>(svrNo), tmpl, 4, donorEv, svrKindOf(v)};
             g_svrPac["/EVET/" + std::to_string(ev)] = {0, bank->second.first, bank->second.second};
         }
         g_svrRegistered[static_cast<uint16_t>(svrNo)] = v;
@@ -7513,20 +7521,19 @@ namespace
             if (g_entranceTeam[i] >= 0 && g_entranceTeam[i] < 8 && ++teamSize[g_entranceTeam[i]] > 1)
                 singles = false;
         uint32_t castChars = 0;
+        std::vector<SvrCastObj> casts;
+        (void)singles; // STEP 3: visibility applied per SetEvent by svrApplyCastVisibility
         for (uint32_t c = 0; c < nChar; ++c)
         {
             uint8_t ch[28];
             std::memcpy(ch, &g_svrSevp[pChar + 28u * c], 28);
             uint16_t model; std::memcpy(&model, ch + 2, 2);
-            const bool partner = ch[4] == 1u && model == 1u && castChars++ > 0u;
-            if (partner && singles)
+            if (ch[4] == 1u) // char object: SvR04 tags carry cast codes (3101 = 7301/7401), others model 1
             {
-                const uint16_t zero = 0;
-                std::memcpy(ch + 0x14, &zero, 2);
-                std::fprintf(stderr, "[svrent] event %u obj %u = partner slot, hidden (singles)%c", se.svrNo, c, 10);
-            }
-            if (ch[4] == 1u && model == 1u)
+                uint16_t ns0; std::memcpy(&ns0, ch + 0x14, 2);
+                casts.push_back({static_cast<uint16_t>(c), static_cast<uint16_t>(castChars++), ns0});
                 model = 0; // runtime cast (HCTP generic char), entrant/partners filled by SetCast
+            }
             else if (ch[6] == 1u)
                 model = svrPropId(model);
             std::memcpy(ch + 2, &model, 2);
@@ -7538,6 +7545,7 @@ namespace
             std::memcpy(ch + 0x18, &scenes, 4);
             gPut(rdram, chars + 28u * c, ch, 28);
         }
+        g_svrRowCast[ev] = {chars, casts};
         const uint32_t rows = runtime->guestMalloc(12u * (evCount + 1u) + 16u);
         std::vector<uint8_t> tmp(12u * evCount);
         std::memcpy(tmp.data(), rdram + (evRows & 0x1FFFFFFu), tmp.size());
@@ -8049,7 +8057,7 @@ namespace
         for (int pass = 0; pass < 2; ++pass)
         {
             const uint16_t ev = static_cast<uint16_t>(v + 100u * pass);
-            g_svrEvents[ev] = {static_cast<uint16_t>(no), tmpl, 6, donorEv};
+            g_svrEvents[ev] = {static_cast<uint16_t>(no), tmpl, 6, donorEv, svrKindOf(v)};
             g_svrPac["/EVET/" + std::to_string(ev)] = {fileIdx, passSec[pass], passSz[pass]};
             g_svr06Raw[ev] = {bSec, bSzRaw};
         }
@@ -8106,7 +8114,7 @@ namespace
         const uint16_t nObj = u16(0x42);
         const uint32_t t = u32(0x48) + 8u;
         const uint32_t chars = runtime->guestMalloc(28u * nObj + 16u);
-        bool entrantDone = false;
+        std::vector<SvrCastObj> casts; // STEP 3/4: on-chars in order = casts (tag 4201: obj 0 entrant, obj 4 partner)
         for (uint32_t c = 0; c < nObj; ++c)
         {
             const uint32_t q = t + 28u * c;
@@ -8123,9 +8131,8 @@ namespace
             bool keep = anyOn && !isGlobal;
             if (isChar && keep)
             {
-                if (entrantDone) keep = false; // singles: partners hidden
-                entrantDone = true;
-                model = 0;                     // runtime cast (SetCast fills the entrant)
+                casts.push_back({static_cast<uint16_t>(c), static_cast<uint16_t>(casts.size()), uint16_t(5u)});
+                model = 0;                     // runtime cast (SetCast fills entrant/partner; svrApplyCastVisibility hides extras)
             }
             else if (isProp && model == 2021u)
                 model = 2019u;                 // SvR06 belt -> HCTP belt (op 0xB6 = HCTP belt op)
@@ -8153,6 +8160,7 @@ namespace
             std::fprintf(stderr, "[svr06ent] obj %u model %u type %02x%02x%02x%02x%02x%02x%02x%02x -> %s%c", c, model, ch[4], ch[5],
                          ch[6], ch[7], ch[8], ch[9], ch[10], ch[11], keep ? "kept" : "hidden", 10);
         }
+        g_svrRowCast[ev] = {chars, casts};
         const uint32_t rows = runtime->guestMalloc(12u * (evCount + 1u) + 16u);
         std::vector<uint8_t> tmp(12u * evCount);
         std::memcpy(tmp.data(), rdram + (evRows & 0x1FFFFFFu), tmp.size());
@@ -8188,6 +8196,49 @@ namespace
         std::fprintf(stderr, "[svr06ent] SEVP header %08x: + event %u (SvR06 %u, %u objs, donor %d: %u effects)%c", header, ev,
                      se.svrNo, nObj, donor, donorN, 10);
     }
+    // STEP 3: casts shown = team size of the match snapshot (singles 1); tag events (kind 2) at least 2 (CAM tag preview
+    // has no snapshot). Extra cast objects get scene count 0 (object indices kept: bank keys/parents use them).
+    void svrApplyCastVisibility(uint8_t *rdram, uint16_t ev, const SvrEvent &se)
+    {
+        g_svrCastMap.clear();
+        auto rc = g_svrRowCast.find(ev);
+        if (rc == g_svrRowCast.end())
+            return;
+        int teamSize[8] = {}, maxTeam = 1;
+        for (int i = 0; i < 8; ++i)
+            if (g_entranceTeam[i] >= 0 && g_entranceTeam[i] < 8)
+                maxTeam = std::max(maxTeam, ++teamSize[g_entranceTeam[i]]);
+        const int visible = se.kind == 2u ? std::max(2, maxTeam) : maxTeam;
+        int shown = 0;
+        for (const SvrCastObj &o : rc->second.second)
+        {
+            const uint16_t ns = o.order < visible ? o.ns : uint16_t(0);
+            gPut(rdram, rc->second.first + 28u * o.obj + 0x14u, &ns, 2);
+            shown += ns != 0u ? 1 : 0;
+            g_svrCastMap.push_back(o.obj);
+        }
+        std::fprintf(stderr, "[svrent] event %u casts: %zu objs, %d shown (team %d, %s)%c", ev, rc->second.second.size(), shown,
+                     maxTeam, se.kind == 2u ? "tag" : "single", 10);
+    }
+    // SetCast 0x167280 (this, u16 obj, u16 code): InitEventSystem casts member k at obj k -> k-th SvR cast object.
+    PS2Runtime::RecompiledFunction g_origSetCast = nullptr;
+    void setCastSvr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t k = regU(ctx, 5) & 0xFFFFu;
+        if (g_svrEventActive && k < g_svrCastMap.size() && g_svrCastMap[k] != k)
+        {
+            std::fprintf(stderr, "[svrent] SetCast %u -> obj %u (code %u)%c", k, unsigned(g_svrCastMap[k]), regU(ctx, 6) & 0xFFFFu, 10);
+            SET_GPR_U32(ctx, 5, g_svrCastMap[k]);
+        }
+        else if (g_svrEventActive && !g_svrCastMap.empty() && k >= g_svrCastMap.size())
+        {
+            // more members than SvR cast objects: obj k would be a camera/prop/rope -> drop this cast
+            std::fprintf(stderr, "[svrent] SetCast %u dropped (event has %zu cast objs)%c", k, g_svrCastMap.size(), 10);
+            ctx->pc = regU(ctx, 31);
+            return;
+        }
+        g_origSetCast(rdram, ctx, runtime);
+    }
     void evsSetEventSvr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t self = regU(ctx, 4) & 0x1FFFFFFu;
@@ -8220,6 +8271,7 @@ namespace
                 svr06EnsureRow(rdram, runtime, header, ev, it->second);
             else if (header != 0u)
                 svrEnsureRow(rdram, runtime, header, ev, it->second);
+            svrApplyCastVisibility(rdram, ev, it->second);
             std::fprintf(stderr, "[svrent] SetEvent %u (SvR04 %u)%c", ev, it->second.svrNo, 10);
         }
         g_origEvsSetEvent(rdram, ctx, runtime);
@@ -8790,6 +8842,7 @@ namespace
         ok = hookFn(0x1646f0u, g_origCamFrameActive, camFrameActiveSvr) && ok;
         ok = hookFn(0x1ff8c0u, g_origMotionLightSet, motionLightSetSvr) && ok;
         ok = hookFn(0x166e00u, g_origEvsActionSvr, evsActionSvr) && ok;
+        ok = hookFn(0x167280u, g_origSetCast, setCastSvr) && ok; // STEP 3: SvR cast object order
         if (g_origCFileSearch == nullptr)
             ok = hookFn(0x1482f0u, g_origCFileSearch, cfileSearchLoose) && ok;
         std::cerr << "[svrent] SvR entrance reader: " << g_svrEvents.size() / 2 << " SvR04 events" << (ok ? "" : " (a hook FAILED)")
