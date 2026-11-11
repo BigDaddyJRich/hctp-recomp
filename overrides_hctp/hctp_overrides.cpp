@@ -242,6 +242,20 @@ namespace
                      // +0x390 level is already non-zero on the matchup screen (Jordan's shot: Bret blood shown)
         if (ch != 0u && ch <= PS2_RAM_SIZE - 0x394u)
             lvl = rdram[ch + 0x383u];
+        // Nov 11 TEMP probe (slot wrestlers invisible in CAM entrance, shadow only): draw-gating fields once per char/code.
+        if (ch != 0u && ch <= PS2_RAM_SIZE - 0x4F0u)
+        {
+            static std::set<uint64_t> seen;
+            uint32_t code, mdl, a16c, s390, s4e8;
+            std::memcpy(&code, rdram + ch + 0x30u, 4);
+            std::memcpy(&mdl, rdram + ch + 0x34u, 4);
+            std::memcpy(&a16c, rdram + ch + 0x16Cu, 4);
+            std::memcpy(&s390, rdram + ch + 0x390u, 4);
+            std::memcpy(&s4e8, rdram + ch + 0x4E8u, 4);
+            if (seen.size() < 64u && seen.insert((uint64_t(ch) << 32) | code).second)
+                std::fprintf(stderr, "[chardraw] ch 0x%X code %u model 0x%X flags188 0x%02X a16c 0x%X slot390 %d s4e8 %d b44 %u%c",
+                             ch, code, mdl, rdram[ch + 0x188u], a16c, int(s390), int(s4e8), rdram[ch + 0x44u], 10);
+        }
         const int prevBleed = g_drawCharBleed;
         g_drawCharBleed = lvl > 0 ? lvl : 0;
         g_origCharDraw(rdram, ctx, runtime);
@@ -861,6 +875,10 @@ namespace
         }
         g_origClearChar(rdram, ctx, runtime);
     }
+    // Nov 11: real cast of a CAM entrance preview (set by rosterxInitEventParam before CSd5EventMng -> GameMem::Setup).
+    // At Setup the slot-0 setup cast is still the CAM dummy 9200, so big SvR slot models (Andre 17130 = 665 KB) got the
+    // 0x290 (656 KB) page and loaded nothing -> invisible wrestler.
+    uint16_t g_camEventCast = 0;
     void reallocatePageBigModels(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         // Nov 5 (Hogan session): generalised from SvR Molly (41x0) to every loose ring model > 512 KB (Hogan WM19 graft
@@ -884,6 +902,30 @@ namespace
         const uint32_t table = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5]));
         if (first == 2u && table == 0x419d60u)
         {
+            if (g_camEventCast != 0u)
+            {
+                uint16_t setup0 = 0;
+                std::memcpy(&setup0, rdram + 0x4920C0u + 0x10Au, 2);
+                uint32_t size0 = 0;
+                std::memcpy(&size0, rdram + table + 8u, 4);
+                uint64_t big = 0;
+                for (uint16_t k : {uint16_t(g_camEventCast), uint16_t(g_camEventCast + 30u), uint16_t(g_camEventCast + 3u),
+                                   uint16_t(g_camEventCast + 4u), uint16_t(g_camEventCast + 31u)})
+                    big = std::max<uint64_t>(big, looseSize(k));
+                // decoded model needs headroom over the file (Nov 7: SvR 642 KB in 0x290 = stuck pose; match rule
+                // > 0x258 KB -> 0x350); 688 KB for Andre 665 KB loaded but drew only the shadow.
+                uint32_t need = static_cast<uint32_t>((big + 1023u) / 1024u) + 0x60u;
+                if (big > 0x258u * 1024u)
+                    need = std::max<uint32_t>(need, 0x350u);
+                need = std::min<uint32_t>((need + 15u) & ~15u, 0x400u);
+                if (setup0 == 9200u && big > uint64_t(size0) * 1024u && need > size0)
+                {
+                    std::fprintf(stderr, "[mem] CAM entrance cast %u: model %llu B > page 0x%X -> 0x%X%c", unsigned(g_camEventCast),
+                                 static_cast<unsigned long long>(big), size0, need, 10);
+                    std::memcpy(rdram + table + 8u, &need, 4);
+                }
+                g_camEventCast = 0;
+            }
             for (uint32_t slot = 0; slot < 7u; ++slot)
             {
                 uint16_t code = 0;
@@ -7270,6 +7312,9 @@ namespace
         const RosterxSlot *s = model >= kRosterxFirstId ? rosterxByModel(model) : nullptr;
         return s ? s->entrance : 0;
     }
+    // Nov 11: pristine slot record (record.bin + slot.txt fixups) into r; used for the live record and for CAM
+    // "reset to default" (CManDatReader), which must not see CAM edits.
+    void rosterxBuildRecord(uint8_t *rdram, const RosterxSlot &s, uint8_t *r);
     uint32_t rosterxRecord(uint8_t *rdram, PS2Runtime *runtime, RosterxSlot &s)
     {
         if (s.rec != 0u)
@@ -7277,7 +7322,22 @@ namespace
         s.rec = runtime->guestMalloc(0x170u);
         if (s.rec == 0u)
             return 0u;
-        uint8_t *const r = rdram + s.rec;
+        rosterxBuildRecord(rdram, s, rdram + s.rec);
+        {   // Nov 11: CAM edits saved by rosterxCatNext
+            std::ifstream cam(std::filesystem::path("MODS/ROSTER") / s.folder / "record_cam.bin", std::ios::binary);
+            uint8_t buf[0x170];
+            if (cam && cam.read(reinterpret_cast<char *>(buf), 0x170))
+            {
+                std::memcpy(rdram + s.rec + 0x10, buf + 0x10, 0x102);
+                std::fprintf(stderr, "[rosterx] %s: CAM-edited moveset loaded (record_cam.bin)%c", s.name.c_str(), 10);
+            }
+        }
+        std::fprintf(stderr, "[rosterx] %s: id 0x%X record %08x (template 0x%X, model %u, entrance %d)%c", s.name.c_str(),
+                     s.id, s.rec, s.tmpl, s.modelNo, s.entrance, 10);
+        return s.rec;
+    }
+    void rosterxBuildRecord(uint8_t *rdram, const RosterxSlot &s, uint8_t *r)
+    {
         std::memcpy(r, rdram + 0x4C0F54u + s.tmpl * 0x170u, 0x170u);
         if (s.record.size() == 0x170u)
             std::memcpy(r, s.record.data(), 0x170u);
@@ -7298,9 +7358,6 @@ namespace
         std::strncpy(reinterpret_cast<char *>(r + 0x12C), (s.ring.empty() ? s.name : s.ring).c_str(), 0xF);
         if (r[0x163] == 6) // template hidden -> visible male
             r[0x163] = 0;
-        std::fprintf(stderr, "[rosterx] %s: id 0x%X record %08x (template 0x%X, model %u, entrance %d)%c", s.name.c_str(),
-                     s.id, s.rec, s.tmpl, s.modelNo, s.entrance, 10);
-        return s.rec;
     }
     // Copies models behind "/EMD2/<model*100 + suffix>" for cfileSearchLoose. Suffix = attire*10 + part (part 0 ring,
     // 3 entrance flag, 4 entrance dress); entrance-only attires sit at higher attire digits (stock Piper 6930 = his
@@ -7403,7 +7460,14 @@ namespace
     std::map<uint16_t, std::pair<uint32_t, std::vector<SvrCastObj>>> g_svrRowCast;
     std::vector<uint16_t> g_svrCastMap; // active SvR event: HCTP SetCast index -> object index
     // fixed number ranges (ENTRANCE_PORT_MASTER): 7000 SvR04 singles, 7200 SvR04 tags, 7400 SvR06 singles, 7600 SvR06 tags
-    uint8_t svrKindOf(uint16_t ev) { return ((ev >= 7200u && ev < 7400u) || (ev >= 7600u && ev < 7800u)) ? uint8_t(2) : uint8_t(1); }
+    // Nov 11 SYM port: 7800 singles, 8000-8049 tags, 8050-8099 trios (kind 3); plane variants +100
+    uint8_t svrKindOf(uint16_t ev)
+    {
+        if ((ev >= 8050u && ev < 8100u) || (ev >= 8150u && ev < 8200u))
+            return 3;
+        return ((ev >= 7200u && ev < 7400u) || (ev >= 7600u && ev < 7800u) || (ev >= 8000u && ev < 8050u) ||
+                (ev >= 8100u && ev < 8150u)) ? uint8_t(2) : uint8_t(1);
+    }
     std::map<uint16_t, SvrEvent> g_svrEvents;      // virtual event no (and +100 variant) -> SvR event
     // Nov 10 Mr. America: virtual event -> HCTP light motion that replaces the SvR lights (entrances.txt light=<n>)
     std::map<uint16_t, uint16_t> g_svrLightOverride;
@@ -7932,6 +7996,45 @@ namespace
                 }
                 return true;
             };
+            // Nov 11 CROWD CUES (HCTP_SVR06_CROWD=0 off): SvR06 writes its crowd cheer cues as op C1 <se> 23 (3 B; se 47/48/
+            // 49/51 = the same /SFX/LIST cheer SEs as HCTP's bank-6 lists 0x3C-0x3E). HCTP SetAttr 0x1b3120 has no C1 handler
+            // (ops >= 0xC0 other than C0 fall to the size-a0 tail), so SvR06 entrances played with no crowd swells. HCTP's
+            // own cue is C0 <se> (2 B), and its handler (0x1b34f0) queues the SE and RETURNS -> it must be the block's last
+            // event. In place, same block size: [other events in order] + C0 <first crowd se> + pad (never read).
+            if (!(std::getenv("HCTP_SVR06_CROWD") && std::getenv("HCTP_SVR06_CROWD")[0] == '0'))
+            {
+                uint32_t cues = 0;
+                for (uint32_t o : offs)
+                    walk(data0 + o, data0 + segEnd(o), [&](uint32_t, size_t p, size_t sz) {
+                        if (!sz || !(bk[p] & 0x80u))
+                            return;
+                        const size_t b0 = p + 1u, b1 = std::min(b0 + (bk[p] & 0x7Fu), p + sz);
+                        std::vector<uint8_t> keep;
+                        int se = -1;
+                        for (size_t q = b0; q < b1;)
+                        {
+                            const uint8_t op = bk[q], len = bk[op];
+                            if (len == 0u || q + len > b1)
+                                return; // unknown op size: leave this block alone
+                            if (op == 0xC1u && len == 3u && bk[q + 2] == 0x23u && bk[q + 1] >= 47u && bk[q + 1] <= 51u)
+                            {
+                                if (se < 0) se = bk[q + 1];
+                            }
+                            else
+                                keep.insert(keep.end(), bk.begin() + q, bk.begin() + q + len);
+                            q += len;
+                        }
+                        if (se < 0)
+                            return;
+                        keep.push_back(0xC0u), keep.push_back(static_cast<uint8_t>(se));
+                        keep.resize(b1 - b0, 0u);
+                        std::copy(keep.begin(), keep.end(), bk.begin() + b0);
+                        ++cues;
+                    });
+                bk[0xC0] = 2u; // op C0 size in this bank's table (SvR06 banks: 0)
+                if (pass == 0)
+                    std::fprintf(stderr, "[svr06ent] event %u: %u crowd cues C1 -> C0%c", static_cast<unsigned>(no), cues, 10);
+            }
             if (pass == 0)
             {
                 // Nov 10 LIGHTS: global obj 0xB, scene x 0, tracks y1..y8 = the 8 CMotionLight slots, same key stream
@@ -8511,6 +8614,487 @@ namespace
         std::fprintf(stderr, "[svr06ent] SEVP header %08x: + event %u (SvR06 %u, %u objs, donor %d: %u effects)%c", header, ev,
                      se.svrNo, nObj, donor, donorN, 10);
     }
+    // ===== Nov 11 SYM ENTRANCE PORT (notes\SYM_ENTRANCE_READER_PLAN_20261110.md) - BEGIN (SYM entrance session section) =====
+    // Original SmackDown! Shut Your Mouth pacs read as-is from <game>\MODS\SYM\ (evtEnt.pac, bg.pac; tools\stage_entrance_port.py
+    // copies them and writes MODS\SYM\entrances.txt "<sym no> <hctp ev> <donor ev> <name>"). At boot, in memory:
+    // (1) ENTR/SYDT = HCTP's own authoring format (HCTP evtEnt.pac carries an unused SYDT identical to its SEVP, 534/534) ->
+    //     lossless repack into SEVP rows APPENDED to the SvR04 reader's SEVP image (g_svrSevp) under svrNo 10000+<sym no>, so
+    //     svrEnsureRow / cast visibility / SetCast work unchanged (game 7). Effects: SYM type -> HCTP CreateEventEffect
+    //     0x166890 type (jump table 0x45d620: 1 Titantron, 2 NamePlate, 7 StageMovie, 8 BGM, 9 FullscreenTitantron(0x40,0x40)):
+    //     SYM 1->1, 12->8, 9/2->2 (HCTP nameplate params = 3 x kind 2 value 0, as all 195 stock rows), 10->7, 13 AllTitan->9
+    //     (same scene/frame/len window); 7 BookerTFire dropped (native port = plan step 4), 5/6/8 unused -> dropped.
+    //     Props: SYM 172 (title belt) -> HCTP engine belt 2019; others -> SOBJ 2200+n served from SYM bg.pac (same PAC container).
+    // (2) EVET banks: SYM framing (b < 0x80 skip b frames, else record of (b & 0x7f) halfwords) -> HCTP framing (< 0x60 skip,
+    //     0x61..0x7F short / 0x60 u8 size); SYM halfword pad dropped where HCTP reads fixed keys: camera (key bit 0x40000000)
+    //     14 -> 13 B, rope objs 6 -> 5 B, pose == {0} removed. Char/prop bodies keep a 1-byte pad (HCTP DataAnalysis /
+    //     weapon decoder loop while p < size-1). Op 0xB9 = attach -1 in BOTH games (HCTP SetAttr 0x1b3250 delay slot -1;
+    //     plan s0.5 misread the next compare) -> no op remap. All banks -> host cache MODS\SYM\CEVN.PAC (regenerated per boot).
+    // (3) While a SYM event plays, its light ops (0x11) go to HCTP's own CMotionLight (Jordan Nov 11: SYM lights are all in HCTP; HCTP_SYMLIGHTS=0
+    //     = skip them). OPEN: Booker fire (plan step 4), ring/stage fit (step 5),
+    //     per-frame resample (SYM keys every 2nd frame like HCTP stock cameras; add only if the body shimmers).
+    // HCTP_SYMENT=0 = off.
+    std::map<uint16_t, uint16_t> g_symRegistered; // SYM event no -> virtual event
+    bool g_symActive = false;                      // a SYM event plays (evsSetEventSvr)
+    constexpr uint16_t kSymNoBase = 10000u;        // svrNo of SYM rows inside g_svrSevp
+    struct SymDirEnt { uint32_t sec, sz; };         // absolute 0x800 sector in the pac, size / 0x100
+    // SYM DPAC: named groups carry DOUBLED counts (rows = n/2 x 8 B {name[4], u16 sector, u16 size/0x100}); id-form groups
+    // (n & 0x8000): n & 0x7FFF x 4 B {u16 hex-digit id, u16 size/0x100} sequential from the base sector; data 0x4000 + sector*0x800.
+    template <class F>
+    bool symDpacDir(const char *file, F &&on)
+    {
+        std::ifstream f(file, std::ios::binary);
+        std::vector<uint8_t> h(0x4000);
+        if (!f || !f.read(reinterpret_cast<char *>(h.data()), 0x4000) || std::memcmp(h.data(), "DPAC", 4) != 0)
+            return false;
+        for (uint32_t off = 0x800; off + 8 <= 0x4000 && std::memcmp(&h[off], "\0\0\0\0", 4) != 0;)
+        {
+            std::string tag(reinterpret_cast<const char *>(&h[off]), 4);
+            while (!tag.empty() && (tag.back() == ' ' || tag.back() == '\0'))
+                tag.pop_back();
+            uint16_t n, start;
+            std::memcpy(&n, &h[off + 4], 2);
+            std::memcpy(&start, &h[off + 6], 2);
+            if (n & 0x8000u)
+            {
+                const uint32_t cnt = n & 0x7FFFu;
+                uint32_t sec = start;
+                for (uint32_t i = 0; i < cnt && off + 12 + 4 * i <= 0x4000; ++i)
+                {
+                    uint16_t id, sz;
+                    std::memcpy(&id, &h[off + 8 + 4 * i], 2);
+                    std::memcpy(&sz, &h[off + 10 + 4 * i], 2);
+                    char hx[8];
+                    std::snprintf(hx, sizeof(hx), "%X", id);
+                    on(tag, std::string(hx), SymDirEnt{8u + sec, sz});
+                    sec += (sz * 0x100u + 0x7FFu) >> 11;
+                }
+                off += 8 + 4 * cnt;
+            }
+            else
+            {
+                const uint32_t cnt = n / 2u;
+                for (uint32_t i = 0; i < cnt && off + 16 + 8 * i <= 0x4000; ++i)
+                {
+                    const char *nm = reinterpret_cast<const char *>(&h[off + 8 + 8 * i]);
+                    std::string name(nm, strnlen(nm, 4));
+                    while (!name.empty() && name.back() == ' ')
+                        name.pop_back();
+                    uint16_t sec, sz;
+                    std::memcpy(&sec, &h[off + 12 + 8 * i], 2);
+                    std::memcpy(&sz, &h[off + 14 + 8 * i], 2);
+                    on(tag, name, SymDirEnt{8u + sec, sz});
+                }
+                off += 8 + 8 * cnt;
+            }
+        }
+        return true;
+    }
+    // SYDT: u16 n; per entrance {u16 no, u16 0, u16 nObj; per obj {u16 idx, u16 model, u8 type[4], u16 nSlot; nSlot x 37 B}};
+    // then u16 n; per entrance {u16 no, u16 nEff; per eff {u16 type, scene, frame, rate, len, nPar; nPar x (u8 tag + value:
+    // 1 = u8, 3 = u16, 2/4/5 = 4 B)}} (tag = HCTP SEVP param kind, checked on HCTP's own SYDT vs SEVP: identical).
+    struct SymObj { uint16_t idx = 0, model = 0; uint8_t t4[4] = {}; std::vector<std::array<uint8_t, 37>> slots; };
+    struct SymEff { uint16_t f[5] = {}; std::vector<std::pair<uint8_t, uint32_t>> pars; };
+    struct SymSydt { std::map<uint16_t, std::vector<SymObj>> ev; std::map<uint16_t, std::vector<SymEff>> eff; };
+    bool symParseSydt(const std::vector<uint8_t> &d, SymSydt &out)
+    {
+        size_t p = 0;
+        auto need = [&](size_t k) { return p + k <= d.size(); };
+        auto u16 = [&](size_t o) { uint16_t v; std::memcpy(&v, &d[o], 2); return v; };
+        if (!need(2))
+            return false;
+        const uint16_t n = u16(p);
+        p += 2;
+        for (uint16_t i = 0; i < n; ++i)
+        {
+            if (!need(6))
+                return false;
+            const uint16_t no = u16(p), nc = u16(p + 4);
+            p += 6;
+            std::vector<SymObj> &objs = out.ev[no];
+            for (uint16_t j = 0; j < nc; ++j)
+            {
+                if (!need(10))
+                    return false;
+                SymObj o;
+                o.idx = u16(p);
+                o.model = u16(p + 2);
+                std::memcpy(o.t4, &d[p + 4], 4);
+                const uint16_t ns = u16(p + 8);
+                p += 10;
+                if (!need(37u * size_t(ns)))
+                    return false;
+                for (uint16_t k = 0; k < ns; ++k, p += 37)
+                {
+                    std::array<uint8_t, 37> s;
+                    std::memcpy(s.data(), &d[p], 37);
+                    o.slots.push_back(s);
+                }
+                objs.push_back(std::move(o));
+            }
+        }
+        if (!need(2))
+            return false;
+        const uint16_t ne = u16(p);
+        p += 2;
+        for (uint16_t i = 0; i < ne; ++i)
+        {
+            if (!need(4))
+                return false;
+            const uint16_t no = u16(p), nf = u16(p + 2);
+            p += 4;
+            std::vector<SymEff> &list = out.eff[no];
+            for (uint16_t k = 0; k < nf; ++k)
+            {
+                if (!need(12))
+                    return false;
+                SymEff e;
+                for (int q = 0; q < 5; ++q)
+                    e.f[q] = u16(p + 2u * q);
+                const uint16_t np = u16(p + 10);
+                p += 12;
+                for (uint16_t j = 0; j < np; ++j)
+                {
+                    if (!need(1))
+                        return false;
+                    const uint8_t tg = d[p++];
+                    const size_t w = tg == 1u ? 1u : (tg == 3u ? 2u : ((tg == 2u || tg == 4u || tg == 5u) ? 4u : 0u));
+                    if (w == 0u || !need(w))
+                        return false;
+                    uint32_t v = 0;
+                    std::memcpy(&v, &d[p], w);
+                    p += w;
+                    e.pars.push_back({tg, v});
+                }
+                list.push_back(std::move(e));
+            }
+        }
+        return true;
+    }
+    struct SymFrameStats { uint32_t recs = 0, camStrip = 0, ropeStrip = 0, padOnly = 0, splitSkips = 0, bad = 0; };
+    // SYM bank (T[256] op sizes, u32 n @0x100, 16 B dir {key, off, frames, 0} @0x104, 0xFFFFF = empty) -> HCTP framing
+    bool symReframe(const std::vector<uint8_t> &b, const std::set<uint32_t> &ropeObjs, std::vector<uint8_t> &out, SymFrameStats &st)
+    {
+        if (b.size() < 0x104u)
+            return false;
+        uint32_t n = 0;
+        std::memcpy(&n, &b[0x100], 4);
+        const size_t data0 = 0x104u + 16u * size_t(n);
+        if (n > 0x10000u || data0 > b.size())
+            return false;
+        std::vector<uint32_t> offs;
+        std::map<uint32_t, uint32_t> firstKey; // track offset -> first dir key using it (kind)
+        for (uint32_t i = 0; i < n; ++i)
+        {
+            uint32_t key, off;
+            std::memcpy(&key, &b[0x104u + 16u * i], 4);
+            std::memcpy(&off, &b[0x104u + 16u * i + 4u], 4);
+            if (off != 0xFFFFFu && data0 + off < b.size())
+                offs.push_back(off), firstKey.emplace(off, key);
+        }
+        std::sort(offs.begin(), offs.end());
+        offs.erase(std::unique(offs.begin(), offs.end()), offs.end());
+        std::vector<uint8_t> data;
+        std::map<uint32_t, uint32_t> remap;
+        for (size_t k = 0; k < offs.size(); ++k)
+        {
+            const uint32_t o = offs[k];
+            const size_t pe = data0 + (k + 1u < offs.size() ? offs[k + 1u] : uint32_t(b.size() - data0));
+            remap[o] = static_cast<uint32_t>(data.size());
+            const uint32_t key = firstKey[o];
+            const bool cam = (key & 0x40000000u) != 0u;
+            const bool rope = !cam && ropeObjs.count((key >> 8) & 0xFFu) != 0u;
+            uint32_t gap = 0;
+            auto flushGap = [&]() {
+                if (gap > 0x5Fu)
+                    ++st.splitSkips;
+                while (gap > 0u)
+                {
+                    const uint32_t s = std::min<uint32_t>(gap, 0x5Fu);
+                    data.push_back(static_cast<uint8_t>(s));
+                    gap -= s;
+                }
+            };
+            size_t p = data0 + o;
+            while (p < pe)
+            {
+                const uint8_t c = b[p];
+                if (c < 0x80u)
+                {
+                    gap += c;
+                    ++p;
+                    continue;
+                }
+                const size_t sz = size_t(c & 0x7Fu) * 2u;
+                ++p;
+                if (sz == 0u || p + sz > pe)
+                {
+                    ++st.bad;
+                    break;
+                }
+                const size_t evLen = (b[p] & 0x80u) ? 1u + (b[p] & 0x7Fu) : 0u;
+                if (evLen > sz)
+                {
+                    ++st.bad;
+                    break;
+                }
+                const size_t pose = sz - evLen;
+                const bool lastZero = b[p + sz - 1u] == 0u;
+                size_t len = sz;
+                if (pose == 1u && lastZero)
+                    len = evLen, ++st.padOnly;
+                else if (cam && pose == 14u && lastZero)
+                    --len, ++st.camStrip;
+                else if (rope && pose == 6u && lastZero)
+                    --len, ++st.ropeStrip;
+                flushGap();
+                if (len >= 1u && len <= 0x1Fu)
+                    data.push_back(static_cast<uint8_t>(0x60u + len));
+                else
+                    data.push_back(0x60u), data.push_back(static_cast<uint8_t>(len));
+                data.insert(data.end(), b.begin() + static_cast<std::ptrdiff_t>(p), b.begin() + static_cast<std::ptrdiff_t>(p + len));
+                p += sz;
+                ++st.recs;
+            }
+            flushGap();
+        }
+        out.assign(b.begin(), b.begin() + static_cast<std::ptrdiff_t>(data0));
+        for (uint32_t i = 0; i < n; ++i)
+        {
+            uint32_t off;
+            std::memcpy(&off, &out[0x104u + 16u * i + 4u], 4);
+            auto it = remap.find(off);
+            const uint32_t no = it != remap.end() ? it->second : 0xFFFFFu;
+            std::memcpy(&out[0x104u + 16u * i + 4u], &no, 4);
+        }
+        out.insert(out.end(), data.begin(), data.end());
+        return true;
+    }
+    // MODS\SYM\entrances.txt -> every row registered at boot (like svrEntranceTableLoad / svr06TableLoad)
+    void symTableLoad()
+    {
+        if (std::getenv("HCTP_SYMENT") && std::getenv("HCTP_SYMENT")[0] == '0')
+            return;
+        std::ifstream tf("MODS/SYM/entrances.txt");
+        if (!tf)
+        {
+            std::fprintf(stderr, "[syment] MODS\\SYM\\entrances.txt missing: no SYM entrances%c", 10);
+            return;
+        }
+        if (!svrLoadPacs() && g_svrSevp.size() < 0x20u)
+            g_svrSevp.assign(0x20u, 0u); // no SvR04 pac: SYM rows get an image of their own (same reader)
+        std::map<uint16_t, SymDirEnt> evet;
+        SymDirEnt sydtAt{0, 0};
+        if (!symDpacDir("MODS/SYM/evtEnt.pac", [&](const std::string &tag, const std::string &name, SymDirEnt e) {
+                if (tag == "EVET" && !name.empty() && std::strspn(name.c_str(), "0123456789") == name.size())
+                    evet[static_cast<uint16_t>(std::stoul(name))] = e;
+                else if (tag == "ENTR" && name == "SYDT")
+                    sydtAt = e;
+            }) || sydtAt.sz == 0u)
+        {
+            std::fprintf(stderr, "[syment] MODS\\SYM\\evtEnt.pac missing/unreadable (copy SYM PAC\\EVTENT.PAC there)%c", 10);
+            return;
+        }
+        std::ifstream pac("MODS/SYM/evtEnt.pac", std::ios::binary);
+        std::vector<uint8_t> sydt(size_t(sydtAt.sz) * 0x100u);
+        pac.seekg(static_cast<std::streamoff>(sydtAt.sec) * 0x800);
+        pac.read(reinterpret_cast<char *>(sydt.data()), static_cast<std::streamsize>(sydt.size()));
+        SymSydt sy;
+        if (!pac || !symParseSydt(sydt, sy))
+        {
+            std::fprintf(stderr, "[syment] SYM ENTR/SYDT parse failed%c", 10);
+            return;
+        }
+        std::map<std::string, SymDirEnt> sobj;
+        symDpacDir("MODS/SYM/bg.pac", [&](const std::string &tag, const std::string &name, SymDirEnt e) {
+            if (tag == "SOBJ")
+                sobj[name] = e;
+        });
+        if (g_svrPacFiles.size() < 7u)
+            g_svrPacFiles.resize(7u);
+        g_svrPacFiles[5] = {"MODS/SYM/CEVN.PAC", "MODS\\SYM\\CEVN.PAC"};
+        g_svrPacFiles[6] = {"MODS/SYM/bg.pac", "MODS\\SYM\\BG.PAC"};
+        // SEVP image append helpers (stored pointers are relative to image +8, like the file)
+        auto put = [](const void *src, size_t n) -> uint32_t {
+            while (g_svrSevp.size() & 3u)
+                g_svrSevp.push_back(0);
+            const uint32_t at = static_cast<uint32_t>(g_svrSevp.size());
+            const uint8_t *s = static_cast<const uint8_t *>(src);
+            g_svrSevp.insert(g_svrSevp.end(), s, s + n);
+            return at - 8u;
+        };
+        std::vector<uint8_t> newRows, newEffRows, cache;
+        SymFrameStats st;
+        int rows = 0, ok = 0, effDropped = 0;
+        for (std::string line; std::getline(tf, line);)
+        {
+            while (!line.empty() && (line.back() == '\r' || line.back() == ' '))
+                line.pop_back();
+            unsigned no, v;
+            int donor, used = 0;
+            if (line.empty() || line[0] == '#' || std::sscanf(line.c_str(), "%u %u %d %n", &no, &v, &donor, &used) < 3 ||
+                v < 3000u || v > 32000u)
+                continue;
+            ++rows;
+            const std::string name = used > 0 ? line.substr(static_cast<size_t>(used)) : std::string();
+            auto oe = sy.ev.find(static_cast<uint16_t>(no));
+            auto be = evet.find(static_cast<uint16_t>(no));
+            if (oe == sy.ev.end() || be == evet.end() || g_symRegistered.count(static_cast<uint16_t>(no)))
+            {
+                std::fprintf(stderr, "[syment] SYM %u '%s': not in MODS\\SYM\\evtEnt.pac (or duplicate row)%c", no, name.c_str(), 10);
+                continue;
+            }
+            // (2) bank
+            std::vector<uint8_t> raw(size_t(be->second.sz) * 0x100u), bank;
+            pac.clear();
+            pac.seekg(static_cast<std::streamoff>(be->second.sec) * 0x800);
+            pac.read(reinterpret_cast<char *>(raw.data()), static_cast<std::streamsize>(raw.size()));
+            std::set<uint32_t> ropeObjs;
+            for (const SymObj &o : oe->second)
+                if (o.t4[2] == 1u)
+                    ropeObjs.insert(o.idx);
+            if (!pac || !symReframe(raw, ropeObjs, bank, st))
+            {
+                std::fprintf(stderr, "[syment] SYM %u bank unreadable%c", no, 10);
+                continue;
+            }
+            bank.resize(bank.size() + 16u, 0u);
+            bank.resize((bank.size() + 0x7FFu) & ~size_t(0x7FFu), 0u);
+            const uint32_t bankSec = static_cast<uint32_t>(cache.size() / 0x800u), bankSz = static_cast<uint32_t>(bank.size() / 0x100u);
+            cache.insert(cache.end(), bank.begin(), bank.end());
+            // (1) objects + scenes (SYDT slot 37 B -> SEVP scene 40 B; obj 28 B)
+            std::vector<uint8_t> chars;
+            std::string props;
+            for (const SymObj &o : oe->second)
+            {
+                std::vector<uint8_t> scenes;
+                for (const auto &s : o.slots)
+                {
+                    uint8_t sc[40] = {};
+                    std::memcpy(sc, s.data(), 3);              // u16 slot, u8 on
+                    std::memcpy(sc + 4, s.data() + 3, 32);     // tid, tx, ty, f32 x5
+                    std::memcpy(sc + 36, s.data() + 35, 2);    // parent
+                    scenes.insert(scenes.end(), sc, sc + 40);
+                }
+                const uint32_t ps = scenes.empty() ? 0u : put(scenes.data(), scenes.size());
+                uint8_t ch[28] = {};
+                uint16_t model = o.model;
+                if (o.t4[1] == 1u) // prop
+                {
+                    const uint16_t hm = model == 172u ? uint16_t(2019u) : static_cast<uint16_t>(2200u + model);
+                    if (hm != 2019u)
+                    {
+                        if (auto so = sobj.find(std::to_string(model)); so != sobj.end())
+                            g_svrPac["/SOBJ/" + std::to_string(hm)] = {6, so->second.sec, so->second.sz};
+                        else
+                            std::fprintf(stderr, "[syment] SYM %u prop %u: not in SYM bg.pac%c", no, model, 10);
+                    }
+                    props += " " + std::to_string(model) + "->" + std::to_string(hm);
+                    model = hm;
+                }
+                std::memcpy(ch, &o.idx, 2);
+                std::memcpy(ch + 2, &model, 2);
+                const bool allZero = o.t4[0] == 0u && o.t4[1] == 0u && o.t4[2] == 0u && o.t4[3] == 0u;
+                ch[4] = allZero ? 1u : 0u;
+                std::memcpy(ch + 5, o.t4, 4);
+                const uint32_t w4 = 0xFFFFFFFFu;
+                std::memcpy(ch + 12, &w4, 4);
+                const uint16_t ns = static_cast<uint16_t>(o.slots.size());
+                std::memcpy(ch + 0x14, &ns, 2);
+                std::memcpy(ch + 0x18, &ps, 4);
+                chars.insert(chars.end(), ch, ch + 28);
+            }
+            const uint32_t pChar = put(chars.data(), chars.size());
+            const uint16_t svrNo = static_cast<uint16_t>(kSymNoBase + no), nObj = static_cast<uint16_t>(oe->second.size());
+            uint8_t row[12] = {};
+            std::memcpy(row, &svrNo, 2);
+            std::memcpy(row + 2, &nObj, 2);
+            std::memcpy(row + 8, &pChar, 4);
+            newRows.insert(newRows.end(), row, row + 12);
+            // effects
+            std::vector<uint8_t> ents;
+            uint16_t nEnt = 0;
+            const auto ef = sy.eff.find(static_cast<uint16_t>(no));
+            for (const SymEff &e : ef != sy.eff.end() ? ef->second : std::vector<SymEff>())
+            {
+                const uint16_t t = e.f[0];
+                const uint16_t ht = t == 1u ? 1u : t == 12u ? 8u : (t == 9u || t == 2u) ? 2u : t == 10u ? 7u : t == 13u ? 9u : 0u;
+                if (ht == 0u)
+                {
+                    ++effDropped;
+                    continue;
+                }
+                std::vector<std::pair<uint32_t, uint32_t>> pars;
+                if (ht == 2u)
+                    pars.assign(3, {2u, 0u});
+                else
+                    for (const auto &pr : e.pars)
+                        pars.push_back({pr.first, pr.second});
+                uint32_t pp = 0;
+                if (!pars.empty())
+                {
+                    std::vector<uint32_t> vals;
+                    for (const auto &pr : pars)
+                        vals.push_back(pr.second);
+                    const uint32_t pv = put(vals.data(), 4u * vals.size());
+                    std::vector<uint32_t> kv;
+                    for (size_t j = 0; j < pars.size(); ++j)
+                        kv.push_back(pars[j].first), kv.push_back(pv + 4u * static_cast<uint32_t>(j));
+                    pp = put(kv.data(), 4u * kv.size());
+                }
+                uint8_t en[16] = {};
+                std::memcpy(en, &ht, 2);
+                std::memcpy(en + 2, &e.f[1], 8); // scene, frame, rate, len
+                const uint16_t np = static_cast<uint16_t>(pars.size());
+                std::memcpy(en + 10, &np, 2);
+                std::memcpy(en + 12, &pp, 4);
+                ents.insert(ents.end(), en, en + 16);
+                ++nEnt;
+            }
+            const uint32_t pEnt = ents.empty() ? 0u : put(ents.data(), ents.size());
+            uint8_t erow[8] = {};
+            std::memcpy(erow, &svrNo, 2);
+            std::memcpy(erow + 2, &nEnt, 2);
+            std::memcpy(erow + 4, &pEnt, 4);
+            newEffRows.insert(newEffRows.end(), erow, erow + 8);
+            for (uint16_t ev : {static_cast<uint16_t>(v), static_cast<uint16_t>(v + 100u)})
+            {
+                g_svrEvents[ev] = {svrNo, 0x2Du, 7, static_cast<int16_t>(donor), svrKindOf(static_cast<uint16_t>(v))};
+                g_svrPac["/EVET/" + std::to_string(ev)] = {5, bankSec, bankSz};
+            }
+            g_symRegistered[static_cast<uint16_t>(no)] = static_cast<uint16_t>(v);
+            ++ok;
+            std::fprintf(stderr, "[syment] SYM %u -> HCTP event %u/%u '%s' (%u objs, %u/%zu effects, bank %zu -> %u B, props%s)%c", no, v,
+                         v + 100u, name.c_str(), nObj, nEnt, ef != sy.eff.end() ? ef->second.size() : size_t(0), raw.size(),
+                         bankSz * 0x100u, props.empty() ? " none" : props.c_str(), 10);
+        }
+        // row tables = old rows + SYM rows (old row/effect blocks untouched)
+        if (ok > 0)
+        {
+            auto appendTable = [&](uint32_t cntAt, uint32_t ptrAt, size_t rowSz, const std::vector<uint8_t> &extra) {
+                const uint32_t oldN = svrU32(cntAt), oldP = svrU32(ptrAt) + 8u;
+                std::vector<uint8_t> t;
+                if (oldN != 0u && oldP + rowSz * oldN <= g_svrSevp.size())
+                    t.assign(g_svrSevp.begin() + oldP, g_svrSevp.begin() + oldP + rowSz * oldN);
+                t.insert(t.end(), extra.begin(), extra.end());
+                const uint32_t p = put(t.data(), t.size());
+                const uint32_t n = static_cast<uint32_t>(t.size() / rowSz);
+                std::memcpy(&g_svrSevp[cntAt], &n, 4);
+                std::memcpy(&g_svrSevp[ptrAt], &p, 4);
+            };
+            appendTable(0x10u, 0x14u, 12u, newRows);
+            appendTable(0x18u, 0x1Cu, 8u, newEffRows);
+        }
+        std::ofstream o("MODS/SYM/CEVN.PAC", std::ios::binary | std::ios::trunc);
+        const bool wrote = !cache.empty() && static_cast<bool>(o.write(reinterpret_cast<const char *>(cache.data()), static_cast<std::streamsize>(cache.size())));
+        if (!wrote)
+            for (const auto &kv : g_symRegistered)
+                for (uint16_t ev : {kv.second, static_cast<uint16_t>(kv.second + 100u)})
+                    g_svrEvents.erase(ev), g_svrPac.erase("/EVET/" + std::to_string(ev));
+        std::fprintf(stderr, "[syment] table: %d SYM rows, %d registered; CEVN.PAC %zu B %s; %u records (cam strip %u, rope strip %u, pad-only %u, split skips %u, BAD %u), %d effects dropped (Booker fire/unused); %zu SOBJ in SYM bg.pac%c",
+                     rows, wrote ? ok : 0, cache.size(), wrote ? "ok" : "WRITE FAILED -> SYM events off", st.recs, st.camStrip,
+                     st.ropeStrip, st.padOnly, st.splitSkips, st.bad, effDropped, sobj.size(), 10);
+    }
+    // ===== Nov 11 SYM ENTRANCE PORT - END =====
     // STEP 3: casts shown = team size of the match snapshot (singles 1); tag events (kind 2) at least 2 (CAM tag preview
     // has no snapshot). Extra cast objects get scene count 0 (object indices kept: bank keys/parents use them).
     void svrApplyCastVisibility(uint8_t *rdram, uint16_t ev, const SvrEvent &se)
@@ -8523,7 +9107,8 @@ namespace
         for (int i = 0; i < 8; ++i)
             if (g_entranceTeam[i] >= 0 && g_entranceTeam[i] < 8)
                 maxTeam = std::max(maxTeam, ++teamSize[g_entranceTeam[i]]);
-        const int visible = se.kind == 2u ? std::max(2, maxTeam) : maxTeam;
+        // Nov 11 SYM: kind 3 = trio (CAM stable list) -> at least 3 shown
+        const int visible = se.kind >= 2u ? std::max(static_cast<int>(se.kind), maxTeam) : maxTeam;
         int shown = 0;
         for (const SvrCastObj &o : rc->second.second)
         {
@@ -8533,7 +9118,7 @@ namespace
             g_svrCastMap.push_back(o.obj);
         }
         std::fprintf(stderr, "[svrent] event %u casts: %zu objs, %d shown (team %d, %s)%c", ev, rc->second.second.size(), shown,
-                     maxTeam, se.kind == 2u ? "tag" : "single", 10);
+                     maxTeam, se.kind == 3u ? "trio" : (se.kind == 2u ? "tag" : "single"), 10);
     }
     // SetCast 0x167280 (this, u16 obj, u16 code): InitEventSystem casts member k at obj k -> k-th SvR cast object.
     PS2Runtime::RecompiledFunction g_origSetCast = nullptr;
@@ -8561,6 +9146,7 @@ namespace
         auto it = g_svrEvents.find(ev);
         g_svrEventActive = it != g_svrEvents.end();
         g_svr06Active = g_svrEventActive && it->second.game == 6;
+        g_symActive = g_svrEventActive && it->second.game == 7; // Nov 11 SYM entrance port
         g_svr06LightsSet = false;
         g_svrCurEv = ev;
         // STEP 2: per-event SvR06 light bank + pyro armed by the SvR06 event id (any PCEN/GMEV pack), previews and matches
@@ -8577,10 +9163,10 @@ namespace
             else
                 hctpPyroDisarm();
         }
-        else if (ev >= 3000u && ev < 8000u)
+        else if (ev >= 3000u && ev < 8200u) // Nov 11: SYM tags/trios 8000-8199
             hctpPyroDisarm();
-        if (ev >= 3000u && ev < 8000u)
-            std::fprintf(stderr, "[svrent] SetEvent call ev %u (svr %d)%c", ev, g_svrEventActive ? 1 : 0, 10);
+        if (ev >= 3000u && ev < 8200u)
+            std::fprintf(stderr, "[svrent] SetEvent call ev %u (svr %d%s)%c", ev, g_svrEventActive ? 1 : 0, g_symActive ? ", SYM" : "", 10);
         if (g_svrEventActive)
         {
             const uint32_t header = gU32(rdram, self + 0xC);
@@ -8815,6 +9401,7 @@ namespace
     {
         g_svrEventActive = false;
         g_svr06Active = false;
+        g_symActive = false;
         svrLightRestore(rdram);
         const uint32_t ra = regU(ctx, 31);
         g_origEvsEnd(rdram, ctx, runtime);
@@ -8824,6 +9411,7 @@ namespace
     {
         g_svrEventActive = false;
         g_svr06Active = false;
+        g_symActive = false;
         svrLightRestore(rdram);
         const uint32_t ra = regU(ctx, 31);
         g_origEvsRelease(rdram, ctx, runtime);
@@ -8988,6 +9576,20 @@ namespace
     {
         const uint32_t ra = regU(ctx, 31);
         g_motionLightThis = regU(ctx, 4) & 0x1FFFFFFu;
+        // Nov 11 SYM entrance port: SYM light ops go to HCTP's own CMotionLight as-is (Jordan: every SYM light is already in
+        // HCTP) - never the SvR04 EMOT swap. HCTP_SYMLIGHTS=0 = skip them (HCTP arena lighting kept).
+        if (g_symActive && ra >= 0x1b3120u && ra < 0x1b4e30u)
+        {
+            static const bool pass = !(std::getenv("HCTP_SYMLIGHTS") && std::getenv("HCTP_SYMLIGHTS")[0] == '0');
+            static int logged = 0;
+            if (logged++ < 64)
+                std::fprintf(stderr, "[symlight] SYM light op slot %u motion %u -> %s%c", regU(ctx, 5), regU(ctx, 6),
+                             pass ? "HCTP CMotionLight" : "skipped (HCTP lighting kept)", 10);
+            if (pass)
+                return g_origMotionLightSet(rdram, ctx, runtime);
+            ctx->pc = ra;
+            return;
+        }
         if (g_svrEventActive && ra >= 0x1b3120u && ra < 0x1b4e30u && g_svrLightOverride.count(g_svrCurEv))
         {
             ctx->pc = ra; // Nov 10 Mr. America: light override owns the lights; the bank's own light ops are dropped
@@ -9342,10 +9944,13 @@ namespace
     uint32_t rosterxAppendSelect(uint8_t *rdram, uint8_t *out, uint32_t n)
     {
         (void)rdram;
+        // Nov 11 (exhibition audit): templates can be restored cut wrestlers too (Hollywood Hogan / Mr. America = Legend
+        // Hogan 0x4E) -> search stock + restored records (n0), not only the stock 65 (both slots were dropped before).
+        const uint32_t n0 = n;
         for (const auto &s : g_rosterx)
         {
             const uint8_t *tmpl = nullptr;
-            for (uint32_t i = 0; i < kStockSelect && !tmpl; ++i)
+            for (uint32_t i = 0; i < n0 && !tmpl; ++i)
                 if (rdS16(out + i * kSelectRec + 2) == s.tmpl)
                     tmpl = out + i * kSelectRec;
             if (!tmpl)
@@ -9640,8 +10245,10 @@ namespace
     PS2Runtime::RecompiledFunction g_rxOrigSSList = nullptr, g_rxOrigMalloc = nullptr;
     void rosterxMallocSSList(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        if (rxArg(ctx, 31) == 0x393580u && rxArg(ctx, 4) < 0xC00u)
-            SET_GPR_U32(ctx, 4, 0xC00u);
+        // Nov 11: types 0/1 malloc at ra 0x393580, type 2 (stock-roster list, 0x56 ids) at ra 0x393660
+        const uint32_t want = std::max<uint32_t>(0xC00u, (0xA2u + uint32_t(g_rosterx.size())) * 8u);
+        if ((rxArg(ctx, 31) == 0x393580u || rxArg(ctx, 31) == 0x393660u) && rxArg(ctx, 4) < want)
+            SET_GPR_U32(ctx, 4, want);
         g_rxOrigMalloc(rdram, ctx, runtime);
     }
     std::string rosterxLowerName(const uint8_t *rdram, uint32_t id, const RosterxSlot *s)
@@ -9652,49 +10259,259 @@ namespace
             c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
         return n;
     }
-    void rosterxSSList(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    // Nov 11 (2): the slot insert moved from after SetSuperStarList to CreateUI (0x3938c0 picker / 0x394380 Auto Setting
+    // superstars). SetSuperStarList sorts and then builds the menu UI (vfunc 0x9C -> func_12F020 with list 0x94, count 0x98,
+    // 0x12 / 0x10 rows per page) BEFORE it returns, so slots appended afterwards were past the UI's count: 5 pages, wrap
+    // to page 1, shifted stock rows lost ("everybody disappeared"), Auto Setting showed no slot. Now: insert missing slots,
+    // then sort the whole list the game's way (GetWrestlerName 0x12cde0 record +0x116, GetNotTheName 0x370b80 strips
+    // "The "), then the original CreateUI counts pages.
+    std::string rosterxSortKey(const uint8_t *rdram, uint32_t id)
     {
-        const uint32_t self = rxArg(ctx, 4) & 0x1FFFFFFu, ra = rxArg(ctx, 31);
-        g_rxOrigSSList(rdram, ctx, runtime);
-        if (ctx->pc != ra || !self || self > 0x2000000u - 0xA0u)
+        const RosterxSlot *s = rosterxById(id);
+        std::string n;
+        if (s)
+            n = s->name;
+        else if (id < 0xA2u)
+            n.assign(reinterpret_cast<const char *>(rdram + 0x4C0F54u + id * 0x170u + 0x116u), 0x15);
+        n = n.substr(0, n.find('\0'));
+        if (n.rfind("The ", 0) == 0)
+            n = n.substr(4);
+        for (char &c : n)
+            c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+        return n;
+    }
+    void rosterxSSInsert(uint8_t *rdram, uint32_t self)
+    {
+        if (!self || self > 0x2000000u - 0xA0u)
             return;
         uint32_t type, buf, count;
         std::memcpy(&type, rdram + self + 0x24u, 4);
         std::memcpy(&buf, rdram + self + 0x94u, 4);
         std::memcpy(&count, rdram + self + 0x98u, 4);
         buf &= 0x1FFFFFFu;
-        if (type != 0u || !buf || count == 0u || count > 0x100u)
+        // CAM picker = types 1/2 (FromUI_OK 0x395a58 / FromUI_Dir 0x344a28), Auto Setting superstars = type 0 (ids 0..0xA1
+        // incl. presets). Type 3 = CAW list (0x20 ids) stays stock.
+        const uint32_t cap = (0xA2u + uint32_t(g_rosterx.size())) * 8u;
+        if (type > 2u || !buf || count == 0u || count * 8u > cap || buf > 0x2000000u - cap)
             return;
+        struct Row { uint8_t raw[8]; uint32_t id; std::string key; };
+        std::vector<Row> rows(count);
+        std::set<uint32_t> have;
+        for (uint32_t i = 0; i < count; ++i)
+        {
+            std::memcpy(rows[i].raw, rdram + buf + i * 8u, 8);
+            std::memcpy(&rows[i].id, rows[i].raw + 4, 4);
+            have.insert(rows[i].id);
+        }
+        const uint32_t stock = count;
         for (const RosterxSlot &s : g_rosterx)
         {
-            uint32_t pos = count;
-            const std::string key = rosterxLowerName(rdram, s.id, &s);
-            for (uint32_t i = 0; i < count; ++i)
+            if (have.count(s.id) || (rows.size() + 1u) * 8u > cap)
+                continue;
+            Row r{};
+            const uint32_t id32 = s.id;
+            std::memcpy(r.raw + 4, &id32, 4); // flag byte 0 = selectable (1 = hidden '?')
+            r.id = s.id;
+            rows.push_back(r);
+        }
+        for (Row &r : rows)
+            r.key = rosterxSortKey(rdram, r.id);
+        std::stable_sort(rows.begin(), rows.end(), [](const Row &x, const Row &y) { return x.key < y.key; });
+        for (uint32_t i = 0; i < rows.size(); ++i)
+            std::memcpy(rdram + buf + i * 8u, rows[i].raw, 8);
+        count = uint32_t(rows.size());
+        std::memcpy(rdram + self + 0x98u, &count, 4);
+        std::fprintf(stderr, "[rosterx] superstar list type %u: %u stock + %u slots, sorted (first '%s', last '%s')%c", type,
+                     stock, count - stock, rows.front().key.c_str(), rows.back().key.c_str(), 10);
+    }
+    void rosterxSSList(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        g_rxOrigSSList(rdram, ctx, runtime); // insert happens in CreateUI (rosterxSSCreateUI)
+    }
+    PS2Runtime::RecompiledFunction g_rxOrigSSCreateUI = nullptr, g_rxOrigAutoCreateUI = nullptr;
+    void rosterxSSCreateUI(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        rosterxSSInsert(rdram, rxArg(ctx, 4) & 0x1FFFFFFu);
+        g_rxOrigSSCreateUI(rdram, ctx, runtime);
+    }
+    void rosterxAutoCreateUI(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        rosterxSSInsert(rdram, rxArg(ctx, 4) & 0x1FFFFFFu);
+        g_rxOrigAutoCreateUI(rdram, ctx, runtime);
+    }
+    // Nov 11 CAM FREEZE FIX: CMovesSituationForTable::MakeFavoriteTable 0x245c40 keeps two "move row used" byte arrays of
+    // 2000 (0x7D0) on its stack (sp+0x50 / sp+0x820), indexed by move-table row (this+0x2C rows of 0x40, count this+0x28).
+    // With ported moves the table has > 2000 rows: row 2051 wrote 1 into the caller's (MovesTopNext) saved ra byte 3 ->
+    // jump to 0x13427b8 when a new wrestler was picked in CAM. Native 1:1 copy with arrays sized to the row count;
+    // stock path (<= 2000 rows) runs the original.
+    PS2Runtime::RecompiledFunction g_origMakeFavTable = nullptr;
+    void makeFavoriteTableBig(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = rxArg(ctx, 4) & 0x1FFFFFFu, prop = rxArg(ctx, 5) & 0x1FFFFFFu, ra = rxArg(ctx, 31);
+        int32_t rows = 0;
+        if (self && self < 0x2000000u - 0x200u)
+            std::memcpy(&rows, rdram + self + 0x28u, 4);
+        if (!self || rows <= 0x7D0)
+        {
+            g_origMakeFavTable(rdram, ctx, runtime);
+            return;
+        }
+        static bool told = false;
+        if (!told)
+        {
+            told = true;
+            std::fprintf(stderr, "[movefav] MakeFavoriteTable native: %d move rows (> 2000 stack arrays)%c", rows, 10);
+        }
+        auto rd32 = [&](uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & 0x1FFFFFFu), 4); return v; };
+        auto rd16s = [&](uint32_t a) { int16_t v; std::memcpy(&v, rdram + (a & 0x1FFFFFFu), 2); return int32_t(v); };
+        if (const uint32_t old = rd32(self + 0x1E4u))
+            ppvCall(rdram, ctx, runtime, 0x100210u, {old});
+        std::memset(rdram + self + 0x1E4u, 0, 4);
+        bool skip[0x81];
+        uint32_t cnt = 0;
+        for (uint32_t s = 0; s < 0x81u; ++s)
+        {
+            skip[s] = ppvCall(rdram, ctx, runtime, 0x246b90u, {s}) != 0u || s == 0x6Cu;
+            if (!skip[s]) ++cnt;
+        }
+        cnt &= 0xFFFFu;
+        if (cnt == 0u)
+        {
+            ctx->pc = ra;
+            return;
+        }
+        const uint32_t table = ppvCall(rdram, ctx, runtime, 0x1001f0u, {cnt * 2u}) & 0x1FFFFFFu;
+        std::memcpy(rdram + self + 0x1E4u, &table, 4);
+        std::vector<uint8_t> used1(size_t(rows), 0), used2(size_t(rows), 0);
+        uint32_t n = 0;
+        for (uint32_t s = 0; s < 0x81u; ++s)
+        {
+            if (skip[s]) continue;
+            const int32_t want = rd16s(prop + s * 2u + 0x10u);
+            const uint32_t base = rd32(self + 0x2Cu);
+            const int32_t count = int32_t(rd32(self + 0x28u));
+            for (int32_t r = 0; r < count && r < rows; ++r)
             {
-                uint32_t id;
-                std::memcpy(&id, rdram + buf + i * 8u + 4u, 4);
-                if (id == s.id)
+                const int32_t id = rd16s(base + uint32_t(r) * 0x40u + 0x38u);
+                uint16_t val = 0;
+                bool hit = false;
+                if (id == want && !used1[r])
                 {
-                    pos = 0xFFFFFFFFu; // already there
+                    used1[r] = 1; val = uint16_t(r); hit = true;
+                }
+                else if ((want & 0x8000) && id == int32_t(uint32_t(want) & 0x7FFFu) && !used2[r])
+                {
+                    used2[r] = 1; val = uint16_t(r | 0x8000); hit = true;
+                }
+                if (hit)
+                {
+                    if (table && n < cnt) std::memcpy(rdram + table + n * 2u, &val, 2);
+                    ++n;
                     break;
                 }
-                if (pos == count && id < 0xA2u && rosterxLowerName(rdram, id, nullptr) > key)
-                    pos = i;
             }
-            if (pos == 0xFFFFFFFFu)
-                continue;
-            std::memmove(rdram + buf + (pos + 1u) * 8u, rdram + buf + pos * 8u, (count - pos) * 8u);
-            std::memset(rdram + buf + pos * 8u, 0, 8);
-            rdram[buf + pos * 8u] = 1;
-            const uint32_t id32 = s.id;
-            std::memcpy(rdram + buf + pos * 8u + 4u, &id32, 4);
-            ++count;
         }
-        std::memcpy(rdram + self + 0x98u, &count, 4);
+        const uint16_t n16 = uint16_t(n);
+        std::memcpy(rdram + self + 0x1E8u, &n16, 2);
+        ppvCall(rdram, ctx, runtime, 0x2467d0u, {self, table, uint32_t(n16)});
+        ctx->pc = ra;
+    }
+    // Nov 11 CAM RESET TO DEFAULT: CMovesCategorySelect::DefaultRequest 0x394ed0 -> CManDatReader(id) 0x396f20 reads
+    // m.pac /CHAR/ALL and ReadEndProcess 0x396fe0 copies entry <id> (this+0x20 u16) into this+0x24 (0x170). New slot ids
+    // have no /CHAR/ALL entry -> the copy never happened (stale/garbage default). Slot ids get the pristine slot record.
+    PS2Runtime::RecompiledFunction g_rxOrigManDatEnd = nullptr;
+    void rosterxManDatEnd(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = rxArg(ctx, 4) & 0x1FFFFFFu;
+        if (self && self < 0x2000000u - 0x200u)
+        {
+            uint16_t id = 0;
+            std::memcpy(&id, rdram + self + 0x20u, 2);
+            if (const RosterxSlot *s = rosterxById(id))
+            {
+                rosterxBuildRecord(rdram, *s, rdram + self + 0x24u);
+                std::fprintf(stderr, "[rosterx] CAM default for %s (id 0x%X) = slot record.bin%c", s->name.c_str(), id, 10);
+                ctx->pc = rxArg(ctx, 31);
+                return;
+            }
+        }
+        g_rxOrigManDatEnd(rdram, ctx, runtime);
+    }
+    // Nov 11 CAM SAVE for slots: MovesSequence::MovesCategoryNext 0x342990 (a2 == 0xB) copies the edited record
+    // (this+0x28, 0x170) into GetCharaGameProp(this+0x24 id) = the slot's host-built record, which no memory-card
+    // save holds. Persist the move range (+0x10..+0x111) to MODS/ROSTER/<folder>/record_cam.bin; equal to record.bin
+    // (reset to default) -> file removed. rosterxRecord loads it back at the next boot.
+    // Nov 11 CAM ENTRANCE PREVIEW HANG: MovesSequence::InitEventParam 0x342e30 (a0 = this, a1 = tagEVENTMNGPARAM, a2 = ev).
+    // this+0x1A4 = CAW flag. Flag set + id >= 0x56 -> record from the CAW block (func_12CB10()+0x12F44), and cast[0] =
+    // 0x23F0 (9200, the in-memory CAW preview body) instead of GetMatchWrestlerNo. New slots (ids 0xA2+) get the flag, but
+    // nobody builds a CAW body for them -> /EMD2/9230 never arrives and the event loader waits forever (log 1111:
+    // casts 9200 ... Search /EMD2/9230 ... GMMC/GOBJ, game fps 0). For slot ids run the original with the flag cleared:
+    // record = GetCharaGameProp (slot record) and cast = rosterxMatchNo (slot model code), like stock wrestlers.
+    PS2Runtime::RecompiledFunction g_rxOrigInitEventParam = nullptr;
+    void rosterxInitEventParam(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = rxArg(ctx, 4) & 0x1FFFFFFu, prm = rxArg(ctx, 5) & 0x1FFFFFFu, ra = rxArg(ctx, 31);
+        if (self == 0u || self > 0x2000000u - 0x1A8u)
+            return g_rxOrigInitEventParam(rdram, ctx, runtime);
+        uint32_t id;
+        std::memcpy(&id, rdram + self + 0x24u, 4);
+        const uint8_t flag = rdram[self + 0x1A4u];
+        if (flag == 0u || rosterxById(id) == nullptr)
+        {
+            g_rxOrigInitEventParam(rdram, ctx, runtime);
+            uint32_t c = 0u;
+            if (ctx->pc == ra && prm != 0u && prm < 0x2000000u - 0x28u)
+                std::memcpy(&c, rdram + prm + 0x24u, 4);
+            g_camEventCast = c < 0x10000u ? static_cast<uint16_t>(c) : 0u;
+            return;
+        }
+        rdram[self + 0x1A4u] = 0u;
+        g_rxOrigInitEventParam(rdram, ctx, runtime);
+        if (ctx->pc == ra)
+            rdram[self + 0x1A4u] = flag;
+        uint32_t cast = 0u;
+        if (prm != 0u && prm < 0x2000000u - 0x28u)
+            std::memcpy(&cast, rdram + prm + 0x24u, 4);
+        g_camEventCast = static_cast<uint16_t>(cast);
+        std::fprintf(stderr, "[rosterx] CAM InitEventParam id 0x%X: CAW flag %u cleared -> cast %u (returned %d)%c", id,
+                     unsigned(flag), cast, int(ctx->pc == ra), 10);
+    }
+    PS2Runtime::RecompiledFunction g_rxOrigCatNext = nullptr;
+    void rosterxPersistCam(uint8_t *rdram, RosterxSlot &s)
+    {
+        if (!s.rec) return;
+        uint8_t pristine[0x170];
+        rosterxBuildRecord(rdram, s, pristine);
+        const std::filesystem::path f = std::filesystem::path("MODS/ROSTER") / s.folder / "record_cam.bin";
+        std::error_code ec;
+        if (std::memcmp(pristine + 0x10, rdram + s.rec + 0x10, 0x102) == 0)
+        {
+            if (std::filesystem::remove(f, ec))
+                std::fprintf(stderr, "[rosterx] %s: CAM moveset = default, record_cam.bin removed%c", s.name.c_str(), 10);
+            return;
+        }
+        std::ofstream o(f, std::ios::binary | std::ios::trunc);
+        o.write(reinterpret_cast<const char *>(rdram + s.rec), 0x170);
+        std::fprintf(stderr, "[rosterx] %s: CAM moveset saved -> %s%c", s.name.c_str(), f.string().c_str(), 10);
+    }
+    void rosterxCatNext(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = rxArg(ctx, 4) & 0x1FFFFFFu, ra = rxArg(ctx, 31);
+        const bool save = rxArg(ctx, 5) != 0u && rxArg(ctx, 6) == 0xBu;
+        uint32_t id = 0;
+        if (self && self < 0x2000000u - 0x30u)
+            std::memcpy(&id, rdram + self + 0x24u, 4);
+        g_rxOrigCatNext(rdram, ctx, runtime);
+        if (save && ctx->pc == ra)
+            if (RosterxSlot *s = rosterxById(id))
+                rosterxPersistCam(rdram, *s);
     }
     // Installed LAST in applyHctp so it wraps the cut-roster / Hogan / media hooks on the same functions.
     void installRosterExpansion(PS2Runtime &runtime)
     {
+        if ((g_origMakeFavTable = runtime.lookupFunction(0x245c40u)) != nullptr &&
+            runtime.replaceFunction(0x245c40u, makeFavoriteTableBig))
+            std::cerr << "[movefav] MakeFavoriteTable > 2000 rows hook on" << std::endl;
         // Nov 10 STEP 1: SvR04 entrance table registers at boot, independent of roster expansion; slot.txt
         // entrance=svr04:<no> then reuses the table number.
         svrEntranceTableLoad();
@@ -9711,6 +10528,7 @@ namespace
             if (auto b = g_svr06Registered.find(4044u); b != g_svr06Registered.end())
                 g_svr06CamEvent = b->second;
         }
+        symTableLoad(); // Nov 11 SYM entrance port: MODS\SYM\entrances.txt (7800+ / 8000+ / 8050+), before the hooks install
         svrEntranceInstall(runtime); // SvR04 table + slot.txt entrance=svr04:<no> -> SvR entrance reader
         if (!rx)
             return;
@@ -9735,6 +10553,11 @@ namespace
         ok = hook(0x39d1a0u, g_rxOrigSuccessAct, rosterxSuccessAct) && ok;
         ok = hook(0x3934c0u, g_rxOrigSSList, rosterxSSList) && ok;
         ok = hook(0x1001f0u, g_rxOrigMalloc, rosterxMallocSSList) && ok;
+        ok = hook(0x396fe0u, g_rxOrigManDatEnd, rosterxManDatEnd) && ok;
+        ok = hook(0x342990u, g_rxOrigCatNext, rosterxCatNext) && ok;
+        ok = hook(0x342e30u, g_rxOrigInitEventParam, rosterxInitEventParam) && ok;
+        ok = hook(0x3938c0u, g_rxOrigSSCreateUI, rosterxSSCreateUI) && ok;
+        ok = hook(0x394380u, g_rxOrigAutoCreateUI, rosterxAutoCreateUI) && ok;
         std::cerr << "[rosterx] roster expansion: " << g_rosterx.size() << " new slots" << (ok ? "" : " (a hook FAILED)")
                   << std::endl;
         installSelectList(runtime); // no-op when the cut-roster restore installed it
@@ -10613,6 +11436,52 @@ uint32_t hctpRosterCodeId(const uint8_t *rdram, uint32_t code) { return rosterxC
 bool hctpIsSlotCode(uint32_t code)
 {
     return code >= 16200u && code != 0x639Cu && code != 0xFFFFu && rosterxById(code / 100u) != nullptr;
+}
+// Nov 11 CAM INVISIBLE SLOT BODY: MatchWrestler::MakeChar 0x345700 reads a per-wrestler model scale float from table
+// 0x46DAA4 + id*8 (ids 0..0x56 only; id = code/100, or (code-10000)/100+0x56 via an unpatched "addiu -0x2710; bltz").
+// Slot codes landed past the table -> 0.0 scale -> only the shadow drew (Andre 17130). Runner patch target
+// (tools\patch_rosterx_scale.py, before "lwc1 $f20" at 0x345954): slot codes read their template's entry.
+// tools\patch_rosterx_cawoff.py target: guest "addiu rd, code, -0x2710" (CAW offset; < 0 = stock wrestler).
+int32_t hctpCawOff(uint32_t v)
+{
+    if (v >= 16200u && v <= 0xFFFFu && hctpIsSlotCode(v))
+        return -1;
+    return static_cast<int32_t>(v - 10000u);
+}
+// Nov 11 SLOT BODY SCALE: CreateGameChar 0x1fb150 copies the roster record to its stack (memcpy 0x1fb24c, a1 =
+// 0x4C0F54 + (code/100)*0x170, NOT GetCharaGameProp) and builds the CChar with scale = record s16 +0x112 / 4096
+// (A-Train 4288 = 1.047). Slot ids read past the stock table -> scale 0 -> body invisible, bone shadow only (Andre
+// 17130 / DDP in CAM entrances; CChar+0x164 = 0.0 measured live). tools\patch_rosterx_scale.py points a1 here.
+uint32_t hctpRecordSrc(uint8_t *rdram, PS2Runtime *runtime, uint32_t a1, uint32_t sel)
+{
+    sel &= 0x1FFFFFFu;
+    if (sel == 0u || sel > 0x2000000u - 0xCu)
+        return a1;
+    uint16_t code;
+    std::memcpy(&code, rdram + sel + 0xAu, 2);
+    if (!hctpIsSlotCode(code))
+        return a1;
+    RosterxSlot *s = rosterxById(code / 100u);
+    const uint32_t rec = s ? rosterxRecord(rdram, runtime, *s) : 0u;
+    static bool logged = false;
+    if (rec && !logged)
+        std::fprintf(stderr, "[rosterx] CreateGameChar: slot code %u record 0x%X (scale %d/4096)%c", unsigned(code), rec,
+                     int(*reinterpret_cast<int16_t *>(rdram + rec + 0x112u)), 10);
+    logged = logged || rec != 0u;
+    return rec ? rec : a1;
+}
+uint32_t hctpScaleAddr(uint32_t addr, uint32_t code)
+{
+    code &= 0xFFFFu;
+    if (!hctpIsSlotCode(code))
+        return addr;
+    const RosterxSlot *s = rosterxById(code / 100u);
+    const uint32_t tmpl = (s && s->tmpl < 0x56u) ? s->tmpl : 0x1Au;
+    static bool logged = false;
+    if (!logged)
+        std::fprintf(stderr, "[rosterx] model scale: slot code %u -> template 0x%X table entry%c", code, tmpl, 10);
+    logged = true;
+    return 0x46DAA4u + tmpl * 8u;
 }
 // Runner patch target (tools\patch_rosterx_cawcheck.py): guest "slti rd, code, 0x2710" -> stock path for slot codes too.
 bool hctpCodeLt10k(int64_t v)
