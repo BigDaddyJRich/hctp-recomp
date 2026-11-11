@@ -26,17 +26,25 @@ inline uint16_t u16(const uint8_t *ram, uint32_t addr) {
 // ONLY for the restored records appended AFTER that original loop ends.
 // Use live character data, not preset constants: preserve user-assigned moves.
 // The singleton/table layout is from 0x245520 / 0x245220 / 0x245420.
+// Nov 11 (roster cleanup): the same fill from explicit move ids (roster-expansion slot records live outside
+// 0x4c0f54 + id*0x170; SelectWrestlerDrawer::DrawMovesSituation 0x289660 prints CHSL +0x24/+0x46 when the record exists).
+inline bool refreshMoves(uint8_t *ram, size_t size, uint32_t dest, const uint16_t moves[2]);
 inline bool refresh(uint8_t *ram, size_t size, uint32_t dest, uint16_t id) {
-    if (!restored(id) || !range(size, dest, 0x80) || !range(size, 0x529318, 4)) return false;
+    if (!restored(id)) return false;
     const uint32_t prop = 0x4c0f54u + uint32_t(id) * 0x170u;
     if (!range(size, prop, 0x24)) return false;
+    const uint16_t moves[2] = {u16(ram, prop + 0x20), u16(ram, prop + 0x22)};
+    return refreshMoves(ram, size, dest, moves);
+}
+inline bool refreshMoves(uint8_t *ram, size_t size, uint32_t dest, const uint16_t moves[2]) {
+    if (!range(size, dest, 0x80) || !range(size, 0x529318, 4)) return false;
     const uint32_t self = u32(ram, 0x529318);
     if (!self || !range(size, self, 0x34)) return false;
     const uint32_t count = u32(ram, self + 0x28), table = u32(ram, self + 0x30);
     if (!count || count > 7000 || !table || !range(size, table, size_t(count) * 36)) return false;
     uint8_t result[68] = {};
     for (uint32_t slot = 0; slot < 2; ++slot) {
-        const uint16_t move = u16(ram, prop + 0x20 + slot * 2);
+        const uint16_t move = moves[slot];
         bool found = false;
         for (uint32_t k = 0; k < count; ++k) {
             const uint32_t row = table + k * 36;

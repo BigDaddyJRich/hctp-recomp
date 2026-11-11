@@ -1261,6 +1261,107 @@ namespace
                 std::memcpy(rec, w.stats, 5);
         }
     }
+    constexpr uint32_t kStockSelectRecs = 0x41; // = kStockSelect (CHSL stock records)
+    // Nov 11 (roster cleanup): per-stock-id attire extras from MODS\ROSTER\STOCK_ATTIRES.txt, one line per id:
+    //   "<hex id> name=<Name_With_Underscores> costume=<slot>:<value>[,..] dress=<attire>[,..] entrance=<attire>[,..]"
+    // name    = select (CHSL +4) + record +0x116 name, '_' = space (records come from the save: re-applied each load).
+    // costume = CHSL select record +0x68 s16[slot] (GetUsedCostume 0x26ff20 counts slots 1-4 != -1; value = costume name
+    //   row, e.g. stock Undertaker 0x03 = 9/10) -> the extra attire becomes selectable (loose ring key id*100+slot*10).
+    // dress   = IsDress 0x41B5C0[id*6+a] = 1 (entrance gear pack XXa2 drawn over the body; SvR coats/hats/pads).
+    // entrance= GetEntranceCastNo returns XXa4 (full entrance body) for that attire (stock list 0x2af480 = 7 ids only).
+    // Every flag needs its loose MODS\PAC\EMD(2) file: a flag without its pack hangs CFile (Legend Hogan 7802 precedent).
+    struct StockAttireRow
+    {
+        uint32_t id = 0;
+        std::vector<std::pair<uint32_t, int16_t>> costumes;
+        std::vector<uint32_t> dress, entrance;
+        std::string name;
+    };
+    bool stockLooseKeyExists(uint32_t id, uint32_t suffix)
+    {
+        char p[48];
+        std::snprintf(p, sizeof(p), "%s/%04u", id < 30u ? "MODS/PAC/EMD" : "MODS/PAC/EMD2", id * 100u + suffix);
+        std::error_code ec;
+        return std::filesystem::is_regular_file(p, ec) && std::filesystem::file_size(p, ec) > 0u;
+    }
+    const std::vector<StockAttireRow> &stockAttires()
+    {
+        static const std::vector<StockAttireRow> rows = [] {
+            std::vector<StockAttireRow> v;
+            std::ifstream f("MODS/ROSTER/STOCK_ATTIRES.txt");
+            for (std::string line; std::getline(f, line);)
+            {
+                if (line.empty() || line[0] == '#')
+                    continue;
+                std::istringstream ss(line);
+                std::string tok;
+                StockAttireRow r;
+                if (!(ss >> tok) || std::sscanf(tok.c_str(), "%x", &r.id) != 1 || r.id >= 0x56u)
+                    continue;
+                while (ss >> tok)
+                {
+                    const size_t eq = tok.find('=');
+                    if (eq == std::string::npos)
+                        continue;
+                    const std::string key = tok.substr(0, eq);
+                    if (key == "name")
+                    {
+                        r.name = tok.substr(eq + 1);
+                        std::replace(r.name.begin(), r.name.end(), '_', ' ');
+                        continue;
+                    }
+                    std::istringstream vs(tok.substr(eq + 1));
+                    for (std::string item; std::getline(vs, item, ',');)
+                    {
+                        unsigned a = 0;
+                        int val = 0;
+                        if (key == "costume" && std::sscanf(item.c_str(), "%u:%d", &a, &val) == 2 && a >= 1u && a < 5u &&
+                            stockLooseKeyExists(r.id, a * 10u))
+                            r.costumes.emplace_back(a, int16_t(val));
+                        else if (key == "dress" && std::sscanf(item.c_str(), "%u", &a) == 1 && a < 6u &&
+                                 stockLooseKeyExists(r.id, a * 10u + 2u))
+                            r.dress.push_back(a);
+                        else if (key == "entrance" && std::sscanf(item.c_str(), "%u", &a) == 1 && a < 10u &&
+                                 stockLooseKeyExists(r.id, a * 10u + 4u))
+                            r.entrance.push_back(a);
+                        else
+                            std::fprintf(stderr, "[stockattire] 0x%X %s=%s skipped (no loose pack / bad value)%c", r.id,
+                                         key.c_str(), item.c_str(), 10);
+                    }
+                }
+                std::fprintf(stderr, "[stockattire] 0x%X: %zu costumes, %zu dress, %zu entrance%c", r.id, r.costumes.size(),
+                             r.dress.size(), r.entrance.size(), 10);
+                v.push_back(std::move(r));
+            }
+            return v;
+        }();
+        return rows;
+    }
+    void stockAttireEntranceCodes()
+    {
+        for (const auto &r : stockAttires())
+            for (const uint32_t a : r.entrance)
+                g_cutEntranceCodes.insert(static_cast<uint16_t>(r.id * 100u + a * 10u + 4u));
+    }
+    void stockAttireCostumes(uint8_t *rdram, uint32_t list)
+    {
+        for (const auto &r : stockAttires())
+            for (uint32_t s = 0; s < kStockSelectRecs; ++s)
+            {
+                uint8_t *const rec = rdram + list + s * 0x80u;
+                int16_t id;
+                std::memcpy(&id, rec + 2, 2);
+                if (uint32_t(id) != r.id)
+                    continue;
+                for (const auto &[slot, val] : r.costumes)
+                    std::memcpy(rec + 0x68 + slot * 2u, &val, 2);
+                if (!r.name.empty())
+                {
+                    std::memset(rec + 4, 0, 0x20);
+                    std::strncpy(reinterpret_cast<char *>(rec + 4), r.name.c_str(), 0x1F);
+                }
+            }
+    }
     PS2Runtime::RecompiledFunction g_origGetCharaGameProp = nullptr;
     // CSd5EventData::IsDress 0x2af300 returns byte 0x41B5C0[id * 6 + attire]: 1 = the attire has an entrance dress
     // (XXX2 pack) that SetSuperStarData arms (+0x155) and the shirt tear removes. Stock sets it for Legend Hogan
@@ -1283,6 +1384,17 @@ namespace
         for (unsigned a = 0; a < 6; ++a)
             if (dressMask & (1u << a))
                 rdram[0x41B5C0u + 0x20u * 6u + a] = 1;
+        for (const auto &r : stockAttires()) // Nov 11: STOCK_ATTIRES.txt dress= (pack existence checked at parse)
+        {
+            for (const uint32_t a : r.dress)
+                rdram[0x41B5C0u + r.id * 6u + a] = 1;
+            if (!r.name.empty()) // name= : record name (save records reload -> re-applied on every GetCharaGameProp)
+            {
+                uint8_t *const nm = rdram + 0x4C0F54u + r.id * 0x170u + 0x116u;
+                std::memset(nm, 0, 0x16);
+                std::strncpy(reinterpret_cast<char *>(nm), r.name.c_str(), 0x15);
+            }
+        }
         // Nov 5: Jerry Lawler (53): ring attire 0 = EMD2\5300 (5330 body + retail head, no crown), entrance dress =
         // EMD2\5302 (stock 5300 jacket + crown as a gear model, like HBK 4502). Flag only when the gear pack exists.
         static const bool lawlerDress = std::filesystem::exists("MODS/PAC/EMD2/5302");
@@ -1462,7 +1574,7 @@ namespace
     };
     // A group with one id does nothing until its second slot is added (roster expansion): just add the new id.
     constexpr OneOfGroup kOneOfGroups[] = {
-        {{0x03, 0x48, kNoId, kNoId}, "You can't enter Undertaker and", "The Undertaker at the same time."}, // stock
+        {{0x03, 0x48, 0xD9, kNoId}, "You can't enter two versions of", "The Undertaker at the same time."}, // stock + D9 SvR04 2004 (Nov 11)
         // Nov 11 (Jordan): Hogan group = Hulk Hogan, Legend, Hollywood 0xC1, Mr. America 0xC2.
         {{0x20, 0x4E, 0xC1, 0xC2}, "You can't enter two versions of", "Hulk Hogan at the same time."},
         {{0x07, 0xD2, kNoId, kNoId}, "You can't enter Kane and", "Masked Kane at the same time."},           // D2 = SvR04 Masked Kane
@@ -1632,6 +1744,7 @@ namespace
     void expandReaderList(uint8_t *rdram, PS2Runtime *runtime, uint32_t reader);
     uint32_t rosterxCount();                                          // roster expansion section (near applyHctp)
     uint32_t rosterxAppendSelect(uint8_t *rdram, uint8_t *out, uint32_t n);
+    bool rosterxFinisherDisplay(uint8_t *rdram, uint32_t dest, uint16_t id); // Nov 11: slot's own finishers in CHSL +0x24
     void readEndProcessSelectList(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t reader = gprU32(ctx, 4);
@@ -1666,6 +1779,7 @@ namespace
         if (buf == 0u)
             return;
         uint8_t *const out = rdram + buf;
+        stockAttireCostumes(rdram, list); // Nov 11: STOCK_ATTIRES.txt costume= (stock list too: every screen sees it)
         std::memcpy(out, rdram + list, kStockSelect * kSelectRec);
         uint32_t n = kStockSelect;
         for (const CutWrestler *w : extra)
@@ -1706,7 +1820,13 @@ namespace
             }
             ++n;
         }
+        const uint32_t nRx = n;
         n = rosterxAppendSelect(rdram, out, n); // roster expansion (HCTP_ROSTER_EXPAND) new slots
+        // Nov 11 (Jordan): matchup/select "SmackDown situation" showed the TEMPLATE's finishers (Piper) for every slot:
+        // DrawMovesSituation 0x289660 prints CHSL +0x24/+0x46 when the record exists -> fill them from the slot record.
+        for (uint32_t s = nRx; s < n; ++s)
+            if (!rosterxFinisherDisplay(rdram, buf + s * kSelectRec, uint16_t(rdS16(out + s * kSelectRec + 2))))
+                std::memset(out + s * kSelectRec + 0x24, 0, 0x44); // blank, never the template wrestler's finishers
         g_selectCount = n;
         g_readerLists[reader] = {list, buf};
         wrU32(rdram, reader + 0x20u, buf);
@@ -1756,8 +1876,8 @@ namespace
         {
             const uint32_t p = rl->second.second + s * kSelectRec;
             const int16_t id = rdS16(rdram + p + 2);
-            if (id >= 0)
-                hctp_restored_finishers::refresh(rdram, 0x2000000u, p, uint16_t(id));
+            if (id >= 0 && !hctp_restored_finishers::refresh(rdram, 0x2000000u, p, uint16_t(id)))
+                rosterxFinisherDisplay(rdram, p, uint16_t(id)); // Nov 11: slots (CAM edits included)
         }
         // Sized to the real list and freed by the screen's dtor: a lingering block splits the guest heap and
         // Create-a-Moveset's big moves-data allocation then never fits (endless Now Loading).
@@ -4089,6 +4209,7 @@ namespace
 }
 
 #include "hctp_native_sk.inl"
+#include "hctp_host_se.inl"
 
 // The game's own recompiled libvu0 functions (runner), for HCTP_VU0_RECOMP=1: A/B against the host stubs (leg twitch).
 #define HCTP_VU0_FN(name, addr) void name##_##addr(uint8_t *, R5900Context *, PS2Runtime *);
@@ -7342,6 +7463,34 @@ namespace
                      s.id, s.rec, s.tmpl, s.modelNo, s.entrance, 10);
         return s.rec;
     }
+    void rosterxBuildRecord(uint8_t *rdram, const RosterxSlot &s, uint8_t *r);
+    // Nov 11: CHSL finisher display (+0x24..+0x67) from the slot's OWN moves (record +0x20/+0x22): live guest record when
+    // built (CAM edits), else record.bin + record_cam.bin, else the template record. false = id is not a slot / no row.
+    bool rosterxFinisherDisplay(uint8_t *rdram, uint32_t dest, uint16_t id)
+    {
+        RosterxSlot *s = rosterxById(id);
+        if (!s)
+            return false;
+        uint16_t moves[2];
+        if (s->rec != 0u)
+            std::memcpy(moves, rdram + s->rec + 0x20u, 4);
+        else
+        {
+            uint8_t r[0x170];
+            rosterxBuildRecord(rdram, *s, r);
+            std::ifstream cam(std::filesystem::path("MODS/ROSTER") / s->folder / "record_cam.bin", std::ios::binary);
+            uint8_t buf[0x170];
+            if (cam && cam.read(reinterpret_cast<char *>(buf), 0x170))
+                std::memcpy(r + 0x10, buf + 0x10, 0x102);
+            std::memcpy(moves, r + 0x20, 4);
+        }
+        const bool ok = hctp_restored_finishers::refreshMoves(rdram, 0x2000000u, dest, moves);
+        static std::set<uint16_t> logged;
+        if (logged.insert(id).second)
+            std::fprintf(stderr, "[rosterx] %s: matchup finishers %u/%u %s%c", s->name.c_str(), moves[0], moves[1],
+                         ok ? "shown" : "NOT in situation table (blank)", 10);
+        return ok;
+    }
     void rosterxBuildRecord(uint8_t *rdram, const RosterxSlot &s, uint8_t *r)
     {
         std::memcpy(r, rdram + 0x4C0F54u + s.tmpl * 0x170u, 0x170u);
@@ -9173,6 +9322,7 @@ namespace
         g_svrEventActive = it != g_svrEvents.end();
         g_svr06Active = g_svrEventActive && it->second.game == 6;
         g_symActive = g_svrEventActive && it->second.game == 7; // Nov 11 SYM entrance port
+        hostse::setGame(g_svrEventActive ? static_cast<int>(it->second.game) : 0); // Nov 11 HOST PYRO SE
         g_svr06LightsSet = false;
         g_svrCurEv = ev;
         // STEP 2: per-event SvR06 light bank + pyro armed by the SvR06 event id (any PCEN/GMEV pack), previews and matches
@@ -9441,6 +9591,7 @@ namespace
         g_svrEventActive = false;
         g_svr06Active = false;
         g_symActive = false;
+        hostse::setGame(0);
         svrLightRestore(rdram);
         const uint32_t ra = regU(ctx, 31);
         g_origEvsEnd(rdram, ctx, runtime);
@@ -9451,6 +9602,7 @@ namespace
         g_svrEventActive = false;
         g_svr06Active = false;
         g_symActive = false;
+        hostse::setGame(0);
         svrLightRestore(rdram);
         const uint32_t ra = regU(ctx, 31);
         g_origEvsRelease(rdram, ctx, runtime);
@@ -9879,6 +10031,7 @@ namespace
             return true;
         };
         bool ok = hookFn(0x166fe0u, g_origEvsSetEvent, evsSetEventSvr);
+        hostse::install(runtime); // Nov 11 HOST PYRO SE (PlaySE_FromAttribute 0x3ada80)
         ok = hookFn(0x166fa0u, g_origEvsEnd, evsEndSvr) && ok;
         ok = hookFn(0x166d80u, g_origEvsRelease, evsReleaseSvr) && ok;
         ok = hookFn(0x164b90u, g_origCamAnalyze, camAnalyzeSvr) && ok;
@@ -10655,6 +10808,7 @@ namespace
         installSelectList(runtime); // no-op when the cut-roster restore installed it
         // Nov 7: slot entrance attires (<a>4.pac) ride the cut-roster GetEntranceCastNo hook (the CAW branch of
         // 0x2af480 returns the ring code for model nos >= 0x56); install it here when no cut wrestler did.
+        stockAttireEntranceCodes(); // set: re-insert is a no-op
         if (!g_cutEntranceCodes.empty() && g_origGetEntranceCastNo == nullptr &&
             hook(0x2af480u, g_origGetEntranceCastNo, getEntranceCastNoCutRoster))
             std::cerr << "[rosterx] entrance attire hook on (" << g_cutEntranceCodes.size() << " codes)" << std::endl;
@@ -11430,6 +11584,7 @@ namespace
                       << (ok ? "" : " (hook FAILED)") << std::endl;
             if (slots > 0)
                 installSelectList(runtime);
+            stockAttireEntranceCodes(); // Nov 11: STOCK_ATTIRES.txt entrance= (Piper 6804 ...)
             if (!g_cutEntranceCodes.empty() && (g_origGetEntranceCastNo = runtime.lookupFunction(0x2af480u)) != nullptr &&
                 runtime.replaceFunction(0x2af480u, getEntranceCastNoCutRoster))
                 std::cerr << "[hctp] cut roster entrance attires: " << g_cutEntranceCodes.size() << std::endl;
