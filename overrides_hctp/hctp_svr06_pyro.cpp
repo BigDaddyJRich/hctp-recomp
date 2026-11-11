@@ -324,7 +324,11 @@ struct Instance
     float wpos[3]{};
     M3 wrot = ident();
     int startTick = 0, frame = 0, evScene = -1, evFrame = 0; // GMEV start window (SvR06 scene/frame)
-    bool started = false;
+    // Nov 11 cue windows (SvR06 gmParticleEmitter::MyAction 0x4de210, game.bin): params {no, scene0, frame0, scene1, frame1,
+    // mode}; start when scene > scene0 or (== and GetMotionCameraCurrentFrame >= frame0); at the end window mode 0 ->
+    // DeathParticle (ParticleBase+0x108: no more emitter births, live particles finish), else VanishParticle (+0x104 too).
+    int endScene = -1, endFrame = 0, endMode = 0;
+    bool started = false, dead = false, vanished = false;
 };
 
 struct TexInfo { uint16_t id; uint32_t w, h; };
@@ -444,6 +448,7 @@ void stepInstance(Instance &in)
                 if (!(a.start <= static_cast<uint32_t>(in.frame) && static_cast<uint32_t>(in.frame) < a.end)) continue;
                 const bool isBirth = a.id == Birth, isLink = a.id == Link;
                 if ((pass == 0) != isBirth || (pass == 2) != isLink) continue;
+                if (isBirth && in.dead) continue; // ParticleBase::Action 0x271dc0: +0x108 skips the emitter actions
                 const float *p = a.p;
                 const M3 R = emRot(in, em);
                 switch (a.id)
@@ -715,15 +720,27 @@ void prePresent()
             g_lastEvScene = sc, g_lastEvFrame = fr;
             for (Instance &in : g_inst)
             {
-                if (!in.started && in.evScene >= 0 && (static_cast<int>(sc) == in.evScene || static_cast<int>(sc) * 5 == in.evScene) &&
-                    static_cast<int>(fr) >= in.evFrame)
+                // SvR04 (g_src 4): GMEV scene = event scene index, passed scenes count (MyAction 0x4de210 'scene > s0').
+                // SvR06 keeps the proven Nov 10 rule (== scene or scene*5; Brock 4044 timing Jordan-confirmed).
+                auto reached = [&](int s0, int f0) {
+                    if (s0 < 0) return false;
+                    if (g_src == 4) return static_cast<int>(sc) > s0 || (static_cast<int>(sc) == s0 && static_cast<int>(fr) >= f0);
+                    return (static_cast<int>(sc) == s0 || static_cast<int>(sc) * 5 == s0) && static_cast<int>(fr) >= f0;
+                };
+                if (in.started && !in.dead && reached(in.endScene, in.endFrame))
+                {
+                    in.dead = true;
+                    in.vanished = in.endMode != 0;
+                    if (pyroLog()) std::fprintf(stderr, "[pyro] %s at event scene %u frame %u (end %d/%d)%c", in.vanished ? "vanish" : "death", sc, fr, in.endScene, in.endFrame, 10);
+                }
+                if (!in.started && reached(in.evScene, in.evFrame))
                 {
                     in.started = true;
                     if (pyroLog()) std::fprintf(stderr, "[pyro] start at event scene %u frame %u (window %d/%d)\n", sc, fr, in.evScene, in.evFrame);
                     continue;
                 }
                 for (int a = 0; a < adv; ++a)
-                    if (in.started && in.frame < 2000) stepInstance(in);
+                    if (in.started && !in.vanished && in.frame < 2000) stepInstance(in);
             }
             g_tick += adv;
         }
@@ -825,7 +842,7 @@ void prePresent()
     };
     for (Instance &in : g_inst)
     {
-        if (!in.started) continue;
+        if (!in.started || in.vanished) continue;
         for (Emitter &em : in.f.em)
             for (Particle &pt : em.ps)
             {
@@ -1063,6 +1080,13 @@ void hctpPyroArm(PS2Runtime *runtime, const char *id, uint32_t common)
         in.startTick = startBase + (fr - 310);
         static const int fdiv = std::max(1, static_cast<int>(envF("HCTP_PYRO_FRAMEDIV", 1.0f)));
         in.evScene = scn, in.evFrame = fr / fdiv;
+        if (pc >= 7) // params[4..6] = end scene, end frame, mode (gmParticleEmitter::MyAction 0x4de210)
+        {
+            in.endScene = static_cast<int>(rdf(&g2[(po + 4) * 4]));
+            in.endFrame = static_cast<int>(rdf(&g2[(po + 5) * 4])) / fdiv;
+            in.endMode = static_cast<int>(rdf(&g2[(po + 6) * 4]));
+        }
+        if (pyroLog()) std::fprintf(stderr, "[pyro] inst tag %u file %d start %d/%d end %d/%d mode %d%c", tag, no, in.evScene, in.evFrame, in.endScene, in.endFrame, in.endMode, 10);
         if (g_winScene.load() < 0 || in.evFrame < g_winFrame.load()) g_winScene.store(scn), g_winFrame.store(in.evFrame);
         g_startBase = startBase;
         g_inst.push_back(std::move(in));
