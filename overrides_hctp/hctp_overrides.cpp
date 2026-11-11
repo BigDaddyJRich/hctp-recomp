@@ -7789,14 +7789,36 @@ namespace
             std::map<uint32_t, std::vector<float>> shiftAt; // scene x -> per frame entrant shift
             std::set<uint32_t> entrantOffs;
             uint32_t keys = 0, tracks = 0, camKeys = 0;
+            // STEP 4: every cast object (char with a slot on: singles obj 0, tags obj 0 + partner obj 4) gets the stage
+            // shift + per-frame resample; the camera follows the entrant (obj 0) only.
+            std::set<uint32_t> castObjs = {0u};
+            if (auto sit = g_svr06Script.find(static_cast<uint16_t>(no)); sit != g_svr06Script.end())
+            {
+                const std::vector<uint8_t> &d = sit->second;
+                auto u16 = [&d](uint32_t o) { uint16_t v = 0; if (o + 2 <= d.size()) std::memcpy(&v, &d[o], 2); return v; };
+                auto u32 = [&d](uint32_t o) { uint32_t v = 0; if (o + 4 <= d.size()) std::memcpy(&v, &d[o], 4); return v; };
+                const uint32_t t = u32(0x48) + 8u;
+                for (uint32_t c = 0; c < u16(0x42) && t + 28u * c + 28u <= d.size(); ++c)
+                {
+                    const uint32_t q = t + 28u * c, nsl = u32(q + 20) & 0xFFFFu, bp = u32(q + 24) + 8u;
+                    bool anyOn = false;
+                    for (uint32_t k = 0; k < 5u && 5u * k < nsl; ++k)
+                        anyOn |= bp + 212u * 5u * k + 3u <= d.size() && d[bp + 212u * 5u * k + 2u] != 0u;
+                    if (d[q + 4] == 1u && d[q + 9] != 1u && anyOn)
+                        castObjs.insert(c);
+                }
+            }
+            std::vector<float> partnerTab;
             for (const Ent &e : dir)
             {
-                if (((e.key >> 16) & 0x3FFFu) != 0u || (e.key & 0xFFu) != 0u || e.off == 0xFFFFFu || data0 + e.off >= bk.size() ||
-                    entrantOffs.count(e.off))
+                const uint32_t obj = (e.key >> 16) & 0x3FFFu;
+                if (!castObjs.count(obj) || (e.key & 0xFFu) != 0u || e.off == 0xFFFFFu ||
+                    data0 + e.off >= bk.size() || entrantOffs.count(e.off))
                     continue;
                 entrantOffs.insert(e.off);
                 ++tracks;
-                std::vector<float> &tab = shiftAt[(e.key >> 8) & 0xFFu];
+                partnerTab.clear();
+                std::vector<float> &tab = obj == 0u ? shiftAt[(e.key >> 8) & 0xFFu] : partnerTab;
                 std::vector<uint8_t> setAt;
                 float lastShift = 0.f;
                 walk(data0 + e.off, data0 + segEnd(e.off), [&](uint32_t fr, size_t p, size_t sz) {
