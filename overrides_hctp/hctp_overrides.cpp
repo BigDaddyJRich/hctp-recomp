@@ -11608,7 +11608,7 @@ bool hctpPropBigWindow(const uint8_t *rdram, uint32_t id, uint32_t texpack, bool
     {
         std::fprintf(stderr, "[propwin] MakeWeapon id %u: texpack 0x%X unreadable (count %u, %.4s)%c", id, texpack, n,
                      reinterpret_cast<const char *>(rdram + texpack), 10);
-        return false;
+        return id >= 2200u;
     }
     uint32_t end = 0;
     for (uint32_t i = 0; i < n; ++i)
@@ -11626,6 +11626,17 @@ bool hctpPropBigWindow(const uint8_t *rdram, uint32_t id, uint32_t texpack, bool
         end = std::max(end, tbp + blocks);
         if (psm == 0x13u || psm == 0x14u)
             end = std::max(end, cbp + (psm == 0x13u ? 4u : 1u));
+    }
+    if (end == 0u)
+    {
+        // Nov 11 TEST: texpack at $fp did not parse (span 0) -> ported props (ids >= 2200: SYM 2200+, SvR06 2400+/2600+,
+        // SvR04 2800+; stock props end at 2116) always take the big window. Bytes logged to fix the parse.
+        char hx[200];
+        int k = 0;
+        for (uint32_t o = 0; o < 0x40u && k < 190; o += 4)
+            k += std::snprintf(hx + k, sizeof(hx) - k, " %08x", u32(texpack + o));
+        std::fprintf(stderr, "[propwin] MakeWeapon id %u texpack 0x%X no RTX3 parsed:%s%c", id, texpack, hx, 10);
+        return id >= 2200u;
     }
     const bool big = end > 0x100u;
     std::fprintf(stderr, "[propwin] MakeWeapon id %u texpack span 0x%X blocks -> %s window%s%c", id, end, big ? "BIG 0x300" : "small 0x100",
