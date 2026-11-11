@@ -327,7 +327,7 @@ struct Instance
     // Nov 11 cue windows (SvR06 gmParticleEmitter::MyAction 0x4de210, game.bin): params {no, scene0, frame0, scene1, frame1,
     // mode}; start when scene > scene0 or (== and GetMotionCameraCurrentFrame >= frame0); at the end window mode 0 ->
     // DeathParticle (ParticleBase+0x108: no more emitter births, live particles finish), else VanishParticle (+0x104 too).
-    int endScene = -1, endFrame = 0, endMode = 0;
+    int endScene = -1, endFrame = 0, endMode = 0, src = 6; // src = g_src at arm (caller resets g_src to 6 after arming SvR04)
     bool started = false, dead = false, vanished = false;
 };
 
@@ -724,7 +724,7 @@ void prePresent()
                 // SvR06 keeps the proven Nov 10 rule (== scene or scene*5; Brock 4044 timing Jordan-confirmed).
                 auto reached = [&](int s0, int f0) {
                     if (s0 < 0) return false;
-                    if (g_src == 4) return static_cast<int>(sc) > s0 || (static_cast<int>(sc) == s0 && static_cast<int>(fr) >= f0);
+                    if (in.src == 4) return static_cast<int>(sc) > s0 || (static_cast<int>(sc) == s0 && static_cast<int>(fr) >= f0);
                     return (static_cast<int>(sc) == s0 || static_cast<int>(sc) * 5 == s0) && static_cast<int>(fr) >= f0;
                 };
                 if (in.started && !in.dead && reached(in.endScene, in.endFrame))
@@ -1080,6 +1080,7 @@ void hctpPyroArm(PS2Runtime *runtime, const char *id, uint32_t common)
         in.startTick = startBase + (fr - 310);
         static const int fdiv = std::max(1, static_cast<int>(envF("HCTP_PYRO_FRAMEDIV", 1.0f)));
         in.evScene = scn, in.evFrame = fr / fdiv;
+        in.src = g_src;
         if (pc >= 7) // params[4..6] = end scene, end frame, mode (gmParticleEmitter::MyAction 0x4de210)
         {
             in.endScene = static_cast<int>(rdf(&g2[(po + 4) * 4]));
