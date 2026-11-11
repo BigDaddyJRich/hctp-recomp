@@ -7076,7 +7076,8 @@ namespace
     struct RosterxSlot
     {
         uint16_t id = 0;
-        uint8_t tmpl = 0x2D, modelNo = 0, attires = 0;
+        uint8_t tmpl = 0x2D, modelNo = 0, attires = 0; // modelNo 0 = unbound (Nov 10 step 3 pool)
+        uint64_t lastUse = 0; // pool LRU stamp
         int music = -1, video = -1; // slot.txt music=/video= (MEDIA ids): written into the record; template MEDIA_DEFAULTS row skipped
         uint8_t portrait = 0; // slot.txt portrait=<stock id>: select-screen face (0 = template's); 31 = blank NPC placeholder
         int16_t entrance = 0; // 0 = template's entrance (slot.txt entrance=3071 = O'Haire walk-down)
@@ -7155,6 +7156,8 @@ namespace
     }
     RosterxSlot *rosterxByModel(uint32_t no)
     {
+        if (no == 0u)
+            return nullptr;
         for (auto &s : g_rosterx)
             if (s.modelNo == no)
                 return &s;
@@ -7180,8 +7183,11 @@ namespace
             r[0x15F] = static_cast<uint8_t>(s.music);
         if (s.video >= 0)
             r[0x15E] = static_cast<uint8_t>(s.video);
-        const int16_t model = s.modelNo;
-        std::memcpy(r + 0x114, &model, 2);
+        if (s.modelNo != 0u) // unbound pool slot keeps the template's model no until rosterxBind
+        {
+            const int16_t model = s.modelNo;
+            std::memcpy(r + 0x114, &model, 2);
+        }
         if (s.entrance > 0)
             std::memcpy(r + 0xEC, &s.entrance, 2);
         std::memset(r + 0x116, 0, 0x16);
@@ -7198,9 +7204,13 @@ namespace
     // 3 entrance flag, 4 entrance dress); entrance-only attires sit at higher attire digits (stock Piper 6930 = his
     // entrance model, asked for at the entrance; a missing key froze it Nov 5). A slot file "<2 digits>.pac" (e.g.
     // 30.pac) is that exact suffix; every other suffix the game may ask for gets attire 1's model.
-    void rosterxInstallModels(const RosterxSlot &s)
+    void rosterxInstallModels(const RosterxSlot &s, bool rebind = false)
     {
         const std::filesystem::path dir = std::filesystem::path(s.pacs[0]).parent_path();
+        // Nov 10 step 3: a pool number may have belonged to another slot -> drop its entrance codes; unshipped
+        // suffix keys are removed below so the old slot's dress/backstage files are never served.
+        for (uint32_t k = 0; k < 100u; ++k)
+            g_cutEntranceCodes.erase(static_cast<uint16_t>(s.modelNo * 100u + k));
         std::vector<uint32_t> suffixes;
         for (uint32_t a = 0; a < 10; ++a)
             for (uint32_t part : {0u, 1u, 2u, 3u, 4u})
@@ -7214,7 +7224,16 @@ namespace
                 if (std::filesystem::exists(dir / own, ec0))
                     src = (dir / own).string();
                 else if (suffix % 10u == 1u || suffix % 10u == 2u)
-                    continue; // backstage part / entrance dress (Nov 6: XXA2 raw SvR gear, e.g. Bret 7702): only when shipped: only when the slot ships one (the game falls back to the ring model)
+                {
+                    if (rebind)
+                    {
+                        const std::string k = std::to_string(s.modelNo * 100u + suffix);
+                        g_loosePac.erase("/EMD2/" + k);
+                        std::error_code rmEc;
+                        std::filesystem::remove(std::filesystem::path("MODS") / "PAC" / "EMD2" / k, rmEc);
+                    }
+                    continue;
+                } // backstage part / entrance dress (Nov 6: XXA2 raw SvR gear, e.g. Bret 7702): only when shipped: only when the slot ships one (the game falls back to the ring model)
                 else if (suffix / 10u < s.pacs.size())
                     src = s.pacs[suffix / 10u];
                 else
@@ -7223,7 +7242,7 @@ namespace
                 const std::filesystem::path dst = std::filesystem::path("MODS") / "PAC" / "EMD2" / key;
                 std::error_code ec;
                 std::filesystem::create_directories(dst.parent_path(), ec);
-                if (!std::filesystem::exists(dst, ec) ||
+                if (rebind || !std::filesystem::exists(dst, ec) ||
                     std::filesystem::file_size(dst, ec) != std::filesystem::file_size(src, ec))
                     std::filesystem::copy_file(src, dst, std::filesystem::copy_options::overwrite_existing, ec);
                 const uint32_t size = static_cast<uint32_t>(std::filesystem::file_size(dst, ec));
@@ -9204,8 +9223,11 @@ namespace
         {
             if (model > kRosterxModelLast)
             {
-                std::fprintf(stderr, "[rosterx] %s: no free model number (step 1 limit 14), skipped%c", it->name.c_str(), 10);
-                it = g_rosterx.erase(it);
+                // Nov 10 step 3: more slots than model numbers -> unbound now, bound on demand (rosterxBind).
+                it->modelNo = 0;
+                std::fprintf(stderr, "[rosterx] slot %s id 0x%X template 0x%X pooled (model no bound per match)%c",
+                             it->name.c_str(), it->id, it->tmpl, 10);
+                ++it;
                 continue;
             }
             it->modelNo = model++;
@@ -9323,10 +9345,95 @@ namespace
     void rosterxSeason(uint8_t *rdram, R5900Context *ctx, PS2Runtime *rt) { rosterxConst<0>(ctx, rdram, rt, g_rxOrigSeason); }
     // GetMatchWrestlerNo 0x12cce0 (a0 id, a1 attire, a2 backstage, a3 entrance, t0 special, t1 CAW): stock formula on the
     // slot's model no (special -> 90 instead of attire*10, entrance +3, backstage +1 when that loose key exists).
+    // ---- Nov 10 step 3: per-match model-number pool (86..99 = 14 numbers, > 14 slots) ----
+    // A slot without a number takes the least recently used number whose model is not in a live cast code.
+    // The game's CFile cache (list *(0x524E18)+4, node {+4 next, +8 entry}, entry name at +0, CompareKeyword
+    // 0x147350) may still hold the old slot's "/EMD2/<no>xx" data: those entries get their name spoiled so the
+    // next search misses and loads the new files.
+    uint64_t g_rosterxUseClock = 0;
+    void rosterxSpoilCache(uint8_t *rdram, uint32_t modelNo)
+    {
+        char key[8];
+        std::snprintf(key, sizeof(key), "%02u", modelNo);
+        uint32_t head;
+        std::memcpy(&head, rdram + 0x524E18u, 4);
+        if (head == 0u || head >= 0x2000000u - 8u)
+            return;
+        uint32_t node;
+        std::memcpy(&node, rdram + head + 4u, 4);
+        for (int guard = 0; node != 0u && node < 0x2000000u - 0x10u && guard < 4096; ++guard)
+        {
+            uint32_t entry, next;
+            std::memcpy(&entry, rdram + node + 8u, 4);
+            std::memcpy(&next, rdram + node + 4u, 4);
+            if (entry != 0u && entry < 0x2000000u - 0x40u)
+            {
+                char *n = reinterpret_cast<char *>(rdram + entry);
+                const std::string name(n, strnlen(n, 0x3F));
+                std::string up = name;
+                for (char &c : up)
+                    c = static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+                const size_t at = up.find("EMD2");
+                if (at != std::string::npos && up.size() >= at + 9u && up.compare(at + 5u, 2, key) == 0)
+                {
+                    n[0] = '~';
+                    std::fprintf(stderr, "[rosterx] pool: cache entry %s dropped%c", name.c_str(), 10);
+                }
+            }
+            node = next;
+        }
+    }
+    void rosterxBind(uint8_t *rdram, RosterxSlot &s)
+    {
+        s.lastUse = ++g_rosterxUseClock;
+        if (s.modelNo != 0u)
+            return;
+        RosterxSlot *victim = nullptr;
+        bool used[100] = {};
+        for (auto &o : g_rosterx)
+            if (o.modelNo != 0u)
+                used[o.modelNo] = true;
+        uint8_t no = 0;
+        for (uint8_t m = kRosterxModelFirst; m <= kRosterxModelLast && no == 0u; ++m)
+            if (!used[m])
+                no = m;
+        if (no == 0u)
+        {
+            for (auto &o : g_rosterx)
+                if (o.modelNo != 0u && !rosterxCastHasModel(rdram, o.modelNo) && (!victim || o.lastUse < victim->lastUse))
+                    victim = &o;
+            if (!victim)
+            {
+                std::fprintf(stderr, "[rosterx] pool: %s has no free model number (all 14 live)%c", s.name.c_str(), 10);
+                return;
+            }
+            no = victim->modelNo;
+            victim->modelNo = 0;
+            if (victim->rec != 0u)
+            {
+                int16_t t;
+                std::memcpy(&t, rdram + 0x4C0F54u + victim->tmpl * 0x170u + 0x114u, 2);
+                std::memcpy(rdram + victim->rec + 0x114u, &t, 2);
+            }
+        }
+        s.modelNo = no;
+        if (s.rec != 0u)
+        {
+            const int16_t m = no;
+            std::memcpy(rdram + s.rec + 0x114u, &m, 2);
+        }
+        rosterxSpoilCache(rdram, no);
+        rosterxInstallModels(s, true);
+        std::fprintf(stderr, "[rosterx] pool: %s -> model %u%s%s%c", s.name.c_str(), unsigned(no), victim ? " from " : "",
+                     victim ? victim->name.c_str() : "", 10);
+    }
     void rosterxMatchNo(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         RosterxSlot *s = rosterxById(rxArg(ctx, 4));
         if (!s)
+            return g_rxOrigMatchNo(rdram, ctx, runtime);
+        rosterxBind(rdram, *s);
+        if (s->modelNo == 0u)
             return g_rxOrigMatchNo(rdram, ctx, runtime);
         const uint32_t attire = rxArg(ctx, 5) < s->attires ? rxArg(ctx, 5) : 0u;
         uint32_t code = s->modelNo * 100u + (rxArg(ctx, 8) != 0u ? 90u : attire * 10u);
