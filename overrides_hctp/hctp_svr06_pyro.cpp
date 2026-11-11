@@ -927,6 +927,7 @@ void prePresent()
     }
     for (auto &g : groups)
     {
+        if (g.second.empty()) continue; // Nov 11: every quad of this group culled (crash fix, log path read g.second[0])
         const uint16_t tid = static_cast<uint16_t>(g.first >> 8);
         uint16_t w = 64, h = 64;
         for (const auto &t : g_tex)
@@ -968,6 +969,7 @@ void prePresent()
         }
         for (auto &g : groups)
         {
+            if (g.second.empty()) continue;
             const GS::HostTri &t0 = g.second[0];
             std::fprintf(stderr, "[pyro]   group tex %u blend %u tris %zu quad0 x %.1f..%.1f y %.1f..%.1f z %.0f a %u\n", g.first >> 8, g.first & 0xFF,
                          g.second.size(), t0.x[0], t0.x[1], t0.y[0], t0.y[2], t0.z[0], (unsigned)t0.rgba[3]);
