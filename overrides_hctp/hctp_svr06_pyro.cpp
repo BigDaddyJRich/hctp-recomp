@@ -123,8 +123,45 @@ bool readAt(std::ifstream &f, size_t off, size_t n, Bytes &out)
 }
 
 // prtcls.pac: 41 entries at 0x808 {id[4], u16 sec, u16 size/0x100}; data 0x4000 + sec*0x800
+// Nov 11 SvR04 PYRO: the same engine plays SvR04 entrance pyro. SvR04 prtcls.pac PCEN/<ev> = SvR06 layout (POF0 prtc +
+// textures per file); SvR04 gm.pac group '0001' holds <ev> entries with the SvR06 GMEV layout (0 list, 1 GMPD, 2 params,
+// 3 tag PAC 10000). g_src 4 = MODS/SVR04/{prtcls,gm}.pac (generic DPAC name lookup), 6 = MODS/SVR06 (original code).
+int g_src = 6;
+bool dpacFind(const char *path, const char *id, Bytes &out)
+{
+    std::ifstream f(path, std::ios::binary);
+    if (!f) return false;
+    Bytes h;
+    if (!readAt(f, 0, 0x4000, h) || std::memcmp(h.data(), "DPAC", 4) != 0) return false;
+    for (size_t off = 0x800; off + 8 <= 0x4000 && std::memcmp(&h[off], "\0\0\0\0", 4) != 0;)
+    {
+        uint16_t n = rd16(&h[off + 4]), start = rd16(&h[off + 6]);
+        if (n & 0x8000u)
+        {
+            n &= 0x7FFFu;
+            off += 8 + 4u * n; // id-form groups (hex ids) never hold PCEN/GMEV names
+            (void)start;
+            continue;
+        }
+        uint32_t cnt = 0;
+        for (; cnt < n && off + 16 + 8 * cnt <= 0x4000 && std::memcmp(&h[off + 8 + 8 * cnt], "\0\0\0\0", 4) != 0; ++cnt)
+        {
+            const uint8_t *e = &h[off + 8 + 8 * cnt];
+            if (std::memcmp(e, id, 4) == 0)
+            {
+                Bytes raw;
+                if (!readAt(f, (8u + rd16(e + 4)) * 0x800u, rd16(e + 6) * 0x100u, raw)) return false;
+                return bpeDecode(raw, out);
+            }
+        }
+        off += 8 + 8 * cnt;
+    }
+    return false;
+}
+
 bool loadPcen(const char *id, Bytes &out)
 {
+    if (g_src == 4) return dpacFind("MODS/SVR04/prtcls.pac", id, out);
     std::ifstream f("MODS/SVR06/prtcls.pac", std::ios::binary);
     if (!f) return false;
     Bytes dir;
@@ -142,6 +179,7 @@ bool loadPcen(const char *id, Bytes &out)
 // gm.pac: group headers at 0x800 {4cc, u16 n*2, u16 start}, 8 B entries after them
 bool loadGmev(const char *id, Bytes &out)
 {
+    if (g_src == 4) return dpacFind("MODS/SVR04/gm.pac", id, out);
     std::ifstream f("MODS/SVR06/gm.pac", std::ios::binary);
     if (!f) return false;
     Bytes hdr;
@@ -943,6 +981,8 @@ void prePresent()
 } // namespace
 
 // Called from sd5EventMngCtEvtk when the CAM entrance-list sentinel picks the pyro row. id = PCEN/GMEV id ("4044").
+void hctpPyroSetSource(int game) { g_src = game == 4 ? 4 : 6; }
+
 void hctpPyroArm(PS2Runtime *runtime, const char *id, uint32_t common)
 {
     std::lock_guard<std::mutex> lock(g_mx);
@@ -1023,9 +1063,18 @@ bool hctpPyroHas(const char *id)
 {
     static std::map<std::string, bool> cache;
     std::lock_guard<std::mutex> lock(g_mx);
-    auto it = cache.find(id);
+    const std::string key = std::to_string(g_src) + ":" + id;
+    auto it = cache.find(key);
     if (it != cache.end()) return it->second;
     bool has = false;
+    if (g_src == 4)
+    {
+        Bytes pc, gm;
+        has = dpacFind("MODS/SVR04/prtcls.pac", id, pc) && dpacFind("MODS/SVR04/gm.pac", id, gm);
+        cache[key] = has;
+        std::fprintf(stderr, "[pyro] SvR04 %s pyro pack: %s\n", id, has ? "yes" : "no");
+        return has;
+    }
     {
         std::ifstream f("MODS/SVR06/prtcls.pac", std::ios::binary);
         Bytes dir;
@@ -1035,7 +1084,7 @@ bool hctpPyroHas(const char *id)
     }
     Bytes gm;
     if (has) has = loadGmev(id, gm);
-    cache[id] = has;
+    cache[key] = has;
     std::fprintf(stderr, "[pyro] SvR06 %s pyro pack: %s\n", id, has ? "yes" : "no");
     return has;
 }

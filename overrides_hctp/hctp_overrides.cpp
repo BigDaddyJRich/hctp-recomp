@@ -12,6 +12,8 @@ void hctpPyroArm(PS2Runtime *runtime, const char *id, uint32_t common); // hctp_
 bool hctpPyroEventTick(uint32_t scene, uint32_t frame, uint32_t frameMax); // hctp_svr06_pyro.cpp
 void hctpPyroDisarm();
 bool hctpPyroHas(const char *id); // hctp_svr06_pyro.cpp: PCEN + GMEV pack exists for this SvR06 event id
+void hctpPyroSetSource(int game); // hctp_svr06_pyro.cpp: 4 = MODS/SVR04 prtcls/gm (Nov 11), 6 = MODS/SVR06
+bool g_pyro04Active = false; // Nov 11: SvR04 entrance pyro armed (ticked by evsActionSvr)
 static int g_svr06CamEvent = 0; // Nov 9: HCTP event no of the SvR06 4044 reader event (CAM row 3944), 0 = none
 #include "runtime/ee_scheduler.h"
 #include "game_overrides.h"
@@ -8909,10 +8911,18 @@ namespace
             if (tag == "SOBJ")
                 sobj[name] = e;
         });
-        if (g_svrPacFiles.size() < 7u)
-            g_svrPacFiles.resize(7u);
+        if (g_svrPacFiles.size() < 8u)
+            g_svrPacFiles.resize(8u);
         g_svrPacFiles[5] = {"MODS/SYM/CEVN.PAC", "MODS\\SYM\\CEVN.PAC"};
         g_svrPacFiles[6] = {"MODS/SYM/bg.pac", "MODS\\SYM\\BG.PAC"};
+        // Nov 11 SYM PYRO: SYM gm.pac GMEV/<sym event> = HCTP GMEV format (same engine generation) -> served as
+        // /GMEV/<virtual event> (+100 plane). Source: F:/HCTP MODS/SYM/pac/gm.pac copied to MODS/SYM/gm.pac.
+        g_svrPacFiles[7] = {"MODS/SYM/gm.pac", "MODS\\SYM\\GM.PAC"};
+        std::map<std::string, SymDirEnt> symGmev;
+        symDpacDir("MODS/SYM/gm.pac", [&](const std::string &tag, const std::string &name, SymDirEnt e) {
+            if (tag == "GMEV")
+                symGmev[name] = e;
+        });
         // SEVP image append helpers (stored pointers are relative to image +8, like the file)
         auto put = [](const void *src, size_t n) -> uint32_t {
             while (g_svrSevp.size() & 3u)
@@ -9060,7 +9070,11 @@ namespace
             {
                 g_svrEvents[ev] = {svrNo, 0x2Du, 7, static_cast<int16_t>(donor), svrKindOf(static_cast<uint16_t>(v))};
                 g_svrPac["/EVET/" + std::to_string(ev)] = {5, bankSec, bankSz};
+                if (auto gm = symGmev.find(std::to_string(no)); gm != symGmev.end())
+                    g_svrPac["/GMEV/" + std::to_string(ev)] = {7, gm->second.sec, gm->second.sz};
             }
+            if (symGmev.count(std::to_string(no)))
+                std::fprintf(stderr, "[syment] SYM %u -> /GMEV/%u (pyro gimmicks)%c", no, v, 10);
             g_symRegistered[static_cast<uint16_t>(no)] = static_cast<uint16_t>(v);
             ++ok;
             std::fprintf(stderr, "[syment] SYM %u -> HCTP event %u/%u '%s' (%u objs, %u/%zu effects, bank %zu -> %u B, props%s)%c", no, v,
@@ -9151,8 +9165,21 @@ namespace
         g_svrCurEv = ev;
         // STEP 2: per-event SvR06 light bank + pyro armed by the SvR06 event id (any PCEN/GMEV pack), previews and matches
         static const bool pyroOn = !(std::getenv("HCTP_SVR06_PYRO") && std::getenv("HCTP_SVR06_PYRO")[0] == '0');
-        if (g_svr06Active)
+        g_pyro04Active = false;
+        if (g_svrEventActive && it->second.game == 4 && pyroOn) // Nov 11: SvR04 pyro = same engine, SvR04 PCEN/<ev> + gm '0001'/<ev>
         {
+            const std::string id = std::to_string(it->second.svrNo);
+            hctpPyroSetSource(4);
+            g_pyro04Active = hctpPyroHas(id.c_str());
+            if (g_pyro04Active)
+                hctpPyroArm(runtime, id.c_str(), 0u);
+            else
+                hctpPyroDisarm();
+            hctpPyroSetSource(6);
+        }
+        else if (g_svr06Active)
+        {
+            hctpPyroSetSource(6);
             g_svrGrayArmed = g_svrGrayArmed || g_svr06Gray.count(it->second.svrNo) != 0;
             auto lt = g_svr06Lights.find(it->second.svrNo);
             g_svr06LightHost = lt != g_svr06Lights.end() ? lt->second.first : std::vector<uint8_t>();
@@ -9711,6 +9738,16 @@ namespace
     {
         const uint32_t sys = regU(ctx, 4) & 0x1FFFFFFu, ra = regU(ctx, 31);
         g_origEvsActionSvr(rdram, ctx, runtime);
+        if (g_pyro04Active && g_svrEventActive && !g_svr06Active && sys != 0u && sys < 0x1FFFF00u && ctx->pc == ra &&
+            rdram[sys + 0x54u] != 0u && gU32(rdram, sys + 0x10u) == 2u)
+        {
+            uint16_t sc4, fr4, mx4; // SvR04: tick only (its own EVET bank already plays the pyro SE)
+            std::memcpy(&sc4, rdram + sys + 0x18u, 2);
+            std::memcpy(&fr4, rdram + sys + 0x1Au, 2);
+            std::memcpy(&mx4, rdram + sys + 0x1Eu, 2);
+            hctpPyroEventTick(sc4, fr4, mx4);
+            return;
+        }
         if (!g_svr06Active || sys == 0u || sys >= 0x1FFFF00u || ctx->pc != ra)
             return;
         if (rdram[sys + 0x54u] == 0u || gU32(rdram, sys + 0x10u) != 2u)
@@ -10451,6 +10488,12 @@ namespace
     void rosterxInitEventParam(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t self = rxArg(ctx, 4) & 0x1FFFFFFu, prm = rxArg(ctx, 5) & 0x1FFFFFFu, ra = rxArg(ctx, 31);
+        // Nov 11 TEST AID: HCTP_CAM_FORCE_EV=<event no> -> every CAM entrance preview plays that event (a2).
+        if (const char *fe = std::getenv("HCTP_CAM_FORCE_EV"); fe && std::atoi(fe) > 0)
+        {
+            SET_GPR_U32(ctx, 6, static_cast<uint32_t>(std::atoi(fe)));
+            std::fprintf(stderr, "[camtest] forced entrance event %d%c", std::atoi(fe), 10);
+        }
         if (self == 0u || self > 0x2000000u - 0x1A8u)
             return g_rxOrigInitEventParam(rdram, ctx, runtime);
         uint32_t id;
@@ -10475,6 +10518,25 @@ namespace
         g_camEventCast = static_cast<uint16_t>(cast);
         std::fprintf(stderr, "[rosterx] CAM InitEventParam id 0x%X: CAW flag %u cleared -> cast %u (returned %d)%c", id,
                      unsigned(flag), cast, int(ctx->pc == ra), 10);
+    }
+    // Nov 11 TEMP probe HCTP_VRAMLOC_PROBE=1: CVramLocater::ReserveTexture 0x181360 (a0 locater, a1 idx?, a2 w, a3 h,
+    // t0 psm) -> v0; SvR04 entrance props draw with garbage textures (CGmControl area 0x2D90..0x2FD5 / 0x2F90..0x30FF).
+    PS2Runtime::RecompiledFunction g_origReserveTex = nullptr;
+    void vramReserveProbe(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t a0 = rxArg(ctx, 4), a1 = rxArg(ctx, 5), a2 = rxArg(ctx, 6), a3 = rxArg(ctx, 7), t0 = rxArg(ctx, 8),
+                       ra = rxArg(ctx, 31);
+        uint16_t lo = 0, hi = 0;
+        if ((a0 & 0x1FFFFFFu) < 0x2000000u - 0x880u)
+        {
+            std::memcpy(&lo, rdram + (a0 & 0x1FFFFFFu) + 0x878u, 2);
+            std::memcpy(&hi, rdram + (a0 & 0x1FFFFFFu) + 0x87Au, 2);
+        }
+        g_origReserveTex(rdram, ctx, runtime);
+        static unsigned n = 0;
+        if (n++ < 600)
+            std::fprintf(stderr, "[vramloc] loc 0x%X area %04x-%04x idx %u w %u h %u psm 0x%X -> 0x%X (ra 0x%X)%c", a0, lo, hi,
+                         a1, a2, a3, t0, rxArg(ctx, 2), ra, 10);
     }
     PS2Runtime::RecompiledFunction g_rxOrigCatNext = nullptr;
     void rosterxPersistCam(uint8_t *rdram, RosterxSlot &s)
@@ -10556,6 +10618,8 @@ namespace
         ok = hook(0x396fe0u, g_rxOrigManDatEnd, rosterxManDatEnd) && ok;
         ok = hook(0x342990u, g_rxOrigCatNext, rosterxCatNext) && ok;
         ok = hook(0x342e30u, g_rxOrigInitEventParam, rosterxInitEventParam) && ok;
+        if (std::getenv("HCTP_VRAMLOC_PROBE"))
+            hook(0x181360u, g_origReserveTex, vramReserveProbe);
         ok = hook(0x3938c0u, g_rxOrigSSCreateUI, rosterxSSCreateUI) && ok;
         ok = hook(0x394380u, g_rxOrigAutoCreateUI, rosterxAutoCreateUI) && ok;
         std::cerr << "[rosterx] roster expansion: " << g_rosterx.size() << " new slots" << (ok ? "" : " (a hook FAILED)")
