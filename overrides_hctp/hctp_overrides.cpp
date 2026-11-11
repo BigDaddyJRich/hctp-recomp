@@ -13,6 +13,7 @@ bool hctpPyroEventTick(uint32_t scene, uint32_t frame, uint32_t frameMax); // hc
 void hctpPyroDisarm();
 bool hctpPyroHas(const char *id); // hctp_svr06_pyro.cpp: PCEN + GMEV pack exists for this SvR06 event id
 void hctpPyroSetSource(int game); // hctp_svr06_pyro.cpp: 4 = MODS/SVR04 prtcls/gm (Nov 11), 6 = MODS/SVR06
+void hctpMatrixInstall(PS2Runtime &runtime); // hctp_matrix.cpp: SYM L1 matrix / L2 replay (HCTP_MATRIX=1)
 bool g_pyro04Active = false; // Nov 11: SvR04 entrance pyro armed (ticked by evsActionSvr)
 static int g_svr06CamEvent = 0; // Nov 9: HCTP event no of the SvR06 4044 reader event (CAM row 3944), 0 = none
 #include "runtime/ee_scheduler.h"
@@ -7468,10 +7469,10 @@ namespace
     // Nov 11 SYM port: 7800 singles, 8000-8049 tags, 8050-8099 trios (kind 3); plane variants +100
     uint8_t svrKindOf(uint16_t ev)
     {
-        if ((ev >= 8050u && ev < 8100u) || (ev >= 8150u && ev < 8200u))
-            return 3;
+        if ((ev >= 8050u && ev < 8100u) || (ev >= 8150u && ev < 8200u) || (ev >= 8450u && ev < 8500u) || (ev >= 8550u && ev < 8600u))
+            return 3; // Nov 11 EPW4 demo (MODS\SYMDEMO): 8200 singles, 8400-8449 tags, 8450-8499 trios (+100 plane)
         return ((ev >= 7200u && ev < 7400u) || (ev >= 7600u && ev < 7800u) || (ev >= 8000u && ev < 8050u) ||
-                (ev >= 8100u && ev < 8150u)) ? uint8_t(2) : uint8_t(1);
+                (ev >= 8100u && ev < 8150u) || (ev >= 8400u && ev < 8450u) || (ev >= 8500u && ev < 8550u)) ? uint8_t(2) : uint8_t(1);
     }
     std::map<uint16_t, SvrEvent> g_svrEvents;      // virtual event no (and +100 variant) -> SvR event
     // Nov 10 Mr. America: virtual event -> HCTP light motion that replaces the SvR lights (entrances.txt light=<n>)
@@ -8875,11 +8876,17 @@ namespace
         return true;
     }
     // MODS\SYM\entrances.txt -> every row registered at boot (like svrEntranceTableLoad / svr06TableLoad)
-    void symTableLoad()
+    // Nov 11 EPW4 DEMO: same loader for a 2nd source folder (MODS\SYMDEMO = Exciting Pro Wrestling 4 demo pacs, Sep 22 2002
+    // build): own svrNo base (20000+), own pac file slots (8..10), own virtual events (8200+), registry kept apart.
+    void symTableLoad(const char *dir = "SYM", uint16_t noBase = kSymNoBase, size_t pacBase = 5u)
     {
         if (std::getenv("HCTP_SYMENT") && std::getenv("HCTP_SYMENT")[0] == '0')
             return;
-        std::ifstream tf("MODS/SYM/entrances.txt");
+        const std::string fw = std::string("MODS/") + dir + "/", bk = std::string("MODS\\") + dir + "\\";
+        std::map<uint16_t, uint16_t> localReg;
+        std::map<uint16_t, uint16_t> &reg = noBase == kSymNoBase ? g_symRegistered : localReg;
+        std::fprintf(stderr, "[syment] loading MODS\\%s%c", dir, 10);
+        std::ifstream tf(fw + "entrances.txt");
         if (!tf)
         {
             std::fprintf(stderr, "[syment] MODS\\SYM\\entrances.txt missing: no SYM entrances%c", 10);
@@ -8889,7 +8896,7 @@ namespace
             g_svrSevp.assign(0x20u, 0u); // no SvR04 pac: SYM rows get an image of their own (same reader)
         std::map<uint16_t, SymDirEnt> evet;
         SymDirEnt sydtAt{0, 0};
-        if (!symDpacDir("MODS/SYM/evtEnt.pac", [&](const std::string &tag, const std::string &name, SymDirEnt e) {
+        if (!symDpacDir((fw + "evtEnt.pac").c_str(), [&](const std::string &tag, const std::string &name, SymDirEnt e) {
                 if (tag == "EVET" && !name.empty() && std::strspn(name.c_str(), "0123456789") == name.size())
                     evet[static_cast<uint16_t>(std::stoul(name))] = e;
                 else if (tag == "ENTR" && name == "SYDT")
@@ -8899,7 +8906,7 @@ namespace
             std::fprintf(stderr, "[syment] MODS\\SYM\\evtEnt.pac missing/unreadable (copy SYM PAC\\EVTENT.PAC there)%c", 10);
             return;
         }
-        std::ifstream pac("MODS/SYM/evtEnt.pac", std::ios::binary);
+        std::ifstream pac(fw + "evtEnt.pac", std::ios::binary);
         std::vector<uint8_t> sydt(size_t(sydtAt.sz) * 0x100u);
         pac.seekg(static_cast<std::streamoff>(sydtAt.sec) * 0x800);
         pac.read(reinterpret_cast<char *>(sydt.data()), static_cast<std::streamsize>(sydt.size()));
@@ -8910,19 +8917,19 @@ namespace
             return;
         }
         std::map<std::string, SymDirEnt> sobj;
-        symDpacDir("MODS/SYM/bg.pac", [&](const std::string &tag, const std::string &name, SymDirEnt e) {
+        symDpacDir((fw + "bg.pac").c_str(), [&](const std::string &tag, const std::string &name, SymDirEnt e) {
             if (tag == "SOBJ")
                 sobj[name] = e;
         });
-        if (g_svrPacFiles.size() < 8u)
-            g_svrPacFiles.resize(8u);
-        g_svrPacFiles[5] = {"MODS/SYM/CEVN.PAC", "MODS\\SYM\\CEVN.PAC"};
-        g_svrPacFiles[6] = {"MODS/SYM/bg.pac", "MODS\\SYM\\BG.PAC"};
+        if (g_svrPacFiles.size() < pacBase + 3u)
+            g_svrPacFiles.resize(pacBase + 3u);
+        g_svrPacFiles[pacBase] = {fw + "CEVN.PAC", bk + "CEVN.PAC"};
+        g_svrPacFiles[pacBase + 1u] = {fw + "bg.pac", bk + "BG.PAC"};
         // Nov 11 SYM PYRO: SYM gm.pac GMEV/<sym event> = HCTP GMEV format (same engine generation) -> served as
         // /GMEV/<virtual event> (+100 plane). Source: F:/HCTP MODS/SYM/pac/gm.pac copied to MODS/SYM/gm.pac.
-        g_svrPacFiles[7] = {"MODS/SYM/gm.pac", "MODS\\SYM\\GM.PAC"};
+        g_svrPacFiles[pacBase + 2u] = {fw + "gm.pac", bk + "GM.PAC"};
         std::map<std::string, SymDirEnt> symGmev;
-        symDpacDir("MODS/SYM/gm.pac", [&](const std::string &tag, const std::string &name, SymDirEnt e) {
+        symDpacDir((fw + "gm.pac").c_str(), [&](const std::string &tag, const std::string &name, SymDirEnt e) {
             if (tag == "GMEV")
                 symGmev[name] = e;
         });
@@ -8951,7 +8958,7 @@ namespace
             const std::string name = used > 0 ? line.substr(static_cast<size_t>(used)) : std::string();
             auto oe = sy.ev.find(static_cast<uint16_t>(no));
             auto be = evet.find(static_cast<uint16_t>(no));
-            if (oe == sy.ev.end() || be == evet.end() || g_symRegistered.count(static_cast<uint16_t>(no)))
+            if (oe == sy.ev.end() || be == evet.end() || reg.count(static_cast<uint16_t>(no)))
             {
                 std::fprintf(stderr, "[syment] SYM %u '%s': not in MODS\\SYM\\evtEnt.pac (or duplicate row)%c", no, name.c_str(), 10);
                 continue;
@@ -8996,8 +9003,10 @@ namespace
                     const uint16_t hm = model == 172u ? uint16_t(2019u) : static_cast<uint16_t>(2200u + model);
                     if (hm != 2019u)
                     {
-                        if (auto so = sobj.find(std::to_string(model)); so != sobj.end())
-                            g_svrPac["/SOBJ/" + std::to_string(hm)] = {6, so->second.sec, so->second.sz};
+                        if (noBase != kSymNoBase && g_svrPac.count("/SOBJ/" + std::to_string(hm)))
+                            ; // demo source: keep the retail SYM prop already served under this number
+                        else if (auto so = sobj.find(std::to_string(model)); so != sobj.end())
+                            g_svrPac["/SOBJ/" + std::to_string(hm)] = {static_cast<int>(pacBase + 1u), so->second.sec, so->second.sz};
                         else
                             std::fprintf(stderr, "[syment] SYM %u prop %u: not in SYM bg.pac%c", no, model, 10);
                     }
@@ -9017,7 +9026,7 @@ namespace
                 chars.insert(chars.end(), ch, ch + 28);
             }
             const uint32_t pChar = put(chars.data(), chars.size());
-            const uint16_t svrNo = static_cast<uint16_t>(kSymNoBase + no), nObj = static_cast<uint16_t>(oe->second.size());
+            const uint16_t svrNo = static_cast<uint16_t>(noBase + no), nObj = static_cast<uint16_t>(oe->second.size());
             uint8_t row[12] = {};
             std::memcpy(row, &svrNo, 2);
             std::memcpy(row + 2, &nObj, 2);
@@ -9072,13 +9081,13 @@ namespace
             for (uint16_t ev : {static_cast<uint16_t>(v), static_cast<uint16_t>(v + 100u)})
             {
                 g_svrEvents[ev] = {svrNo, 0x2Du, 7, static_cast<int16_t>(donor), svrKindOf(static_cast<uint16_t>(v))};
-                g_svrPac["/EVET/" + std::to_string(ev)] = {5, bankSec, bankSz};
+                g_svrPac["/EVET/" + std::to_string(ev)] = {static_cast<int>(pacBase), bankSec, bankSz};
                 if (auto gm = symGmev.find(std::to_string(no)); gm != symGmev.end())
-                    g_svrPac["/GMEV/" + std::to_string(ev)] = {7, gm->second.sec, gm->second.sz};
+                    g_svrPac["/GMEV/" + std::to_string(ev)] = {static_cast<int>(pacBase + 2u), gm->second.sec, gm->second.sz};
             }
             if (symGmev.count(std::to_string(no)))
                 std::fprintf(stderr, "[syment] SYM %u -> /GMEV/%u (pyro gimmicks)%c", no, v, 10);
-            g_symRegistered[static_cast<uint16_t>(no)] = static_cast<uint16_t>(v);
+            reg[static_cast<uint16_t>(no)] = static_cast<uint16_t>(v);
             ++ok;
             std::fprintf(stderr, "[syment] SYM %u -> HCTP event %u/%u '%s' (%u objs, %u/%zu effects, bank %zu -> %u B, props%s)%c", no, v,
                          v + 100u, name.c_str(), nObj, nEnt, ef != sy.eff.end() ? ef->second.size() : size_t(0), raw.size(),
@@ -9101,10 +9110,10 @@ namespace
             appendTable(0x10u, 0x14u, 12u, newRows);
             appendTable(0x18u, 0x1Cu, 8u, newEffRows);
         }
-        std::ofstream o("MODS/SYM/CEVN.PAC", std::ios::binary | std::ios::trunc);
+        std::ofstream o(fw + "CEVN.PAC", std::ios::binary | std::ios::trunc);
         const bool wrote = !cache.empty() && static_cast<bool>(o.write(reinterpret_cast<const char *>(cache.data()), static_cast<std::streamsize>(cache.size())));
         if (!wrote)
-            for (const auto &kv : g_symRegistered)
+            for (const auto &kv : reg)
                 for (uint16_t ev : {kv.second, static_cast<uint16_t>(kv.second + 100u)})
                     g_svrEvents.erase(ev), g_svrPac.erase("/EVET/" + std::to_string(ev));
         std::fprintf(stderr, "[syment] table: %d SYM rows, %d registered; CEVN.PAC %zu B %s; %u records (cam strip %u, rope strip %u, pad-only %u, split skips %u, BAD %u), %d effects dropped (Booker fire/unused); %zu SOBJ in SYM bg.pac%c",
@@ -9193,9 +9202,9 @@ namespace
             else
                 hctpPyroDisarm();
         }
-        else if (ev >= 3000u && ev < 8200u) // Nov 11: SYM tags/trios 8000-8199
+        else if (ev >= 3000u && ev < 8600u) // Nov 11: SYM tags/trios 8000-8199
             hctpPyroDisarm();
-        if (ev >= 3000u && ev < 8200u)
+        if (ev >= 3000u && ev < 8600u)
             std::fprintf(stderr, "[svrent] SetEvent call ev %u (svr %d%s)%c", ev, g_svrEventActive ? 1 : 0, g_symActive ? ", SYM" : "", 10);
         if (g_svrEventActive)
         {
@@ -9737,6 +9746,21 @@ namespace
         std::fprintf(stderr, "[svr06light] %d SvR06 light slots set on CMotionLight %08x (bank %08x)%c", set, g_motionLightThis,
                      g_svr06LightBank, 10);
     }
+    // Nov 11: GMEV pyro cues use the RAW scene index (disabled scenes skipped), not the play counter +0x18.
+    // HCTP CGmEventCheckBirthEnbale::FrameActive 0x1a9810 -> CEventSystem::GetCurrentCameraScene 0x167360
+    // (u16 [ [sys+0x20] + 2*u16[sys+0x4C] ], FindScene 0x167a60 skips entries with enable byte 0);
+    // SvR06 gmParticleEmitter::MyAction 0x4de210 -> CEventScene::GetSerialSceneNo (+0x10, CalcNextScene 0x553420).
+    static uint16_t pyroCamScene(uint8_t *rdram, uint32_t sys)
+    {
+        uint16_t play, cam, raw;
+        std::memcpy(&play, rdram + sys + 0x18u, 2);
+        if (std::getenv("HCTP_PYRO_PLAYSCENE")) return play;
+        std::memcpy(&cam, rdram + sys + 0x4Cu, 2);
+        const uint32_t arr = gU32(rdram, sys + 0x20u) & 0x1FFFFFFu;
+        if (arr == 0u || arr >= 0x1FFFF00u || cam > 64u) return play;
+        std::memcpy(&raw, rdram + arr + 2u * cam, 2);
+        return raw == 0xFFFFu ? play : raw;
+    }
     void evsActionSvr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t sys = regU(ctx, 4) & 0x1FFFFFFu, ra = regU(ctx, 31);
@@ -9745,7 +9769,7 @@ namespace
             rdram[sys + 0x54u] != 0u && gU32(rdram, sys + 0x10u) == 2u)
         {
             uint16_t sc4, fr4, mx4; // SvR04: tick only (its own EVET bank already plays the pyro SE)
-            std::memcpy(&sc4, rdram + sys + 0x18u, 2);
+            sc4 = pyroCamScene(rdram, sys);
             std::memcpy(&fr4, rdram + sys + 0x1Au, 2);
             std::memcpy(&mx4, rdram + sys + 0x1Eu, 2);
             hctpPyroEventTick(sc4, fr4, mx4);
@@ -9756,7 +9780,7 @@ namespace
         if (rdram[sys + 0x54u] == 0u || gU32(rdram, sys + 0x10u) != 2u)
             return;
         uint16_t sc, fr, mx;
-        std::memcpy(&sc, rdram + sys + 0x18u, 2);
+        sc = pyroCamScene(rdram, sys);
         std::memcpy(&fr, rdram + sys + 0x1Au, 2);
         std::memcpy(&mx, rdram + sys + 0x1Eu, 2);
         svr06LightsStart(rdram, ctx, runtime);
@@ -10594,6 +10618,7 @@ namespace
                 g_svr06CamEvent = b->second;
         }
         symTableLoad(); // Nov 11 SYM entrance port: MODS\SYM\entrances.txt (7800+ / 8000+ / 8050+), before the hooks install
+        symTableLoad("SYMDEMO", 20000u, 8u); // Nov 11 EPW4 demo (Sep 2002) entrance versions: MODS\SYMDEMO\entrances.txt (8200+)
         svrEntranceInstall(runtime); // SvR04 table + slot.txt entrance=svr04:<no> -> SvR entrance reader
         if (!rx)
             return;
@@ -11460,6 +11485,7 @@ namespace
         installHostMedia(runtime);
         installMediaDefaults(runtime);
         installAnyBone(runtime);
+        hctpMatrixInstall(runtime);
         installRosterExpansion(runtime); // keep LAST: wraps the hooks above on the same functions
         std::cerr << "[hctp] overrides applied" << std::endl;
     }

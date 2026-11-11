@@ -724,8 +724,8 @@ void prePresent()
                 // SvR06 keeps the proven Nov 10 rule (== scene or scene*5; Brock 4044 timing Jordan-confirmed).
                 auto reached = [&](int s0, int f0) {
                     if (s0 < 0) return false;
-                    if (in.src == 4) return static_cast<int>(sc) > s0 || (static_cast<int>(sc) == s0 && static_cast<int>(fr) >= f0);
-                    return (static_cast<int>(sc) == s0 || static_cast<int>(sc) * 5 == s0) && static_cast<int>(fr) >= f0;
+                    // Nov 11: sc = RAW camera scene (caller), same rule for SvR04 + SvR06 (HCTP 0x1a9810, SvR04 0x458f60, SvR06 0x4de210)
+                    return static_cast<int>(sc) > s0 || (static_cast<int>(sc) == s0 && static_cast<int>(fr) >= f0);
                 };
                 if (in.started && !in.dead && reached(in.endScene, in.endFrame))
                 {
@@ -1158,7 +1158,7 @@ bool hctpPyroEventTick(uint32_t scene, uint32_t frame, uint32_t frameMax)
     }
     g_evPacked.store(((scene & 0xFFFFu) << 16) | (frame & 0xFFFFu), std::memory_order_relaxed);
     const int ws = g_winScene.load();
-    if (ws >= 0 && (static_cast<int>(scene) == ws || static_cast<int>(scene) * 5 == ws) && static_cast<int>(frame) >= g_winFrame.load() &&
+    if (ws >= 0 && (static_cast<int>(scene) > ws || (static_cast<int>(scene) == ws && static_cast<int>(frame) >= g_winFrame.load())) &&
         !g_seFired.exchange(true))
         return true;
     return false;
