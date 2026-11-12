@@ -92,6 +92,9 @@ uint32_t hctpRosterCodeId(const uint8_t *rdram, uint32_t code);
 // hctpIsSlotCode: code belongs to a registered slot. hctpIsCawCode: real CAW code (10000..13199 or 0x639C), never a slot.
 // hctpCodeLt10k: replacement for the guest "slti code, 0x2710" (stock path) at the 24 patched runner sites.
 bool hctpIsSlotCode(uint32_t code);
+// STEP C2 (Nov 12) 32-bit cast codes: Common entries keep u16; codes that do not fit go through a sentinel table (patch_rosterx_code32.py).
+uint16_t hctpCodeEnc(uint32_t v); uint32_t hctpCodeDec(uint16_t v); int32_t hctpCodeDecS(uint16_t v); uint64_t hctpCodeMask(uint64_t v);
+uint32_t hctpCodeNorm(uint32_t v, uint32_t ra = 0u);
 inline bool hctpIsCawCode(uint32_t code) { return code >= 10000u && !hctpIsSlotCode(code); }
 inline bool hctpIsStockOrSlotCode(uint32_t code) { return code < 10000u || hctpIsSlotCode(code); }
 
@@ -810,7 +813,7 @@ namespace
     PS2Runtime::RecompiledFunction g_origGetEntranceCastNo = nullptr;
     void getEntranceCastNoCutRoster(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t code = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5])) & 0xFFFFu;
+        const uint32_t code = hctpCodeNorm(static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5])));
         g_origGetEntranceCastNo(rdram, ctx, runtime);
         const uint32_t entrance = code - code % 10u + 4u;
         if (hctpIsStockOrSlotCode(code) && g_cutEntranceCodes.count(static_cast<uint16_t>(entrance)))
@@ -1488,7 +1491,7 @@ namespace
                                static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[7])) == 0u &&
                                static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[8])) == 0u;
         g_origGetMatchWrestlerNo(rdram, ctx, runtime);
-        const uint32_t code = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[2])) & 0xFFFFu;
+        const uint32_t code = hctpCodeNorm(static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[2])));
         if (!backstage || id >= 0x56u || code >= 10000u || code % 10u != 0u)
             return;
         bool restored = false;
@@ -1511,7 +1514,7 @@ namespace
         // full entrance model XXa3 (what GetMatchWrestlerNo serves with a3 set) > ring attire. Only for Season casts
         // (ra inside nvCast 0x258a30..0x259840): exhibition callers also pass a2 (Nov 7 Legend Hogan bug).
         const uint32_t ra = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
-        const uint32_t now = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[2])) & 0xFFFFu;
+        const uint32_t now = hctpCodeNorm(static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[2])));
         if (now == code && ctx->pc == ra && ra >= 0x258a30u && ra < 0x259840u && stockModelKeyExists(code + 3u))
         {
             SET_GPR_U32(ctx, 2, code + 3u);
@@ -7392,7 +7395,7 @@ namespace
     };
     std::vector<RosterxSlot> g_rosterx;
     constexpr uint16_t kRosterxFirstId = 0xA2;
-    constexpr uint32_t kRosterxMaxId = 654; // code = id*100 + 99 must stay <= 65535 (u16 cast code)
+    constexpr uint32_t kRosterxMaxId = 0x7FFE; // STEP C2: u32 codes (was 654 = u16 cap); id < 0x8000 = s16 record model no +0x114
     // ra sites that call GetCharaGameProp(cast code / 100): GetEntranceEventNoFromSystem 0x2ad230
     // A CAW in slot 0 also gives (10000-10000)/100 + 0x56 = 0x56 at these sites: map only when a live cast code is the
     // slot's model no (8600..8699), never when that code is a CAW one.
@@ -10213,12 +10216,12 @@ namespace
                 used.insert(nextId);
             }
         // STEP A (Nov 10): permanent unique model no = slot id -> codes id*100.. (no pool, no sharing). Id 255 would make
-        // attire 0 = 25500 = 0x639C (the "no cast" code) and ids > 654 overflow the u16 code -> refused.
+        // attire 0 = 25500 = 0x639C (the "no cast" code) -> refused. STEP C2: ids > 654 OK (u32 codes via hctpCodeEnc sentinels).
         for (auto it = g_rosterx.begin(); it != g_rosterx.end();)
         {
             if (it->id == 0xFFu || it->id > kRosterxMaxId)
             {
-                std::fprintf(stderr, "[rosterx] slot %s id 0x%X REFUSED (id 255 / > %u cannot have a u16 cast code)%c",
+                std::fprintf(stderr, "[rosterx] slot %s id 0x%X REFUSED (id 255 / > %u cannot be a slot id)%c",
                              it->name.c_str(), it->id, kRosterxMaxId, 10);
                 it = g_rosterx.erase(it);
                 continue;
@@ -10357,7 +10360,7 @@ namespace
             code += 3u;
         else if (rxArg(ctx, 6) != 0u && g_loosePac.count("/EMD2/" + std::to_string(code + 1u)))
             code += 1u;
-        SET_GPR_U32(ctx, 2, code & 0xFFFFu);
+        SET_GPR_U32(ctx, 2, code); // STEP C2: full u32 (guest Common stores encode it)
         ctx->pc = rxArg(ctx, 31);
     }
     // Per-id stock tables: call the original with the template id in the id register.
@@ -10393,7 +10396,7 @@ namespace
         }
         if (h.code)
         {
-            const uint32_t c = v & 0xFFFFu;
+            const uint32_t c = hctpCodeNorm(v, rxArg(ctx, 31));
             if (hctpIsSlotCode(c))
                 // Nov 9: IsDress gets the live cast code (8600 < 10000 can never be a CAW, CAWs are 10000+), so take
                 // the slot by model even when CAW block 0 is in use (rosterxFromCodeId refused it -> no jacket).
@@ -10469,7 +10472,7 @@ namespace
     template <int T>
     void rosterxEvtGetter(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t code = rxArg(ctx, 4) & 0xFFFFu; // getter entry: andi v0,a0,0xFFFF
+        const uint32_t code = hctpCodeNorm(rxArg(ctx, 4), rxArg(ctx, 31)); // getter entry: andi v0,a0,0xFFFF (C2: u32)
         uint32_t base;
         std::memcpy(&base, rdram + kRxEvtPtr[T], 4);
         if (g_rxEvtFilled && base != 0u && hctpIsSlotCode(code))
@@ -10603,8 +10606,9 @@ namespace
         sel &= 0x1FFFFFFu;
         if (sel && sel < 0x2000000u - 0xCu)
         {
-            uint16_t code;
-            std::memcpy(&code, rdram + sel + 0xAu, 2);
+            uint16_t raw;
+            std::memcpy(&raw, rdram + sel + 0xAu, 2);
+            const uint32_t code = hctpCodeDec(raw);
             if (hctpIsSlotCode(code))
                 if (RosterxSlot *s = rosterxFromCodeId(rdram, code / 100u))
                     if (const uint32_t rec = rosterxRecord(rdram, runtime, *s))
@@ -10630,10 +10634,11 @@ namespace
             if (!sel || sel >= 0x2000000u - 0xCu)
                 continue;
             std::memcpy(&old[i], rdram + sel + 0xAu, 2);
-            if (hctpIsSlotCode(old[i]))
-                if (const RosterxSlot *s = rosterxFromCodeId(rdram, old[i] / 100u))
+            const uint32_t oc = hctpCodeDec(old[i]); // C2: sentinel -> u32 slot code (raw restored below)
+            if (hctpIsSlotCode(oc))
+                if (const RosterxSlot *s = rosterxFromCodeId(rdram, oc / 100u))
                 {
-                    const uint16_t t = static_cast<uint16_t>(rosterxTemplateCode(rdram, *s, old[i]));
+                    const uint16_t t = static_cast<uint16_t>(rosterxTemplateCode(rdram, *s, oc));
                     std::memcpy(rdram + sel + 0xAu, &t, 2);
                     at[i] = sel;
                 }
@@ -11912,6 +11917,70 @@ bool hctpIsSlotCode(uint32_t code)
 {
     return code >= 16200u && code != 0x639Cu && code != 0xFFFFu && rosterxById(code / 100u) != nullptr;
 }
+// STEP C2 (Nov 12, ROSTER_STEP_C_20261111 sec E/F): 32-bit cast codes, value-based. The game keeps the Common cast-entry
+// code (0x4920C0 + 0x100 + i*0x20 + 0xA) as u16; tools\patch_rosterx_code32.py routes every guest sh/lh/lhu of it (+ the
+// u16 code-param andi masks) through these. Slot codes >= 65500 (ids >= 655) are stored as a SENTINEL from 13200..16199
+// (CAW slots 32..61 / ids 0x84..0xA1: never produced by the game or Step A) and mapped back here. The table maps a value to
+// itself (sentinel -> the real u32 code); it never stands in for another wrestler (no pool). Every other value: identity.
+namespace
+{
+    constexpr uint32_t kCodeSentLo = 13200u, kCodeSentHi = 16200u;
+    std::vector<uint32_t> g_codeSent; // [sentinel - kCodeSentLo] = u32 slot code
+    uint32_t codeSentLookup(uint16_t r)
+    {
+        return (r >= kCodeSentLo && r < kCodeSentHi && r - kCodeSentLo < g_codeSent.size()) ? g_codeSent[r - kCodeSentLo] : 0u;
+    }
+}
+uint16_t hctpCodeEnc(uint32_t v)
+{
+    if (v < 65500u || !hctpIsSlotCode(v))
+        return static_cast<uint16_t>(v);
+    for (size_t i = 0; i < g_codeSent.size(); ++i)
+        if (g_codeSent[i] == v)
+            return static_cast<uint16_t>(kCodeSentLo + i);
+    if (g_codeSent.size() < kCodeSentHi - kCodeSentLo)
+    {
+        g_codeSent.push_back(v);
+        std::fprintf(stderr, "[rosterx] C2 code %u -> sentinel %u%c", v, unsigned(kCodeSentLo + g_codeSent.size() - 1u), 10);
+        return static_cast<uint16_t>(kCodeSentLo + g_codeSent.size() - 1u);
+    }
+    static bool full = false;
+    if (!full)
+        std::fprintf(stderr, "[rosterx] C2 sentinel table FULL (%u codes): code %u truncated%c", kCodeSentHi - kCodeSentLo, v, 10);
+    full = true;
+    return static_cast<uint16_t>(v);
+}
+uint32_t hctpCodeDec(uint16_t v)
+{
+    const uint32_t c = codeSentLookup(v);
+    return c ? c : v;
+}
+int32_t hctpCodeDecS(uint16_t v)
+{
+    const uint32_t c = codeSentLookup(v);
+    return c ? static_cast<int32_t>(c) : static_cast<int32_t>(static_cast<int16_t>(v));
+}
+uint64_t hctpCodeMask(uint64_t v)
+{
+    if (v > 0xFFFFu && v <= 0xFFFFFFFFu && hctpIsSlotCode(static_cast<uint32_t>(v)))
+        return v;
+    return v & 0xFFFFu;
+}
+// Host entry points that take a code: u32 slot codes pass; a raw sentinel here = an unpatched guest u16 reader -> TRIPWIRE.
+uint32_t hctpCodeNorm(uint32_t v, uint32_t ra)
+{
+    if (v > 0xFFFFu && hctpIsSlotCode(v))
+        return v;
+    v &= 0xFFFFu;
+    if (const uint32_t c = codeSentLookup(static_cast<uint16_t>(v)))
+    {
+        static int trips = 0;
+        if (trips++ < 16)
+            std::fprintf(stderr, "[rosterx] C2 TRIPWIRE raw sentinel %u (code %u) reached a host hook, ra %08x%c", v, c, ra, 10);
+        return c;
+    }
+    return v;
+}
 // Nov 11 CAM INVISIBLE SLOT BODY: MatchWrestler::MakeChar 0x345700 reads a per-wrestler model scale float from table
 // 0x46DAA4 + id*8 (ids 0..0x56 only; id = code/100, or (code-10000)/100+0x56 via an unpatched "addiu -0x2710; bltz").
 // Slot codes landed past the table -> 0.0 scale -> only the shadow drew (Andre 17130). Runner patch target
@@ -11919,7 +11988,7 @@ bool hctpIsSlotCode(uint32_t code)
 // tools\patch_rosterx_cawoff.py target: guest "addiu rd, code, -0x2710" (CAW offset; < 0 = stock wrestler).
 int32_t hctpCawOff(uint32_t v)
 {
-    if (v >= 16200u && v <= 0xFFFFu && hctpIsSlotCode(v))
+    if (v >= 16200u && hctpIsSlotCode(v)) // C2: u32 slot codes too
         return -1;
     return static_cast<int32_t>(v - 10000u);
 }
@@ -11932,8 +12001,9 @@ uint32_t hctpRecordSrc(uint8_t *rdram, PS2Runtime *runtime, uint32_t a1, uint32_
     sel &= 0x1FFFFFFu;
     if (sel == 0u || sel > 0x2000000u - 0xCu)
         return a1;
-    uint16_t code;
-    std::memcpy(&code, rdram + sel + 0xAu, 2);
+    uint16_t raw;
+    std::memcpy(&raw, rdram + sel + 0xAu, 2);
+    const uint32_t code = hctpCodeDec(raw);
     if (!hctpIsSlotCode(code))
         return a1;
     RosterxSlot *s = rosterxById(code / 100u);
@@ -11947,7 +12017,7 @@ uint32_t hctpRecordSrc(uint8_t *rdram, PS2Runtime *runtime, uint32_t a1, uint32_
 }
 uint32_t hctpScaleAddr(uint32_t addr, uint32_t code)
 {
-    code &= 0xFFFFu;
+    code = hctpCodeNorm(code);
     if (!hctpIsSlotCode(code))
         return addr;
     const RosterxSlot *s = rosterxById(code / 100u);
@@ -11962,7 +12032,7 @@ uint32_t hctpScaleAddr(uint32_t addr, uint32_t code)
 bool hctpCodeLt10k(int64_t v)
 {
     static bool logged = false;
-    if (v >= 16200 && v <= 65535 && hctpIsSlotCode(static_cast<uint32_t>(v)))
+    if (v >= 16200 && v <= 0xFFFFFFFFll && hctpIsSlotCode(static_cast<uint32_t>(v))) // C2: u32 slot codes too
     {
         if (!logged)
             std::fprintf(stderr, "[rosterx] CAW check: slot code %lld -> stock path%c", static_cast<long long>(v), 10);
