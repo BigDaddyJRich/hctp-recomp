@@ -309,6 +309,7 @@ struct Emitter
 {
     uint8_t drawType = 0, blend = 0;
     uint16_t maxP = 0;
+    uint32_t stBorn = 0, stLinkKill = 0, stNoTex = 0, stDraw = 0, stCull = 0; // HCTP_PYRO_EMSTATS (Nov 11 smoke hunt)
     uint16_t copies = 1; // rec+0x5A -> packet 0x3F1.y (VU inner loop count: copies along the blur vector)
     float blurK = 0;     // rec+0x5C -> packet 0x3F1.z (VU vf22.z: blur step scale)
     std::vector<Action> acts;
@@ -485,6 +486,7 @@ void stepInstance(Instance &in)
                         --cnt;
                         pt = Particle{};
                         pt.live = true;
+                        ++em.stBorn;
                         pt.life = std::max(1, static_cast<int>(p[2] + p[3] * rand2()));
                         const float speed = p[4] + p[5] * rand2();
                         // cone: p6/2 deg, axes gated by int(p7) bits (0 -> 15): 1=Z 2=Y 4=X; acc = RX*RY*RZ
@@ -538,7 +540,7 @@ void stepInstance(Instance &in)
                         Particle &pt = em.ps[i];
                         if (!pt.live) continue;
                         const Particle &sp = src.ps[i % src.ps.size()];
-                        if (!sp.live && pt.age == 0) { pt.live = false; continue; }
+                        if (!sp.live && pt.age == 0) { pt.live = false; ++em.stLinkKill; continue; }
                         if (sp.live && pt.age >= static_cast<int>(p[2]) && pt.age <= static_cast<int>(p[3]))
                             for (int k = 0; k < 3; ++k) pt.pos[k] = sp.pos[k] - sp.vel[k] * p[1];
                     }
@@ -870,7 +872,7 @@ void prePresent()
             {
                 if (!pt.live) continue;
                 ++live;
-                if (pt.tex < 0 || pt.tex >= static_cast<int>(em.texIds.size()) || em.texIds[pt.tex] == 0) continue;
+                if (pt.tex < 0 || pt.tex >= static_cast<int>(em.texIds.size()) || em.texIds[pt.tex] == 0) { ++em.stNoTex; continue; }
                 const uint16_t tid = static_cast<uint16_t>(em.texIds[pt.tex]);
                 // Nov 10 DRAW PORT: SvR06 VU1 microcode 1:1 (My_dma_Particle = type 1 SPRITE, My_dma_ParticleRot = type 0
                 // TRISTRIP, My_dma_ParticlePolygon = type 2 FAN; decoded with tools\vu1dis2.py, notes SVR06_PYRO_COMPAT "DRAW PORT").
@@ -881,6 +883,7 @@ void prePresent()
                 auto &vec = groups[key];
                 dims[key] = {0, 0};
                 auto pushQuad = [&](const float X[4], const float Y[4], const float Z[4], const float us[4], const float vs[4], const int (&idx)[2][3]) {
+                    ++em.stDraw;
                     for (const auto &tr : idx)
                     {
                         GS::HostTri t{};
@@ -993,6 +996,27 @@ void prePresent()
         // AFAIL RGB_ONLY, ZTE, ZTST GEQUAL) = colour only, no Z / FB-alpha write. HCTP_PYRO_ATEST=0 -> old default TEST.
         static const uint64_t atest = (std::getenv("HCTP_PYRO_ATEST") && std::getenv("HCTP_PYRO_ATEST")[0] == '0') ? 0ull : 0x53201ull;
         g_rt->gs().submitHostTris(g.second.data(), g.second.size(), tid, w, h, (g.first & 0xFF) == 1, atest);
+    }
+    // HCTP_PYRO_EMSTATS=1: every 60 ticks, per started instance + emitter: born / killed by Link / no texture / quads drawn
+    static const bool emStats = std::getenv("HCTP_PYRO_EMSTATS") != nullptr;
+    static int s_lastStatTick = -1000;
+    if (emStats && g_tick - s_lastStatTick >= 60)
+    {
+        s_lastStatTick = g_tick;
+        for (size_t ii = 0; ii < g_inst.size(); ++ii)
+        {
+            const Instance &in = g_inst[ii];
+            if (!in.started) continue;
+            for (size_t ei = 0; ei < in.f.em.size(); ++ei)
+            {
+                const Emitter &em = in.f.em[ei];
+                if (!em.stBorn) continue;
+                size_t lv = 0;
+                for (const Particle &pt : em.ps) lv += pt.live ? 1u : 0u;
+                std::fprintf(stderr, "[pyroem] tick %d inst %zu em %zu draw %u blend %u live %zu born %u linkkill %u notex %u quads %u%c",
+                             g_tick, ii, ei, em.drawType, em.blend, lv, em.stBorn, em.stLinkKill, em.stNoTex, em.stDraw, 10);
+            }
+        }
     }
     static int s_logLeft = 40;
     static int s_lastLogTick = -100;

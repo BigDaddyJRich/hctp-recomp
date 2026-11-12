@@ -9711,6 +9711,20 @@ namespace
         static int logged = 0;
         if (logged++ < 6)
             std::fprintf(stderr, "[svrent] cam key f32 %.1f %.1f %.1f (attr %u)%c", pos[0], pos[1], pos[2], attr, 10);
+        // HCTP_SVR_CAMLOG=1 (Nov 11, 7038 crowd-shot jerk hunt): every SvR camera key with the camera's tick + current pos
+        if (static const bool camLog = std::getenv("HCTP_SVR_CAMLOG") != nullptr; camLog)
+        {
+            static int n = 0;
+            uint32_t tick = 0;
+            std::memcpy(&tick, rdram + self + 0x1C0u, 4);
+            float cp[3];
+            std::memcpy(cp, rdram + self + 0xA0u, 12);
+            int16_t r16[3];
+            std::memcpy(r16, key + 7, 6);
+            if (n++ < 3000)
+                std::fprintf(stderr, "[svrcam] obj %08x tick %u cnt %u attr %u pos %.1f %.1f %.1f rot %d %d %d cur %.2f %.2f %.2f%c", self, tick,
+                             key[0], attr, pos[0], pos[1], pos[2], r16[0], r16[1], r16[2], cp[0], cp[1], cp[2], 10);
+        }
         SET_GPR_U32(ctx, 5, g_svrCamScratch);
         SET_GPR_U32(ctx, 7, attr + 13u);
         float cur[3];

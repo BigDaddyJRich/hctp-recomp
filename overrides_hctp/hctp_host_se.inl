@@ -198,6 +198,9 @@ namespace hostse
         }
         if (!hit)
         {
+            if (static const bool missLog = std::getenv("HCTP_HOST_SE_LOG") != nullptr; missLog && g_game)
+                std::fprintf(stderr, "[hostse] miss game %d se %x obj %08x ra %08x%c", g_game, id,
+                             static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])), static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31])), 10);
             g_origPlaySe(rdram, ctx, runtime);
             return;
         }
@@ -213,5 +216,10 @@ namespace hostse
         g_origPlaySe = runtime.lookupFunction(0x3ada80u);
         if (!g_origPlaySe || !runtime.replaceFunction(0x3ada80u, playSeFromAttribute))
             std::fprintf(stderr, "[hostse] PlaySE_FromAttribute hook FAILED%c", 10);
+        // Nov 11 self-test: entrance object SEs (CAttribute::SetAttr C0 op) go through GameSE 0x1b0680 = a single 'j 0x3ada80'
+        // that the recompiler emits as a DIRECT C++ call -> it skipped the hook above (7038: bank loaded, 0 plays, HCTP BK7
+        // samples keyed on). Same args (obj, id, a2), so hook the wrapper with the same handler.
+        if (!runtime.replaceFunction(0x1b0680u, playSeFromAttribute))
+            std::fprintf(stderr, "[hostse] GameSE hook FAILED%c", 10);
     }
 }
