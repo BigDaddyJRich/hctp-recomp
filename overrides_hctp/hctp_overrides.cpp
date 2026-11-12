@@ -1595,17 +1595,17 @@ namespace
     // (CRoyalRumbleFrame::ElectRumbleStar 0x300690). Stock list below; add new legend slot ids to kExtraLegends
     // (90s Rock, 90s Kane, Andre...). Modern Piper / Modern Hogan 0x20 stay out.
     constexpr uint16_t kStockLegends[] = {0x3A, 0x44, 0x45, 0x46, 0x48, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F, 0x50, 0x51, 0x52};
-    // Nov 11: every legend slot (record brand +0x163 = 5): Bret, Andre, Beefcake, Bulldog, JYD, Jake, Hollywood Hogan,
-    // Mr. America, Mankind, Rock (Legend) D1, Masked Kane D2.
-    constexpr uint16_t kExtraLegends[] = {0xA3, 0xAB, 0xAC, 0xAD, 0xBE, 0xBF, 0xC1, 0xC2, 0xAA, 0xD1, 0xD2};
+    // STEP C1 (Nov 12): slots answer from their own host bit (slot.txt legend=, else record brand +0x163 == 5; this
+    // reproduces the Nov 11 hard-coded list A3 AB AC AD BE BF C1 C2 AA D1 D2 exactly). -1 = not a slot.
+    int rosterxIsLegend(uint32_t id);
     void isLegendExtended(uint8_t *, R5900Context *ctx, PS2Runtime *)
     {
         const uint32_t id = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0xFFFFu;
         uint32_t legend = 0;
         for (uint16_t l : kStockLegends)
             legend |= l == id;
-        for (uint16_t l : kExtraLegends)
-            legend |= l != kNoId && l == id;
+        if (const int slot = rosterxIsLegend(id); slot >= 0)
+            legend = static_cast<uint32_t>(slot);
         SET_GPR_U32(ctx, 2, legend);
         ctx->pc = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
     }
@@ -7382,6 +7382,13 @@ namespace
         std::vector<std::string> pacs; // attire models (model1.pac, model2.pac ... or the first *.pac)
         std::vector<uint8_t> record;   // optional record.bin (0x170 stock layout)
         uint32_t rec = 0;              // guest record
+        // STEP C1 (Nov 12): legend bit (slot.txt legend=0/1, else record.bin brand +0x163 == 5) and own rows for the 5
+        // event-data tables (belt/corset/headgear/mike/sbelt; slot.txt belt=/corset=/headgear=/mike=/sbelt= floats, else
+        // the template's row, copied at each ReadEndProcess load). rowSet bit i = slot.txt override for table i.
+        int legend = -1;
+        uint8_t rowSet = 0;
+        float rows[5][5] = {};
+        uint32_t index = 0; // position in g_rosterx (row block slot)
     };
     std::vector<RosterxSlot> g_rosterx;
     constexpr uint16_t kRosterxFirstId = 0xA2;
@@ -7435,6 +7442,11 @@ namespace
     {
         const RosterxSlot *s = model >= kRosterxFirstId ? rosterxByModel(model) : nullptr;
         return s ? s->entrance : 0;
+    }
+    int rosterxIsLegend(uint32_t id)
+    {
+        const RosterxSlot *s = rosterxById(id);
+        return s ? (s->legend > 0 ? 1 : 0) : -1;
     }
     // Nov 11: pristine slot record (record.bin + slot.txt fixups) into r; used for the live record and for CAM
     // "reset to default" (CManDatReader), which must not see CAM edits.
@@ -10087,6 +10099,20 @@ namespace
     // MODS\ROSTER\<folder>\slot.txt: id=<hex, >= A2> template=<hex stock id> name=<select/record name>
     // ring=<ring name> entrance=<event no>; models model1.pac..model5.pac (else the first *.pac = attire 1);
     // record.bin optional (0x170, stock layout). Folders without id= get the next free id after the highest given one.
+    // STEP C1: the 5 CSd5EventSequence::ReadEndProcess 0x2a8ba0 tables (event-data entries 1..5, CData::CopyAlloc,
+    // freed by ActionEvent 0x2aa5dc..0x2aa674): base ptr, row stride, getter. Rows 0..0x55 then specials (+0x56*stride).
+    constexpr uint32_t kRxEvtPtr[5] = {0x52A0C0u, 0x52A0C8u, 0x52A0D0u, 0x52A0D8u, 0x52A0E0u};
+    constexpr uint32_t kRxEvtStride[5] = {20u, 20u, 20u, 12u, 20u};
+    constexpr uint32_t kRxEvtGetter[5] = {0x2ab710u, 0x2abb50u, 0x2abd70u, 0x2ac030u, 0x2ac230u};
+    constexpr uint32_t kRxEvtSlotBytes = 20u * 4u + 12u; // one slot's 5 rows in the guest row block
+    int rosterxRowKey(const std::string &line)
+    {
+        static const char *keys[5] = {"belt=", "corset=", "headgear=", "mike=", "sbelt="};
+        for (int t = 0; t < 5; ++t)
+            if (line.rfind(keys[t], 0) == 0)
+                return t;
+        return -1;
+    }
     int rosterxScan()
     {
         std::error_code ec;
@@ -10125,6 +10151,14 @@ namespace
                     svrEvent = v; // original SvR04 event, read from MODS\SVR04\evtEnt.pac
                 else if (std::sscanf(line.c_str(), "entrance=%u", &v) == 1)
                     s.entrance = static_cast<int16_t>(v);
+                else if (std::sscanf(line.c_str(), "legend=%u", &v) == 1)
+                    s.legend = v != 0u ? 1 : 0;
+                else if (const int t = rosterxRowKey(line); t >= 0)
+                {
+                    float *r = s.rows[t];
+                    if (std::sscanf(line.c_str() + line.find('=') + 1, "%f,%f,%f,%f,%f", r, r + 1, r + 2, r + 3, r + 4) >= 1)
+                        s.rowSet |= uint8_t(1u << t);
+                }
                 else if (line.rfind("name=", 0) == 0)
                     s.name = line.substr(5);
                 else if (line.rfind("ring=", 0) == 0)
@@ -10190,6 +10224,9 @@ namespace
                 continue;
             }
             it->modelNo = it->id;
+            if (it->legend < 0) // STEP C1: every hard-coded legend slot (kExtraLegends, Nov 11) has record brand 5
+                it->legend = (it->record.size() == 0x170u && it->record[0x163] == 5u) ? 1 : 0;
+            it->index = static_cast<uint32_t>(it - g_rosterx.begin());
             rosterxInstallModels(*it);
             std::fprintf(stderr, "[rosterx] slot %s id 0x%X template 0x%X model %u code %u (%u attires)%c", it->name.c_str(),
                          it->id, it->tmpl, it->modelNo, it->modelNo * 100u, it->attires, 10);
@@ -10333,13 +10370,12 @@ namespace
         PS2Runtime::RecompiledFunction orig;
     };
     RosterxSub g_rxSubs[] = {
-        // Nov 5: corset/mike/belt/IsDress take CAST CODES (andi 0xFFFF; -10000 test) - Modern Piper was oversized.
-        {0x2abb50u, 4, "GetCorsetScale", true, nullptr},       {0x2ac030u, 4, "GetMikePos", true, nullptr},
-        {0x2ac230u, 4, "GetSBeltPos", true, nullptr},          {0x2ab710u, 4, "GetBeltScale", true, nullptr},
-        {0x2abd70u, 4, "GetHeadGearScale", true, nullptr},     {0x2af300u, 5, "IsDress", true, nullptr},
+        // STEP C1 (Nov 12): corset/mike/sbelt/belt/headgear (own rows, rosterxEvtGetter) and WresParamChangeOK /
+        // IsBrapanRoster / IsFirstBloodRoster (slot record, rosterxRecGate) are native now. Left: true code switches /
+        // per-id image or unlock tables (notes\ROSTER_STEP_C_20261111.md section D).
+        {0x2af300u, 5, "IsDress", true, nullptr},
         {0x370420u, 4, "GetMovesPosture", false, nullptr},     {0x24ce00u, 5, "GetSuperStarFace64", false, nullptr},
-        {0x26ff20u, 5, "GetUsedCostume", false, nullptr},      {0x24ce70u, 4, "WresParamChangeOK", false, nullptr},
-        {0x12d2a0u, 4, "IsBrapanRoster", false, nullptr},      {0x12d300u, 4, "IsFirstBloodRoster", false, nullptr},
+        {0x26ff20u, 5, "GetUsedCostume", false, nullptr},
         // Nov 5: CSuperStarReader::RegistSuperStar(this, slot, a2 id): id >= 0x56 -> CAW silhouette 0x56-0x58 (the green
         // portrait). Template id -> template's face (own SPF faces = plan step 7).
         {0x24c220u, 6, "RegistSuperStar", false, nullptr},
@@ -10387,8 +10423,145 @@ namespace
                 }
         }
         else if (const RosterxSlot *s = rosterxById(v))
-            SET_GPR_U32(ctx, h.reg, (h.addr == 0x24c220u && s->portrait) ? s->portrait : s->tmpl);
+            // C1: the 64px face (GetSuperStarFace64) follows the same portrait= row as RegistSuperStar.
+            SET_GPR_U32(ctx, h.reg, ((h.addr == 0x24c220u || h.addr == 0x24ce00u) && s->portrait) ? s->portrait : s->tmpl);
         h.orig(rdram, ctx, runtime);
+    }
+    // ===== STEP C1 (Nov 12): per-id tables native for slot ids (notes\ROSTER_STEP_C_20261111.md section D) =====
+    // Event-data rows. Each getter (Get{Belt,Corset,HeadGear}Scale, GetMikePos, GetSBeltPos) returns a ROW POINTER:
+    // default path `slti id,0x56` -> base + id*stride (0x2abcb0 corset). A slot code (>= 10000) took the CAW path
+    // (func_3110C0 on a non-CAW CChar). Slot codes now get &slot row in g_rxEvtBlock (template row / slot.txt values,
+    // rebuilt after every ReadEndProcess load); the stock block, its CopyAlloc malloc and ActionEvent free are untouched.
+    uint32_t g_rxEvtBlock = 0;
+    bool g_rxEvtFilled = false;
+    PS2Runtime::RecompiledFunction g_rxOrigEvtGet[5] = {}, g_rxOrigReadEnd = nullptr;
+    void rosterxReadEndProcess(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t ra = rxArg(ctx, 31);
+        g_rxOrigReadEnd(rdram, ctx, runtime);
+        if (ctx->pc != ra || g_rosterx.empty())
+            return;
+        if (g_rxEvtBlock == 0u)
+            g_rxEvtBlock = runtime->guestMalloc(static_cast<uint32_t>(g_rosterx.size()) * kRxEvtSlotBytes);
+        if (g_rxEvtBlock == 0u)
+            return;
+        for (const auto &s : g_rosterx)
+        {
+            uint32_t dst = g_rxEvtBlock + s.index * kRxEvtSlotBytes;
+            for (int t = 0; t < 5; ++t)
+            {
+                const uint32_t stride = kRxEvtStride[t];
+                uint32_t base;
+                std::memcpy(&base, rdram + kRxEvtPtr[t], 4);
+                if (s.rowSet & (1u << t))
+                    std::memcpy(rdram + dst, s.rows[t], stride);
+                else if (base != 0u && base < PS2_RAM_SIZE - 0x56u * stride && s.tmpl < 0x56u)
+                    std::memcpy(rdram + dst, rdram + base + s.tmpl * stride, stride);
+                else
+                    std::memset(rdram + dst, 0, stride);
+                dst += stride;
+            }
+        }
+        if (!g_rxEvtFilled)
+            std::fprintf(stderr, "[rosterx] C1 event rows: %zu slots at %08x%c", g_rosterx.size(), g_rxEvtBlock, 10);
+        g_rxEvtFilled = true;
+    }
+    template <int T>
+    void rosterxEvtGetter(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t code = rxArg(ctx, 4) & 0xFFFFu; // getter entry: andi v0,a0,0xFFFF
+        uint32_t base;
+        std::memcpy(&base, rdram + kRxEvtPtr[T], 4);
+        if (g_rxEvtFilled && base != 0u && hctpIsSlotCode(code))
+            if (const RosterxSlot *s = rosterxById(code / 100u))
+            {
+                uint32_t off = s->index * kRxEvtSlotBytes;
+                for (int t = 0; t < T; ++t)
+                    off += kRxEvtStride[t];
+                SET_GPR_U32(ctx, 2, g_rxEvtBlock + off);
+                ctx->pc = rxArg(ctx, 31);
+                return;
+            }
+        g_rxOrigEvtGet[T](rdram, ctx, runtime);
+    }
+    // Record-gated ROSTER_ID predicates: stock path for id < 0x56 reads GetCharaGameProp(id, a1) (= the slot record for
+    // slots, rosterxGetCharaGameProp) -> same test on the slot record (MIPS verified Nov 12):
+    //  WresParamChangeOK 0x24ce70: s8 +0x15A == 1 -> 0, else s8 +0x163 != 3
+    //  IsBrapanRoster 0x12d2a0:    s8 +0x15A == 1 && id != 0x14
+    //  IsFirstBloodRoster 0x12d300: s8 +0x15A != 1
+    PS2Runtime::RecompiledFunction g_rxOrigRecGate[3] = {};
+    template <int K>
+    void rosterxRecGate(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (RosterxSlot *s = rosterxById(rxArg(ctx, 4)))
+            if (const uint32_t rec = rosterxRecord(rdram, runtime, *s))
+            {
+                const int8_t type = static_cast<int8_t>(rdram[rec + 0x15Au]), brand = static_cast<int8_t>(rdram[rec + 0x163u]);
+                const uint32_t v = K == 0 ? (type != 1 && brand != 3) : K == 1 ? (type == 1) : (type != 1);
+                SET_GPR_U32(ctx, 2, v);
+                ctx->pc = rxArg(ctx, 31);
+                return;
+            }
+        g_rxOrigRecGate[K](rdram, ctx, runtime);
+    }
+    // IsEditUseTaunt 0x16bca0 / SetDefAnimation 0x16be70 (a0 FILE_MODE < 7): scan the 0xA2 records at 0x4C0F54 + the
+    // 32 CAW blocks with CaSearchProp 0x16bdd0 (move = sp+0x3C/0x5C, slot = sp+0x38/0x58 of their frames). Slot
+    // records live in the guest heap -> the same scan over every BUILT slot record after the stock function returns.
+    // CaSearchProp(rec, move, slot): s16 rec+0x10+slot*2 == move, or (slot == 1) any of slots 2..5.
+    bool rosterxCaSearch(const uint8_t *rdram, uint32_t rec, int32_t move, int32_t slot)
+    {
+        auto at = [&](int32_t i) { int16_t m; std::memcpy(&m, rdram + rec + 0x10u + uint32_t(i) * 2u, 2); return int32_t(m); };
+        if (slot < 0 || slot > 0x80)
+            return false;
+        if (at(slot) == move)
+            return true;
+        if (slot == 1)
+            for (int32_t k = 1; k < 5; ++k)
+                if (at(slot + k) == move)
+                    return true;
+        return false;
+    }
+    PS2Runtime::RecompiledFunction g_rxOrigEditTaunt = nullptr, g_rxOrigDefAnim = nullptr;
+    void rosterxEditUseTaunt(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t ra = rxArg(ctx, 31), mode = rxArg(ctx, 4), frame = rxArg(ctx, 29) - 0x40u;
+        g_rxOrigEditTaunt(rdram, ctx, runtime);
+        if (ctx->pc != ra || mode >= 7u || rxArg(ctx, 2) != 0u)
+            return;
+        int32_t move, slot;
+        std::memcpy(&move, rdram + frame + 0x3Cu, 4);
+        std::memcpy(&slot, rdram + frame + 0x38u, 4);
+        for (const auto &s : g_rosterx)
+            if (s.rec != 0u && rosterxCaSearch(rdram, s.rec, move, slot))
+            {
+                SET_GPR_U32(ctx, 2, 1u);
+                return;
+            }
+    }
+    void rosterxSetDefAnimation(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t ra = rxArg(ctx, 31), mode = rxArg(ctx, 4), frame = rxArg(ctx, 29) - 0x60u;
+        g_rxOrigDefAnim(rdram, ctx, runtime);
+        if (ctx->pc != ra || mode >= 7u)
+            return;
+        int32_t move, slot;
+        std::memcpy(&move, rdram + frame + 0x5Cu, 4);
+        std::memcpy(&slot, rdram + frame + 0x58u, 4);
+        int16_t def; // GetDefCreateAnimationNo 0x16be40: s16 table 0x410600[mode]
+        std::memcpy(&def, rdram + 0x410600u + mode * 2u, 2);
+        for (const auto &s : g_rosterx)
+        {
+            if (s.rec == 0u || !rosterxCaSearch(rdram, s.rec, move, slot))
+                continue;
+            if (slot == 1) // 0x16bf38: slot 1 resets only matching slots 2..5
+            {
+                for (int32_t k = 1; k < 5; ++k)
+                    if (int16_t m; std::memcpy(&m, rdram + s.rec + 0x10u + uint32_t(slot + k) * 2u, 2), m == move)
+                        std::memcpy(rdram + s.rec + 0x10u + uint32_t(slot + k) * 2u, &def, 2);
+            }
+            else
+                std::memcpy(rdram + s.rec + 0x10u + uint32_t(slot) * 2u, &def, 2);
+        }
     }
     template <size_t... I>
     void rosterxInstallSubs(PS2Runtime &runtime, std::index_sequence<I...>)
@@ -10830,6 +11003,18 @@ namespace
         ok = hook(0x12d050u, g_rxOrigSeason, rosterxSeason) && ok;
         ok = hook(0x12cce0u, g_rxOrigMatchNo, rosterxMatchNo) && ok;
         rosterxInstallSubs(runtime, std::make_index_sequence<std::size(g_rxSubs)>{});
+        // STEP C1 (Nov 12): native per-id tables for slot ids
+        ok = hook(0x2a8ba0u, g_rxOrigReadEnd, rosterxReadEndProcess) && ok;
+        ok = hook(kRxEvtGetter[0], g_rxOrigEvtGet[0], rosterxEvtGetter<0>) && ok;
+        ok = hook(kRxEvtGetter[1], g_rxOrigEvtGet[1], rosterxEvtGetter<1>) && ok;
+        ok = hook(kRxEvtGetter[2], g_rxOrigEvtGet[2], rosterxEvtGetter<2>) && ok;
+        ok = hook(kRxEvtGetter[3], g_rxOrigEvtGet[3], rosterxEvtGetter<3>) && ok;
+        ok = hook(kRxEvtGetter[4], g_rxOrigEvtGet[4], rosterxEvtGetter<4>) && ok;
+        ok = hook(0x24ce70u, g_rxOrigRecGate[0], rosterxRecGate<0>) && ok;
+        ok = hook(0x12d2a0u, g_rxOrigRecGate[1], rosterxRecGate<1>) && ok;
+        ok = hook(0x12d300u, g_rxOrigRecGate[2], rosterxRecGate<2>) && ok;
+        ok = hook(0x16bca0u, g_rxOrigEditTaunt, rosterxEditUseTaunt) && ok;
+        ok = hook(0x16be70u, g_rxOrigDefAnim, rosterxSetDefAnimation) && ok;
         ok = hook(0x1cd1d0u, g_rxOrigPropCtor, rosterxPropCtor) && ok;
         ok = hook(0x2313a0u, g_rxOrigCreateACom, rosterxCreateACom) && ok;
         ok = hook(0x39b480u, g_rxOrigWinnerProp, rosterxWinnerProp) && ok;
