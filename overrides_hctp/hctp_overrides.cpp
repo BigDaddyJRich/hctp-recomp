@@ -9681,6 +9681,20 @@ namespace
         // SvR06 (Nov 9): 29 B [count][f32 pos x3][f32 rot x3, radians][f32 fov] (Mod Maker conv_cam_pose inverse:
         // rot = s16 * 2pi/65536); fov dropped (HCTP camera fov kept).
         const bool k29 = static_cast<uint32_t>(len) == attr + 29u;
+        // Nov 11 7038 CROWD-SHOT JERK: SvR camera tracks carry ATTRIBUTE-ONLY records (crowd cheer SE cues, op C0, on the
+        // scene 1-2 crowd shots; len == attr, no key). Stock AnalyzeAttribute 0x164b90 parses a key whenever len > 0
+        // (blez a3 at 0x165140), so it read the NEXT record's f32 bytes as s16 target (+0xA0 = CLerpXYX+0x20) and the
+        // CLerpXYX position lerp (LerpXYX 0x1640c0: +0x80 = +0x90 + (+0xA0 - +0x90) * t) swung the camera 360-490 units
+        // away until the next real key snapped it back. Retail HCTP data never has key-less records. -> attributes only.
+        if (static_cast<uint32_t>(len) < attr + 13u)
+        {
+            static int n = 0;
+            if (n++ < 40)
+                std::fprintf(stderr, "[svrcam] attr-only record obj %08x len %d attr %u op %02x -> no key%c", self, len, attr,
+                             attr > 1u ? rdram[rec + 1u] : 0u, 10);
+            SET_GPR_U32(ctx, 7, 0u);
+            return g_origCamAnalyze(rdram, ctx, runtime);
+        }
         if (static_cast<uint32_t>(len) != attr + 19u && !k29)
             return g_origCamAnalyze(rdram, ctx, runtime);
         if (g_svrCamScratch == 0u)
