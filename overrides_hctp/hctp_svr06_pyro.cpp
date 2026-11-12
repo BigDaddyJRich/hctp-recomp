@@ -29,6 +29,7 @@ bool hctpGetCharProj(float out[4][4]); // hctp_native_vu1.cpp (Nov 11 pyro depth
 namespace
 {
 using Bytes = std::vector<uint8_t>;
+struct AttrCue { int scene, frame, file, part; bool fired; }; // PART12 SvR04 op 0x6B particle cue
 
 bool pyroLog()
 {
@@ -158,6 +159,87 @@ bool dpacFind(const char *path, const char *id, Bytes &out)
         off += 8 + 8 * cnt;
     }
     return false;
+}
+
+// PART12: SvR04 evtEnt.pac EVET = id-form group (u16 hex-digit id 0x3047 = event 3047, u16 size/0x100; sectors run on from
+// 8 + start, each entry rounded up to 0x800) -> the raw event bank (op size table at +0, n at +0x100, 16 B dir, data).
+bool svr04Evet(const char *id, Bytes &out)
+{
+    std::ifstream f("MODS/SVR04/evtEnt.pac", std::ios::binary);
+    Bytes h;
+    if (!f || !readAt(f, 0, 0x4000, h) || std::memcmp(h.data(), "DPAC", 4) != 0) return false;
+    const unsigned long want = std::strtoul(id, nullptr, 16);
+    for (size_t off = 0x800; off + 8 <= 0x4000 && std::memcmp(&h[off], "\0\0\0\0", 4) != 0;)
+    {
+        uint16_t n = rd16(&h[off + 4]);
+        const uint16_t start = rd16(&h[off + 6]);
+        if (n & 0x8000u)
+        {
+            n &= 0x7FFFu;
+            uint32_t sec = 8u + start;
+            const bool evet = std::memcmp(&h[off], "EVET", 4) == 0;
+            for (uint32_t i = 0; i < n && off + 12 + 4 * i <= 0x4000; ++i)
+            {
+                const uint16_t eid = rd16(&h[off + 8 + 4 * i]), sz = rd16(&h[off + 10 + 4 * i]);
+                if (evet && eid == want) return readAt(f, static_cast<size_t>(sec) * 0x800u, sz * 0x100u, out);
+                sec += (sz * 0x100u + 0x7FFu) >> 11;
+            }
+            off += 8 + 4u * n;
+            continue;
+        }
+        uint32_t cnt = 0;
+        while (cnt < n && off + 16 + 8 * cnt <= 0x4000 && std::memcmp(&h[off + 8 + 8 * cnt], "\0\0\0\0", 4) != 0) ++cnt;
+        off += 8 + 8 * cnt;
+    }
+    return false;
+}
+// op 0x6B records on type-0 (entrant) tracks: key = type << 16 | scene << 8 | obj; frames: byte < 0x60 = skip, 0x60 + u8 size /
+// 0x61..0x7F = size - 0x60; a record whose first byte has bit 7 = attribute block of (b & 0x7F) bytes (ops sized by bank[op]).
+void scanAttrCues(const Bytes &bk, std::vector<AttrCue> &out)
+{
+    if (bk.size() < 0x104) return;
+    const uint32_t n = rd32(&bk[0x100]);
+    const size_t data0 = 0x104u + 16u * n;
+    if (data0 > bk.size()) return;
+    std::vector<uint32_t> offs;
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        const uint32_t o = rd32(&bk[0x104u + 16u * i + 4]);
+        if (o != 0xFFFFFu && data0 + o < bk.size()) offs.push_back(o);
+    }
+    std::sort(offs.begin(), offs.end());
+    for (uint32_t i = 0; i < n; ++i)
+    {
+        const uint32_t key = rd32(&bk[0x104u + 16u * i]), o = rd32(&bk[0x104u + 16u * i + 4]);
+        if ((key >> 16) != 0u || (key & 0xFFu) != 0u || o == 0xFFFFFu || data0 + o >= bk.size()) continue; // entrant 0 only
+        auto it = std::upper_bound(offs.begin(), offs.end(), o);
+        const size_t pe = data0 + (it == offs.end() ? bk.size() - data0 : *it);
+        size_t p = data0 + o;
+        int fr = 0;
+        while (p < pe)
+        {
+            const uint8_t c = bk[p];
+            if (c < 0x60u) { fr += c; ++p; continue; }
+            if (c == 0x60u && p + 1 >= pe) break;
+            const size_t sz = c == 0x60u ? bk[p + 1] : size_t(c - 0x60u);
+            p += c == 0x60u ? 2u : 1u;
+            if (p + sz > pe) break;
+            if (sz && (bk[p] & 0x80u))
+            {
+                const size_t b1 = std::min(p + 1 + (bk[p] & 0x7Fu), p + sz);
+                for (size_t q = p + 1; q < b1;)
+                {
+                    const uint8_t op = bk[q], len = bk[op];
+                    if (len == 0u || q + len > b1) break;
+                    if (op == 0x6Bu && len >= 4u && bk[q + 3] < 0x15u)
+                        out.push_back({static_cast<int>((key >> 8) & 0xFFu), fr, bk[q + 1] | (bk[q + 2] << 8), bk[q + 3], false});
+                    q += len;
+                }
+            }
+            p += sz;
+            ++fr;
+        }
+    }
 }
 
 bool loadPcen(const char *id, Bytes &out)
@@ -310,6 +392,7 @@ struct Emitter
     uint8_t drawType = 0, blend = 0;
     uint16_t maxP = 0;
     uint32_t stBorn = 0, stLinkKill = 0, stNoTex = 0, stDraw = 0, stCull = 0; // HCTP_PYRO_EMSTATS (Nov 11 smoke hunt)
+    uint32_t stZ = 0, stOff = 0, stBehind = 0; // Nov 11 PART12: cull reasons (z guard / off screen / w <= 0) per drawn copy
     uint16_t copies = 1; // rec+0x5A -> packet 0x3F1.y (VU inner loop count: copies along the blur vector)
     float blurK = 0;     // rec+0x5C -> packet 0x3F1.z (VU vf22.z: blur step scale)
     std::vector<Action> acts;
@@ -317,6 +400,7 @@ struct Emitter
     float lpos[3]{}, lrot[3]{};
     M3 lrotM = ident(); // ParticleBase+0x60 (AddRot accumulates M60 = M60 * RZ*RY*RX)
     std::vector<int> texIds; // TexGroup index -> host texture id
+    const Action *birthRange = nullptr; // set at the top of every stepInstance (points into acts; never kept across copies)
 };
 struct File { std::vector<Emitter> em; };
 struct Instance
@@ -330,7 +414,13 @@ struct Instance
     // DeathParticle (ParticleBase+0x108: no more emitter births, live particles finish), else VanishParticle (+0x104 too).
     int endScene = -1, endFrame = 0, endMode = 0, src = 6; // src = g_src at arm (caller resets g_src to 6 after arming SvR04)
     bool started = false, dead = false, vanished = false;
+    // Nov 11 PART12 ATTR PARTICLES: SvR04 CAttribute::SetAttr op 0x6B [no lo, no hi, part] -> StartParticleFromAtr: part < 0x15
+    // = SetParticleMatrixFromCChar (world matrix = the entrant's bone GetBoneNo(part), re-set while it plays). -1 = GMEV tag.
+    int bonePart = -1;
 };
+std::vector<AttrCue> g_attrCues;
+std::map<uint16_t, File> g_attrFiles;
+std::atomic<uint32_t> g_motionModel{0}; // last CMotionModel seen by GetBoneNo 0x1b4fe0 (hctp_overrides.cpp hook)
 
 struct TexInfo { uint16_t id; uint32_t w, h; };
 // Nov 11 PART9: textures are PER FILE (retail CParticleGroup::SetTexture per group, SvR04 proto 0x1f5430): the same name is a
@@ -462,8 +552,44 @@ void stepInstance(Instance &in)
 {
     // ParticleBase::Action 0x271d70 -> BlurUpDate 0x272750 first: data+0xB0 = data+0x80 for every particle
     for (Emitter &em : in.f.em)
+    {
         for (Particle &pt : em.ps)
             if (pt.live) std::memcpy(pt.prev, pt.pos, sizeof(pt.prev));
+        em.birthRange = nullptr;
+        static const bool brOff = std::getenv("HCTP_PYRO_BIRTHRANGE") && std::getenv("HCTP_PYRO_BIRTHRANGE")[0] == '0';
+        if (!brOff)
+            for (const Action &a : em.acts)
+                if (a.id == BirthRange && a.start <= static_cast<uint32_t>(in.frame) && static_cast<uint32_t>(in.frame) < a.end)
+                    em.birthRange = &a;
+    }
+    // ATTR particles follow their bone (SvR04 ParticleAttributeData::ActionLink re-runs StartParticleFromAtr -> matrix)
+    if (in.bonePart >= 0 && g_rt)
+    {
+        uint8_t *rd = g_rt->memory().getRDRAM();
+        auto u32 = [&](uint32_t a) -> uint32_t { uint32_t v = 0; a &= 0x1FFFFFFu; if (a >= 0x100000u && a + 4 <= 0x2000000u) std::memcpy(&v, rd + a, 4); return v & 0x1FFFFFFu; };
+        const uint32_t mm = g_motionModel.load(std::memory_order_relaxed) & 0x1FFFFFFu;
+        const uint32_t skin = mm ? u32(mm + 0x20u) : 0u, mats = skin ? u32(skin + 0xD0u) : 0u;
+        int16_t bone = -1;
+        if (mm) std::memcpy(&bone, rd + mm + 0x24u + 2u * static_cast<uint32_t>(in.bonePart), 2);
+        if (mats && bone >= 0 && bone < 400)
+        {
+            float M[16];
+            std::memcpy(M, rd + mats + 64u * static_cast<uint32_t>(bone), sizeof(M));
+            if (std::isfinite(M[12]) && std::isfinite(M[0]))
+            {
+                for (int r = 0; r < 3; ++r)
+                    for (int c = 0; c < 3; ++c) in.wrot.m[r][c] = M[r * 4 + c];
+                for (int k = 0; k < 3; ++k) in.wpos[k] = M[12 + k];
+                static int s_boneLog = 6;
+                if (pyroLog() && s_boneLog > 0 && in.frame % 4 == 0)
+                {
+                    --s_boneLog;
+                    std::fprintf(stderr, "[pyroattr] frame %d part %d bone %d pos %.1f %.1f %.1f x %.2f %.2f %.2f z %.2f %.2f %.2f%c", in.frame,
+                                 in.bonePart, bone, M[12], M[13], M[14], M[0], M[1], M[2], M[8], M[9], M[10], 10);
+                }
+            }
+        }
+    }
     for (int pass = 0; pass < 3; ++pass)
         for (Emitter &em : in.f.em)
             for (const Action &a : em.acts)
@@ -507,6 +633,41 @@ void stepInstance(Instance &in)
                         float lp[3];
                         vmul(em.lpos, in.wrot, lp);
                         for (int k = 0; k < 3; ++k) pt.pos[k] = in.wpos[k] + lp[k];
+                        // Nov 11 PART12 BIRTH RANGE (was ignored -> every particle born on one point: thin fountains, smoke
+                        // balls). SvR04 PrtActBirthRange::Action 0x1face0 -> ParticleBase::SetBirthType 0x1feca0 {+0xA4 f p0
+                        // radius, +0xA8 int(p1) type, +0xAC f p2 inner, +0xB0 p3 != 0}; SetBirthPos 0x1fa860 (after SetBirthVec):
+                        // r = (p0 - p2) * RandomFloat[0,1] + p2; type 0 = normalize(rand2 x3) * r (no rotation); 1/2/3 = (r,0,0)
+                        // RotY / RotZ / (0,r,0) RotX by rand2 * pi; 4/5/6 = +-r on x / y / z; types 1-6 * M60 (emitter rotation)
+                        // unless p3; then + emitter pos + world translation. Last active BirthRange wins (it re-sets every frame).
+                        if (const Action *br = em.birthRange)
+                        {
+                            const float *q = br->p;
+                            const int ty = static_cast<int>(q[1]);
+                            float r = (q[0] - q[2]) * (static_cast<float>(std::rand() & 0xFFFF) / 65535.0f) + q[2];
+                            float o[3] = {0, 0, 0};
+                            if (ty == 0)
+                            {
+                                float d[3] = {rand2(), rand2(), rand2()};
+                                const float l = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+                                if (l > 0) for (int k = 0; k < 3; ++k) o[k] = d[k] / l * r;
+                            }
+                            else if (ty >= 1 && ty <= 6)
+                            {
+                                if (ty <= 3)
+                                {
+                                    const float a = rand2() * 3.14159265f;
+                                    float v[3] = {ty == 3 ? 0.0f : r, ty == 3 ? r : 0.0f, 0.0f};
+                                    vmul(v, ty == 1 ? rotY(a) : (ty == 2 ? rotZ(a) : rotX(a)), o);
+                                }
+                                else
+                                {
+                                    if ((std::rand() & 0xFFFF) < 0x8000) r = -r;
+                                    o[ty - 4] = r;
+                                }
+                                if (q[3] == 0.0f) { float t[3]; vmul(o, em.lrotM, t); std::memcpy(o, t, sizeof(o)); }
+                            }
+                            for (int k = 0; k < 3; ++k) pt.pos[k] += o[k];
+                        }
                         std::memcpy(pt.prev, pt.pos, sizeof(pt.prev)); // SetBirthPos 0x275914: +0xB0 = birth pos
                         if (em.drawType == 2) pt.base = mul(em.lrotM, in.wrot); // SetBirthVec 0x275534..0x2755fc: M00 = M60 * W
                     }
@@ -766,6 +927,26 @@ void prePresent()
                 for (int a = 0; a < adv; ++a)
                     if (in.started && !in.vanished && in.frame < 2000) stepInstance(in);
             }
+            // PART12 ATTR PARTICLES (SvR04 op 0x6B on the entrant's own motion track, e.g. Goldberg's breath = PCEN file 16
+            // on part 4 'atama' at scene 4 frame 78): start when the event clock reaches the key's scene/frame.
+            for (AttrCue &cu : g_attrCues)
+            {
+                if (cu.fired || !(static_cast<int>(sc) > cu.scene || (static_cast<int>(sc) == cu.scene && static_cast<int>(fr) >= cu.frame)))
+                    continue;
+                cu.fired = true;
+                auto fi = g_attrFiles.find(static_cast<uint16_t>(cu.file));
+                if (fi == g_attrFiles.end()) continue;
+                // only fire inside the cue's own scene (a late arm must not replay every passed breath at once)
+                if (static_cast<int>(sc) != cu.scene) continue;
+                Instance in;
+                in.f = fi->second;
+                in.bonePart = cu.part;
+                in.started = true;
+                in.src = 4;
+                g_inst.push_back(std::move(in));
+                std::fprintf(stderr, "[pyroattr] start file %d on part %d at scene %u frame %u (mm %08x)%c", cu.file, cu.part, sc, fr,
+                             g_motionModel.load(), 10);
+            }
             g_tick += adv;
         }
     }
@@ -930,9 +1111,10 @@ void prePresent()
                             if (!project(cam, w3, v)) { behind = true; continue; }
                             X[c] = v[0], Y[c] = v[1], Z[c] = v[2];
                         }
-                        if (zbad) break;                               // IBNE vi1 -> 0x2a18: next particle
+                        if (zbad) { ++em.stZ; break; }                 // IBNE vi1 -> 0x2a18: next particle
                         for (auto &c : L) for (int k = 0; k < 3; ++k) c[k] -= bl[k]; // SUB vf6..9, vf1
-                        if (behind || offScreen(X, Y)) continue;      // FCAND 0x042108 -> 0x29f0: next copy
+                        if (behind) { ++em.stBehind; continue; }
+                        if (offScreen(X, Y)) { ++em.stOff; continue; } // FCAND 0x042108 -> 0x29f0: next copy
                         pushQuad(X, Y, Z, us, vs, fan);
                     }
                     continue;
@@ -950,8 +1132,9 @@ void prePresent()
                     float q0[3], q3[3], v0[4], v3[4];
                     for (int k = 0; k < 3; ++k) { q0[k] = p[k] + cnr0[k] * sc; q3[k] = p[k] + cnr3[k] * sc; }
                     // corner 0 failing CLIPw +z vs 0xFFFFFF (homogeneous z) branches to the next particle; w <= 0 = host guard
-                    if (zFail(q0) || !project(cam, q0, v0)) break;
-                    if (!project(cam, q3, v3)) continue;
+                    if (zFail(q0)) { ++em.stZ; break; }
+                    if (!project(cam, q0, v0)) { ++em.stBehind; break; }
+                    if (!project(cam, q3, v3)) { ++em.stBehind; continue; }
                     float X[4], Y[4], Z[4];
                     if (!rot)
                     {
@@ -978,7 +1161,7 @@ void prePresent()
                         Z[3] = v3[2];
                     }
                     // off-screen cull: SvR06 bbox - (2048,2048) vs HCTP screen half size (fully outside -> skip this copy)
-                    if (offScreen(X, Y)) continue;
+                    if (offScreen(X, Y)) { ++em.stOff; continue; }
                     static const float us[4] = {0, 1, 0, 1}, vs[4] = {0, 0, 1, 1};
                     static const int idx[2][3] = {{0, 1, 2}, {1, 3, 2}};
                     pushQuad(X, Y, Z, us, vs, idx);
@@ -1013,8 +1196,9 @@ void prePresent()
                 if (!em.stBorn) continue;
                 size_t lv = 0;
                 for (const Particle &pt : em.ps) lv += pt.live ? 1u : 0u;
-                std::fprintf(stderr, "[pyroem] tick %d inst %zu em %zu draw %u blend %u live %zu born %u linkkill %u notex %u quads %u%c",
-                             g_tick, ii, ei, em.drawType, em.blend, lv, em.stBorn, em.stLinkKill, em.stNoTex, em.stDraw, 10);
+                std::fprintf(stderr, "[pyroem] tick %d inst %zu em %zu draw %u blend %u live %zu born %u linkkill %u notex %u quads %u cullz %u off %u behind %u bone %d%c",
+                             g_tick, ii, ei, em.drawType, em.blend, lv, em.stBorn, em.stLinkKill, em.stNoTex, em.stDraw, em.stZ, em.stOff,
+                             em.stBehind, in.bonePart, 10);
             }
         }
     }
@@ -1101,6 +1285,19 @@ void hctpPyroArm(PS2Runtime *runtime, const char *id, uint32_t common)
             File f;
             if (sub.count(0) && parsePrtc(sub[0], f, fileTex[kv.first])) files[kv.first] = std::move(f);
         }
+    g_attrCues.clear();
+    g_attrFiles.clear();
+    if (g_src == 4 && !(std::getenv("HCTP_PYRO_ATTR") && std::getenv("HCTP_PYRO_ATTR")[0] == '0'))
+    {
+        Bytes bank;
+        if (svr04Evet(id, bank)) scanAttrCues(bank, g_attrCues);
+        for (const AttrCue &cu : g_attrCues)
+        {
+            if (files.count(static_cast<uint16_t>(cu.file))) g_attrFiles[static_cast<uint16_t>(cu.file)] = files[static_cast<uint16_t>(cu.file)];
+            std::fprintf(stderr, "[pyroattr] %s cue scene %d frame %d file %d part %d%s%c", id, cu.scene, cu.frame, cu.file, cu.part,
+                         files.count(static_cast<uint16_t>(cu.file)) ? "" : " (no such PCEN file)", 10);
+        }
+    }
     auto G = parsePac(gm);
     if (!G.count(0) || !G.count(2) || !G.count(3)) { std::fprintf(stderr, "[pyro] GMEV/%s incomplete\n", id); return; }
     auto T = parsePac(G[3]);
@@ -1190,7 +1387,11 @@ void hctpPyroDisarm()
     g_armedA.store(false);
     g_evPacked.store(0xFFFFFFFFu);
     g_inst.clear();
+    g_attrCues.clear();
 }
+
+// PART12: hctp_overrides.cpp GetBoneNo 0x1b4fe0 override hands every CMotionModel it sees (CCharIK / CMotionHokan per frame)
+void hctpPyroNoteMotionModel(uint32_t mm) { g_motionModel.store(mm, std::memory_order_relaxed); }
 
 // Build 10: called every CEventSystem::Action of a playing SvR06 reader event (scene u16 +0x18, frame u16 +0x1A,
 // frame max +0x1E). Returns true ONCE when the first pyro window is reached (caller plays the pyro SE).

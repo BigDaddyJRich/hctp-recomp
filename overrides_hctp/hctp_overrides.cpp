@@ -13,6 +13,7 @@ bool hctpPyroEventTick(uint32_t scene, uint32_t frame, uint32_t frameMax); // hc
 void hctpPyroDisarm();
 bool hctpPyroHas(const char *id); // hctp_svr06_pyro.cpp: PCEN + GMEV pack exists for this SvR06 event id
 void hctpPyroSetSource(int game); // hctp_svr06_pyro.cpp: 4 = MODS/SVR04 prtcls/gm (Nov 11), 6 = MODS/SVR06
+void hctpPyroNoteMotionModel(uint32_t mm); // hctp_svr06_pyro.cpp: PART12 attribute particles follow this model's bones
 void hctpMatrixInstall(PS2Runtime &runtime); // hctp_matrix.cpp: SYM L1 matrix / L2 replay (HCTP_MATRIX=1)
 bool g_pyro04Active = false; // Nov 11: SvR04 entrance pyro armed (ticked by evsActionSvr)
 static int g_svr06CamEvent = 0; // Nov 9: HCTP event no of the SvR06 4044 reader event (CAM row 3944), 0 = none
@@ -10048,10 +10049,25 @@ namespace
         SET_GPR_U32(ctx, 2, static_cast<uint32_t>(r));
         ctx->pc = regU(ctx, 31);
     }
+    // Nov 11 PART12 (SvR04 attribute particles, Goldberg breath): CMotionModel::GetBoneNo 0x1b4fe0 = leaf
+    // `return (s16)this[0x24 + 2*part]` (3 instructions, hctp_dis). Native copy that also hands the CMotionModel to the host
+    // pyro (bone world matrices = *(*(mm+0x20)+0xD0) + bone*64, the same read CCharIK::ActionLink 0x1b8af0 does after the call).
+    void getBoneNoNote(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
+    {
+        const uint32_t mm = regU(ctx, 4) & 0x1FFFFFFu, part = regU(ctx, 5);
+        int16_t bone = 0;
+        std::memcpy(&bone, rdram + ((mm + 0x24u + 2u * part) & 0x1FFFFFFu), 2);
+        SET_GPR_S32(ctx, 2, static_cast<int32_t>(bone));
+        if (g_pyro04Active)
+            hctpPyroNoteMotionModel(mm);
+        ctx->pc = regU(ctx, 31);
+    }
     void svrEntranceInstall(PS2Runtime &runtime)
     {
         if (g_svrEvents.empty())
             return;
+        if (!(std::getenv("HCTP_PYRO_ATTR") && std::getenv("HCTP_PYRO_ATTR")[0] == '0'))
+            runtime.replaceFunction(0x1b4fe0u, getBoneNoNote);
         if (!(std::getenv("HCTP_FINDBONE_FALLBACK") && std::getenv("HCTP_FINDBONE_FALLBACK")[0] == '0'))
             runtime.replaceFunction(0x150b10u, findBoneFallback);
         // Nov 9: probe on by default while SvR events exist (log-only, 200 lines max) for Bret's glasses; =0 off.
