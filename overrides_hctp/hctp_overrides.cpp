@@ -232,39 +232,29 @@ namespace
     }
     // Roster-wide gloss reduction: CSkinModel::DrawChar 0x155dc0 multiplies every material colour constant by the
     // vector at 0x40F330. Its .w (0x40F33C, normally 128.0) scales the excessive reflection/gloss strength. Use 32.0
-    // around every wrestler draw, then restore the game constant. HCTP_FULL_GLOSS=1 keeps the original appearance.
+    // around every wrestler draw, then restore the game constant. Nov 11 cleanup: OPT-IN HCTP_REDUCED_GLOSS=1 (gloss = SYM
+    // data fix at import); the 0x1bb200 hook itself stays on because the SvR blood layer needs g_drawCharBleed.
     bool g_entranceSnapFresh = false; // [COMMFIX Nov 6] moved up: used before its old declaration
     PS2Runtime::RecompiledFunction g_origCharDraw = nullptr;
     int g_drawCharBleed = 0; // Nov 7 SvR blood layer: CChar+0x390 blood level of the CChar being drawn (0 = none / menu)
+    bool g_reducedGloss = false; // HCTP_REDUCED_GLOSS=1
     void charDrawReducedGloss(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         float saved, dull = 32.0f;
         std::memcpy(&saved, rdram + 0x40F33Cu, 4);
-        std::memcpy(rdram + 0x40F33Cu, &dull, 4);
+        if (g_reducedGloss)
+            std::memcpy(rdram + 0x40F33Cu, &dull, 4);
         const uint32_t ch = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_MASK;
         int lvl = 0; // Nov 7: bleeding = byte CChar+0x383 (UpdateBloodTex 0x1dc5e4 sets it when blood is applied);
                      // +0x390 level is already non-zero on the matchup screen (Jordan's shot: Bret blood shown)
         if (ch != 0u && ch <= PS2_RAM_SIZE - 0x394u)
             lvl = rdram[ch + 0x383u];
-        // Nov 11 TEMP probe (slot wrestlers invisible in CAM entrance, shadow only): draw-gating fields once per char/code.
-        if (ch != 0u && ch <= PS2_RAM_SIZE - 0x4F0u)
-        {
-            static std::set<uint64_t> seen;
-            uint32_t code, mdl, a16c, s390, s4e8;
-            std::memcpy(&code, rdram + ch + 0x30u, 4);
-            std::memcpy(&mdl, rdram + ch + 0x34u, 4);
-            std::memcpy(&a16c, rdram + ch + 0x16Cu, 4);
-            std::memcpy(&s390, rdram + ch + 0x390u, 4);
-            std::memcpy(&s4e8, rdram + ch + 0x4E8u, 4);
-            if (seen.size() < 64u && seen.insert((uint64_t(ch) << 32) | code).second)
-                std::fprintf(stderr, "[chardraw] ch 0x%X code %u model 0x%X flags188 0x%02X a16c 0x%X slot390 %d s4e8 %d b44 %u%c",
-                             ch, code, mdl, rdram[ch + 0x188u], a16c, int(s390), int(s4e8), rdram[ch + 0x44u], 10);
-        }
         const int prevBleed = g_drawCharBleed;
         g_drawCharBleed = lvl > 0 ? lvl : 0;
         g_origCharDraw(rdram, ctx, runtime);
         g_drawCharBleed = prevBleed;
-        std::memcpy(rdram + 0x40F33Cu, &saved, 4);
+        if (g_reducedGloss)
+            std::memcpy(rdram + 0x40F33Cu, &saved, 4);
     }
     // Nov 7 SvR BLOOD LAYER (notes\ANY_BONE_ANIMATION_RESEARCH_20261106.md s16/s18): SvR04 models carry an overlay
     // texture named "blood"; SvR04 CChar ctor 0x1acda0 stores its index (CChar+0x544) and draw 0x1ae520 skips meshes
@@ -831,7 +821,7 @@ namespace
     // ymemReallocatePage(2, 0x419d60). SvR Molly (3754 verts) needs ~535 KB without textures -> give her ring attires
     // (41x0) the part-1/2 size 0x290 when the loose SvR model (> 512 KB) is installed in MODS/PAC/EMD2.
     PS2Runtime::RecompiledFunction g_origReallocatePage = nullptr;
-    // Nov 10 YMEM PROBE (log only, HCTP_YMEM_PROBE=0 off): reads the game's page table 0x500E00 (+0 start, +4 end, 16 B/page) and
+    // Nov 10 YMEM PROBE (log only, Nov 11: opt-in HCTP_YMEM_PROBE=1): reads the game's page table 0x500E00 (+0 start, +4 end, 16 B/page) and
     // walks the block list like ymemGetInfo 0x140b40 (hdr w0 = index of next block in qwords from the page start,
     // w2 != 0 = free). Logs every page after GameMem::Setup's re-cut and each char page + the common page just before
     // GameMem::ClearChar frees it (= the load-time footprint of the models in that match).
@@ -985,7 +975,7 @@ namespace
             }
         }
         g_origReallocatePage(rdram, ctx, runtime);
-        if (first == 2u && table == 0x419d60u && !(std::getenv("HCTP_YMEM_PROBE") && std::getenv("HCTP_YMEM_PROBE")[0] == '0'))
+        if (first == 2u && table == 0x419d60u && std::getenv("HCTP_YMEM_PROBE") && std::getenv("HCTP_YMEM_PROBE")[0] != '0')
         {
             uint32_t count = 0;
             std::memcpy(&count, rdram + 0x40F190u, 4);
@@ -10071,7 +10061,7 @@ namespace
         if (!(std::getenv("HCTP_FINDBONE_FALLBACK") && std::getenv("HCTP_FINDBONE_FALLBACK")[0] == '0'))
             runtime.replaceFunction(0x150b10u, findBoneFallback);
         // Nov 9: probe on by default while SvR events exist (log-only, 200 lines max) for Bret's glasses; =0 off.
-        if (const char *pp = std::getenv("HCTP_PROP_PROBE"); (pp == nullptr || pp[0] != '0') &&
+        if (const char *pp = std::getenv("HCTP_PROP_PROBE"); (pp != nullptr && pp[0] != '0') && // Nov 11: opt-in
             (g_origWeaponActionLink = runtime.lookupFunction(0x1c2790u)) != nullptr)
             runtime.replaceFunction(0x1c2790u, weaponActionLinkProbe);
         auto hookFn = [&runtime](uint32_t addr, PS2Runtime::RecompiledFunction &orig, PS2Runtime::RecompiledFunction fn) {
@@ -11542,7 +11532,8 @@ namespace
         startPcProfiler();
         runtime.replaceFunction(0x11d810u, cdLayerSearchFile);
         installLooseEntrances(runtime);
-        if (std::getenv("HCTP_NO_PPV") == nullptr)
+        // Nov 11 cleanup: PPV stand-in menu OPT-IN (HCTP_PPV=1) until the SvR05/06 PPV port.
+        if (std::getenv("HCTP_PPV") && std::getenv("HCTP_PPV")[0] != '0')
             installPpvMenu(runtime);
         // native libsdr: sceSdRemote as SIF RPC to the real sdrdrv IRX (sound effects); the game's client data at
         // 0x48F240 and command buffer at 0x48F200 (from its sceSdRemoteInit / sceSdRemote). HCTP_SDR_STUB=1 = stand-in.
@@ -11642,7 +11633,7 @@ namespace
         if ((g_origInitEventSystem = runtime.lookupFunction(0x2ad340u)) != nullptr &&
             runtime.replaceFunction(0x2ad340u, std::getenv("HCTP_VICTORY_EVTK") ? initEventSystemEvtk : initEventSystemShirtTear))
             std::cerr << "[hctp] Hogan shirt-tear dress routing on" << std::endl;
-        if (!(std::getenv("HCTP_YMEM_PROBE") && std::getenv("HCTP_YMEM_PROBE")[0] == '0') &&
+        if (std::getenv("HCTP_YMEM_PROBE") && std::getenv("HCTP_YMEM_PROBE")[0] != '0' && // Nov 11: opt-in
             (g_origClearChar = runtime.lookupFunction(0x1ff130u)) != nullptr)
             runtime.replaceFunction(0x1ff130u, clearCharProbe);
         if ((g_origReallocatePage = runtime.lookupFunction(0x140c90u)) != nullptr &&
@@ -11665,7 +11656,8 @@ namespace
             runtime.replaceFunction(0x1028c8u, gsSetHalfOffsetEven);
             std::cerr << "[hctp] no-interlace half offset on" << std::endl;
         }
-        if (!std::getenv("HCTP_FULL_GLOSS") && (g_origCharDraw = runtime.lookupFunction(0x1bb200u)) != nullptr)
+        g_reducedGloss = std::getenv("HCTP_REDUCED_GLOSS") && std::getenv("HCTP_REDUCED_GLOSS")[0] != '0';
+        if ((g_origCharDraw = runtime.lookupFunction(0x1bb200u)) != nullptr) // blood layer always; gloss only if opt-in
             runtime.replaceFunction(0x1bb200u, charDrawReducedGloss);
         if (std::getenv("HCTP_NATIVE_MODEL_DIAG") &&
             (g_origSkinModelDraw = runtime.lookupFunction(0x155dc0u)) != nullptr)
@@ -11674,7 +11666,7 @@ namespace
             std::cerr << "[hctp] native CSkinModel identity diagnostic "
                       << (installed ? "on" : "NOT found") << " at 0x155dc0" << std::endl;
         }
-        if (!std::getenv("HCTP_FULL_GLOSS"))
+        if (g_reducedGloss)
         {
             if ((g_origMenuWrDraw[0] = runtime.lookupFunction(0x243540u)) != nullptr)
                 runtime.replaceFunction(0x243540u, menuWrestlerDrawReducedGloss<0>);
