@@ -332,7 +332,13 @@ struct Instance
 };
 
 struct TexInfo { uint16_t id; uint32_t w, h; };
-std::map<std::string, TexInfo> g_tex; // lower-case base name -> host texture
+// Nov 11 PART9: textures are PER FILE (retail CParticleGroup::SetTexture per group, SvR04 proto 0x1f5430): the same name is a
+// different image per PCEN entry (SvR04 3047 has 3 'kemuri', 3003 two 'kemuri' + two 'zimen01'; SvR06 4044 also has 'hbn_red'
+// / 'kemuri'). The old global name map (first wins, never cleared) drew the wrong smoke/ground/spark textures.
+using TexMap = std::map<std::string, TexInfo>;
+TexMap g_tex;                          // id -> dims lookup only (every registered texture, keyed by name#hash)
+std::map<uint64_t, TexInfo> g_texHash; // content hash -> host texture (no re-register on re-arm)
+TexMap g_packTex;                      // this arm: first texture of each name in the pack (fallback for files without sub 1)
 std::vector<Instance> g_inst;
 std::mutex g_mx;
 PS2Runtime *g_rt = nullptr;
@@ -355,7 +361,7 @@ std::string baseName(const char *s, size_t max)
     return dot == std::string::npos ? r : r.substr(0, dot);
 }
 
-void loadTextures(const Bytes &blob)
+void loadTextures(const Bytes &blob, TexMap &local)
 {
     if (blob.size() < 0x10) return;
     const uint32_t n = rd32(&blob[0]), tbl = rd32(&blob[0xC]);
@@ -365,19 +371,32 @@ void loadTextures(const Bytes &blob)
         const uint8_t *e = &blob[tbl + i * 0x20];
         const std::string nm = baseName(reinterpret_cast<const char *>(e), 16);
         const uint32_t sz = rd32(e + 0x14), off = rd32(e + 0x18);
-        if (off + sz > blob.size() || g_tex.count(nm)) continue;
+        if (off + sz > blob.size() || local.count(nm)) continue;
+        uint64_t hsh = 1469598103934665603ull;
+        for (uint32_t q = 0; q < sz; ++q) hsh = (hsh ^ blob[off + q]) * 1099511628211ull;
+        if (auto hit = g_texHash.find(hsh); hit != g_texHash.end())
+        {
+            local[nm] = hit->second;
+            if (!g_packTex.count(nm)) g_packTex[nm] = hit->second;
+            continue;
+        }
         Bytes t(blob.begin() + off, blob.begin() + off + sz);
         uint32_t w = 0, h = 0;
         std::vector<uint32_t> px;
         if (!decodeTim2(t, w, h, px)) { if (pyroLog()) std::fprintf(stderr, "[pyro] tim2 %s decode failed\n", nm.c_str()); continue; }
         const uint16_t id = nextId++;
         hctpRegisterHostTexture(id, w, h, px.data());
-        g_tex[nm] = {id, w, h};
+        char key[32];
+        std::snprintf(key, sizeof(key), "#%016llx", static_cast<unsigned long long>(hsh));
+        g_tex[nm + key] = {id, w, h};
+        g_texHash[hsh] = {id, w, h};
+        local[nm] = {id, w, h};
+        if (!g_packTex.count(nm)) g_packTex[nm] = {id, w, h};
         if (pyroLog()) std::fprintf(stderr, "[pyro] tex %s %ux%u id %x\n", nm.c_str(), w, h, id);
     }
 }
 
-bool parsePrtc(const Bytes &fileBytes, File &out)
+bool parsePrtc(const Bytes &fileBytes, File &out, const TexMap &local)
 {
     if (fileBytes.size() < 0x20) return false;
     const uint8_t *b = fileBytes.data() + 8; // 8 B POF0 header
@@ -391,8 +410,11 @@ bool parsePrtc(const Bytes &fileBytes, File &out)
         const uint32_t ntex = rd32(b + to), namesOff = rd32(b + to + 0x14);
         for (uint32_t i = 0; i < ntex && namesOff + i * 16 + 16 <= bs; ++i)
         {
-            auto it = g_tex.find(baseName(reinterpret_cast<const char *>(b + namesOff + i * 16), 16));
-            groupTex.push_back(it == g_tex.end() ? 0 : it->second.id);
+            const std::string nm = baseName(reinterpret_cast<const char *>(b + namesOff + i * 16), 16);
+            auto it = local.find(nm);
+            if (it != local.end()) { groupTex.push_back(it->second.id); continue; }
+            auto pk = g_packTex.find(nm);
+            groupTex.push_back(pk == g_packTex.end() ? 0 : pk->second.id);
         }
     }
     for (uint16_t i = 0; i < n; ++i)
@@ -1040,18 +1062,20 @@ void hctpPyroArm(PS2Runtime *runtime, const char *id, uint32_t common)
     }
     auto top = parsePac(pack);
     std::map<uint16_t, File> files;
-    for (auto &kv : top) // textures first (entry 0's sub-entry 1)
+    g_packTex.clear();
+    std::map<uint16_t, TexMap> fileTex;
+    for (auto &kv : top) // textures first: each entry's sub-entry 1 = that file's own texture set
         if (kv.first < 16000)
         {
             auto sub = parsePac(kv.second);
-            if (sub.count(1)) loadTextures(sub[1]);
+            if (sub.count(1)) loadTextures(sub[1], fileTex[kv.first]);
         }
     for (auto &kv : top)
         if (kv.first < 16000)
         {
             auto sub = parsePac(kv.second);
             File f;
-            if (sub.count(0) && parsePrtc(sub[0], f)) files[kv.first] = std::move(f);
+            if (sub.count(0) && parsePrtc(sub[0], f, fileTex[kv.first])) files[kv.first] = std::move(f);
         }
     auto G = parsePac(gm);
     if (!G.count(0) || !G.count(2) || !G.count(3)) { std::fprintf(stderr, "[pyro] GMEV/%s incomplete\n", id); return; }

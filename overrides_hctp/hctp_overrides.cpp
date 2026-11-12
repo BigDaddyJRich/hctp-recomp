@@ -1276,6 +1276,7 @@ namespace
         std::vector<std::pair<uint32_t, int16_t>> costumes;
         std::vector<uint32_t> dress, entrance;
         std::string name;
+        int backstage = -1; // Nov 11: backstage=<attire> -> nvCast backstage table 0x41A8D0[id] (needs loose XXa0)
     };
     bool stockLooseKeyExists(uint32_t id, uint32_t suffix)
     {
@@ -1324,6 +1325,9 @@ namespace
                         else if (key == "entrance" && std::sscanf(item.c_str(), "%u", &a) == 1 && a < 10u &&
                                  stockLooseKeyExists(r.id, a * 10u + 4u))
                             r.entrance.push_back(a);
+                        else if (key == "backstage" && std::sscanf(item.c_str(), "%u", &a) == 1 && a >= 1u && a < 5u &&
+                                 stockLooseKeyExists(r.id, a * 10u))
+                            r.backstage = int(a);
                         else
                             std::fprintf(stderr, "[stockattire] 0x%X %s=%s skipped (no loose pack / bad value)%c", r.id,
                                          key.c_str(), item.c_str(), 10);
@@ -1388,6 +1392,8 @@ namespace
         {
             for (const uint32_t a : r.dress)
                 rdram[0x41B5C0u + r.id * 6u + a] = 1;
+            if (r.backstage > 0) // Season casts: GetMatchWrestlerNo(id, this attire, backstage) -> loose XXa0 suit
+                rdram[0x41A8D0u + r.id] = uint8_t(r.backstage);
             if (!r.name.empty()) // name= : record name (save records reload -> re-applied on every GetCharaGameProp)
             {
                 uint8_t *const nm = rdram + 0x4C0F54u + r.id * 0x170u + 0x116u;
