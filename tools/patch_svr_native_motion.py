@@ -2,6 +2,8 @@ r"""Nov 12: SvR04/SvR06 native motion port, runner side (plan: F:\hctp-project\n
 Overrides side (helpers for E/F/G below + mode helpers) = hctp_overrides.cpp "SVR NATIVE MOTION".
   A. CMotionModel alloc 0x60 -> 0x68 at all 11 `li a0,0x60; jal __nw` sites before ctor 0x1b4f50 (SvR04 0x64, SvR06 0x68 at every site:
      33 shorts +0x24..+0x65). Verified in the ELF: every jal 0x1b4f50 caller has exactly one of these li's before its __nw.
+     Nov 12 fix: CreateGameChar has a SECOND li: 0x1fb5ac (delay slot of `beqz s2, 0x1fb5dc` straight to the __nw, skipping 0x1fb5d8)
+     -> that path still allocated 0x60 and +0x60.. (shorts 30..32) were the next heap block (CAM crash, r_momo_x = 21114).
   B. P3 CMotionHokan::ActionLink 0x1b5b60 at label_1b5da4: bone 13 -> a1 0x1d (l_momo_x), 17 -> 0x1e (r_momo_x) (SvR04 0x1a8a2c,
      SvR06 RotationHokan 0x216660). Without it, bones 13/17 flagged by P2 would write r_ninoude_x (0x1a).
   C. P4 same function, RotX at 0x1b5f68 (type-3 kote path): halve the angle when the model has r_kote_x2 (SvR06 flag 2, 0x216660).
@@ -14,7 +16,7 @@ import glob, os, re, shutil, sys
 
 RUN = sys.argv[1] if len(sys.argv) > 1 else r"F:\hctp-newbase-vulcan\ps2xRuntime\src\runner"
 BK = os.path.join(RUN, "..", "..", "..", "overrides_backup", "runner_svrnative_1112")
-SITES = [0x188d10, 0x1e276c, 0x1fb5d8, 0x213278, 0x243ba0, 0x26eb98, 0x29afb0, 0x29b3b4, 0x2eacf4, 0x2eba00, 0x3459c8]
+SITES = [0x188d10, 0x1e276c, 0x1fb5ac, 0x1fb5d8, 0x213278, 0x243ba0, 0x26eb98, 0x29afb0, 0x29b3b4, 0x2eacf4, 0x2eba00, 0x3459c8]
 MARK = "// SVRNATIVE"
 
 

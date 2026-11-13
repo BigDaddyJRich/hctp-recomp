@@ -1,6 +1,6 @@
 {
 "about": "sha256 of CR-stripped content of every file tools\\regen_runner.py produces. Refresh only via: regen_runner.py <scratch> then verify_runner.py <scratch> --update.",
-"updated": "2026-11-12 19:20",
+"updated": "2026-11-12 19:36",
 "count": 14803,
 "files": {
 "ADXAMP_Create_0x3ae0e0.cpp": "93ac0822527cc96d6a78cbbea1b1cc2ca5e09d8e4f98c21ea8ce15aa1e9df22a",
@@ -2192,7 +2192,7 @@
 "CreateEventGimmick__10CGmControlFPC12CEventSystemPC5CData_0x1916d0.cpp": "2c9309fab5761d9b42ff1b4ffc9e2aeac18b206719e3a0f6b6a450544616adc3",
 "CreateEventObject__10CEventInfoFi9EventType_0x224950.cpp": "69cf3b51cdf4364347dfbac087260a5515c9beb4111c7859530984e315fd47d1",
 "CreateFaceHeel__12CRosterFrameFv_0x349b10.cpp": "6c5c626ce1073620bf93dd6f3587bc02dcee5e9d42ed987c94fdcff89018137d",
-"CreateGameChar__FP9tagSelecti13eWrestlerTypeP5CDataP13EditGenerator_0x1fb150.cpp": "578394ee4d81f825b7e82a72ea055ddde55fac48235477cefc7d15f8512ef7f3",
+"CreateGameChar__FP9tagSelecti13eWrestlerTypeP5CDataP13EditGenerator_0x1fb150.cpp": "201c9ed7e43f5493d4f8b5f0b0bc97a540b5a89b248546d9984a9c92b051dc78",
 "CreateGaugeSprite__14CAtributeGaugeFUlii7colorNob_0x2eff50.cpp": "2f081db3906f2d3cbee904fb59c8a818a83981a6e6ca4329beb0cc95f221c931",
 "CreateGimmick__10CGmControlFv_0x1914d0.cpp": "1bde4150f57ed62e940e7825edf8cb7f8c91a97e06c6cf02d9338b5e8305646c",
 "CreateGlare__10CDrawGlareFii_0x2f6450.cpp": "c4b94a9329ce3832fef59d0034e73bab9ac15113f02be47d710394c189cc25e7",
