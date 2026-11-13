@@ -15,7 +15,7 @@ bool routeHostMedia(char kind, uint8_t *rdram, R5900Context *ctx)
     const uint32_t id = uint32_t(_mm_cvtsi128_si32(ctx->r[5]));
     const uint32_t dest = uint32_t(_mm_cvtsi128_si32(ctx->r[4]));
     auto it = g_hostRoutes.find({kind, id});
-    if (it == g_hostRoutes.end() || dest > 0x2000000 - 4) return false;
+    if (it == g_hostRoutes.end() || dest > PS2_RAM_COMMITTED_TOP - 4) return false;
     std::memcpy(rdram + dest, &it->second.first, 2);
     std::memcpy(rdram + dest + 2, &it->second.second, 2);
     returnValue(ctx, 0);

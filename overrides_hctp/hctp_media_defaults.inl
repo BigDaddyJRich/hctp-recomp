@@ -8,7 +8,7 @@ PS2Runtime::RecompiledFunction g_originalMediaEntranceCtor=nullptr;
 
 bool applyMediaDefaults(uint8_t *ram, uint32_t record, uint32_t code)
 {
-    if (code >= 8600u || record > 0x2000000u - 0x170u) return false;
+    if (code >= 8600u || record > PS2_RAM_COMMITTED_TOP - 0x170u) return false;
     const unsigned id=code/100u;
     const int attire=int(code/10u%10u);
     auto chosen=g_mediaDefaults.find({id,attire});
@@ -22,7 +22,7 @@ void mediaDefaultPropertyCtor(uint8_t *ram,R5900Context *ctx,PS2Runtime *runtime
     const uint32_t self=uint32_t(_mm_cvtsi128_si32(ctx->r[4]))&0x1ffffffu;
     const uint32_t character=uint32_t(_mm_cvtsi128_si32(ctx->r[5]))&0x1ffffffu;
     g_originalMediaPropCtor(ram,ctx,runtime);
-    if (!self || self>0x2000000u-0x190u || !character || character>0x2000000u-0x34u) return;
+    if (!self || self>PS2_RAM_COMMITTED_TOP-0x190u || !character || character>PS2_RAM_COMMITTED_TOP-0x34u) return;
     uint32_t code;std::memcpy(&code,ram+character+0x30,4);
     applyMediaDefaults(ram,self+0x20u,code);
     static unsigned logged=0;
@@ -38,12 +38,12 @@ void mediaDefaultEntranceCtor(uint8_t *ram,R5900Context *ctx,PS2Runtime *runtime
 {
     const uint32_t self=uint32_t(_mm_cvtsi128_si32(ctx->r[4]))&0x1ffffffu;
     g_originalMediaEntranceCtor(ram,ctx,runtime);
-    if (!self || self>0x2000000u-0x2a4u) return;
+    if (!self || self>PS2_RAM_COMMITTED_TOP-0x2a4u) return;
     // g_pChar[0] is the selected CAM character. The original entrance constructor
     // retains it while removing the other preview actors. No save/template edit.
     uint32_t character=0,code=0;
     std::memcpy(&character,ram+0x526ea0u,4);
-    if (!character || character>0x2000000u-0x34u) {
+    if (!character || character>PS2_RAM_COMMITTED_TOP-0x34u) {
         std::fprintf(stderr,"[hctp] CAM media: no selected character (ptr %08x)%c",character,10);
         return;
     }

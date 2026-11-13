@@ -107,14 +107,13 @@ void hctpRumbleSpawn(uint8_t *rdram, uint32_t slot)
     uint16_t cast = 0xFFFFu;
     if (slot < 8u)
         std::memcpy(&chara, rdram + 0x526EA0u + slot * 4u, 4);
-    if (chara >= 0x100000u && chara < 0x2000000u)
+    if (chara >= 0x100000u && chara < PS2_RAM_COMMITTED_TOP)
         std::memcpy(&cast, rdram + chara + 0x30u, 2);
     std::fprintf(stderr, "[hctp-pbp] rumble spawn: slot %u chara 0x%X cast %u%c", slot, chara, cast, 10);
     if (hctpIsStockOrSlotCode(cast))
         hctpCommentaryRumbleEntrant(hctpRosterCodeId(rdram, cast));
 }
 
-int hctpIkSvrTwistBone(const uint8_t *rdram, uint32_t model, int which); // Nov 7, defined at the end
 
 namespace ps2_stubs
 {
@@ -250,7 +249,7 @@ namespace
         const uint32_t ch = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_MASK;
         int lvl = 0; // Nov 7: bleeding = byte CChar+0x383 (UpdateBloodTex 0x1dc5e4 sets it when blood is applied);
                      // +0x390 level is already non-zero on the matchup screen (Jordan's shot: Bret blood shown)
-        if (ch != 0u && ch <= PS2_RAM_SIZE - 0x394u)
+        if (ch != 0u && ch <= PS2_RAM_COMMITTED_TOP - 0x394u)
             lvl = rdram[ch + 0x383u];
         const int prevBleed = g_drawCharBleed;
         g_drawCharBleed = lvl > 0 ? lvl : 0;
@@ -278,7 +277,7 @@ namespace
         const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_MASK;
         const uint32_t ra = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
         g_origCharCtor(rdram, ctx, runtime);
-        if (ctx->pc == ra && self != 0u && self <= PS2_RAM_SIZE - 0x384u)
+        if (ctx->pc == ra && self != 0u && self <= PS2_RAM_COMMITTED_TOP - 0x384u)
             rdram[self + 0x383u] = 0u;
     }
     // TEMP diag HCTP_REPLAY_PROBE=1 (Nov 7, replay restore, notes\REPLAY_RESTORE_PLAN_20261107.md): log-only.
@@ -291,7 +290,7 @@ namespace
     void flareCalcProbe(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_MASK;
-        if (self != 0u && self <= PS2_RAM_SIZE - 0xF0u)
+        if (self != 0u && self <= PS2_RAM_COMMITTED_TOP - 0xF0u)
         {
             static uint32_t s_n = 0;
             if ((s_n++ % 30u) == 0u && s_n < 30000u)
@@ -316,7 +315,7 @@ namespace
     {
         uint32_t g2d = 0u; f7c = 0xFFFFFFFFu; f80 = 0xFFFFFFFFu;
         std::memcpy(&g2d, rdram + 0x529300u, 4); g2d &= PS2_RAM_MASK;
-        if (g2d != 0u && g2d <= PS2_RAM_SIZE - 0x4B84u) { std::memcpy(&f7c, rdram + g2d + 0x4B7Cu, 4); f80 = rdram[g2d + 0x4B80u]; }
+        if (g2d != 0u && g2d <= PS2_RAM_COMMITTED_TOP - 0x4B84u) { std::memcpy(&f7c, rdram + g2d + 0x4B7Cu, 4); f80 = rdram[g2d + 0x4B80u]; }
     }
     void makeCamEffProbe(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
@@ -333,7 +332,7 @@ namespace
     {
         const uint32_t self = (static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) - 0x10u) & PS2_RAM_MASK;
         g_origCamMotThunk(rdram, ctx, runtime);
-        if (self == 0u || self > PS2_RAM_SIZE - 0x138u)
+        if (self == 0u || self > PS2_RAM_COMMITTED_TOP - 0x138u)
             return;
         static uint32_t s_obj = 0u, s_k1 = 0u, s_k2 = 0u, s_k3 = 0u, s_cnt = 0u;
         uint32_t k1, k2, k3, cnt, live = 0u;
@@ -359,7 +358,7 @@ namespace
     void gameReplayActionProbe(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_MASK;
-        const bool ok = self != 0u && self <= PS2_RAM_SIZE - 0xF64B0u;
+        const bool ok = self != 0u && self <= PS2_RAM_COMMITTED_TOP - 0xF64B0u;
         uint32_t s0 = 0u, s1 = 0u, n = 0u, len = 0u;
         if (ok) std::memcpy(&s0, rdram + self + 0xF64A8u, 4);
         g_origReplayAction(rdram, ctx, runtime);
@@ -417,7 +416,7 @@ namespace
         std::memcpy(&paused, rdram + 0x527B08u, 4);
         std::memcpy(&other, rdram + 0x52A328u, 4);
         std::memcpy(&g2d, rdram + 0x529300u, 4); g2d &= PS2_RAM_MASK;
-        if (g2d != 0u && g2d <= PS2_RAM_SIZE - 0x4B84u) std::memcpy(&hud, rdram + g2d + 0x4B7Cu, 4);
+        if (g2d != 0u && g2d <= PS2_RAM_COMMITTED_TOP - 0x4B84u) std::memcpy(&hud, rdram + g2d + 0x4B7Cu, 4);
         if (paused != 1u && other != 1u && hud == 1u)
             ctx->r[2] = _mm_cvtsi32_si128(dflt);
     }
@@ -434,7 +433,7 @@ namespace
     {
         const uint32_t self = (static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) - 0x1Cu) & PS2_RAM_MASK;
         const uint32_t ra = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
-        const bool ok = self != 0u && self <= PS2_RAM_SIZE - 0xF64B0u;
+        const bool ok = self != 0u && self <= PS2_RAM_COMMITTED_TOP - 0xF64B0u;
         uint32_t s0 = 0u, s1 = 0u;
         if (ok) std::memcpy(&s0, rdram + self + 0xF64A8u, 4);
         g_origReplayThunkOn(rdram, ctx, runtime);
@@ -443,7 +442,7 @@ namespace
         std::memcpy(&s1, rdram + self + 0xF64A8u, 4);
         uint32_t g2d = 0u;
         std::memcpy(&g2d, rdram + 0x529300u, 4); g2d &= PS2_RAM_MASK;
-        if (g2d == 0u || g2d > PS2_RAM_SIZE - 0x4B84u)
+        if (g2d == 0u || g2d > PS2_RAM_COMMITTED_TOP - 0x4B84u)
             return;
         // v2: set at record start (0 -> 1). Probe v5: CSpriteCtrlGame2D::Action (-> CtrlReplayAnim, which builds the
         // anim) does not run during playback states 2-4, so flags set at 1 -> 2 were never seen.
@@ -467,12 +466,12 @@ namespace
         // v4: playback (states 2-4) freezes action level 4 (ActLevelInit), which also holds the REPLAY MenuAnimObject
         // (CSpriteCtrlGame2D+0x4618, made by CtrlReplayAnim). Step only that object: MenuAnimObject::Action 0x196df0
         // = CSprAnim::FrameActive + Updata on +0x40. Wrestlers stay frozen.
-        if (s1 >= 2u && g_replaySprCtrl != 0u && g_replaySprCtrl <= PS2_RAM_SIZE - 0x461Cu)
+        if (s1 >= 2u && g_replaySprCtrl != 0u && g_replaySprCtrl <= PS2_RAM_COMMITTED_TOP - 0x461Cu)
         {
             uint32_t obj = 0u;
             std::memcpy(&obj, rdram + g_replaySprCtrl + 0x4618u, 4);
             obj &= PS2_RAM_MASK;
-            if (obj != 0u && obj <= PS2_RAM_SIZE - 0xA0u)
+            if (obj != 0u && obj <= PS2_RAM_COMMITTED_TOP - 0xA0u)
                 ppvCall(rdram, ctx, runtime, 0x196df0u, {obj});
         }
     }
@@ -482,7 +481,7 @@ namespace
     void gameReplayThunkProbe(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t self = (static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) - 0x1Cu) & PS2_RAM_MASK;
-        const bool ok = self != 0u && self <= PS2_RAM_SIZE - 0xF64B0u;
+        const bool ok = self != 0u && self <= PS2_RAM_COMMITTED_TOP - 0xF64B0u;
         uint32_t s0 = 0u, s1 = 0u, n = 0u, len = 0u;
         if (ok) std::memcpy(&s0, rdram + self + 0xF64A8u, 4);
         if (g_replayMats != 0u && g_replayOverw && g_replayLeft && std::memcmp(rdram + g_replayMats, g_replayLeft, 64) != 0)
@@ -510,9 +509,9 @@ namespace
         }
         uint32_t ch = 0u, cm = 0u, mats = 0u;
         std::memcpy(&ch, rdram + 0x526EA0u, 4); ch &= PS2_RAM_MASK;
-        if (ch != 0u && ch <= PS2_RAM_SIZE - 0x40u) { std::memcpy(&cm, rdram + ch + 0x34u, 4); cm &= PS2_RAM_MASK; }
-        if (cm != 0u && cm <= PS2_RAM_SIZE - 0xE0u) { std::memcpy(&mats, rdram + cm + 0xD8u, 4); mats &= PS2_RAM_MASK; }
-        if (s1 >= 2u && mats != 0u && mats <= PS2_RAM_SIZE - 64u)
+        if (ch != 0u && ch <= PS2_RAM_COMMITTED_TOP - 0x40u) { std::memcpy(&cm, rdram + ch + 0x34u, 4); cm &= PS2_RAM_MASK; }
+        if (cm != 0u && cm <= PS2_RAM_COMMITTED_TOP - 0xE0u) { std::memcpy(&mats, rdram + cm + 0xD8u, 4); mats &= PS2_RAM_MASK; }
+        if (s1 >= 2u && mats != 0u && mats <= PS2_RAM_COMMITTED_TOP - 64u)
         {
             ++s_play;
             std::memcpy(s_left, rdram + mats, 64); // compared at the next call's entry (below, via g_replayLeftValid)
@@ -529,7 +528,7 @@ namespace
     void ctrlReplayAnimProbe(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_MASK;
-        const bool ok = self != 0u && self <= PS2_RAM_SIZE - 0x4700u;
+        const bool ok = self != 0u && self <= PS2_RAM_COMMITTED_TOP - 0x4700u;
         uint32_t o0 = 0u, o1 = 0u, lib0 = 0u, lib1 = 0u;
         if (ok) std::memcpy(&o0, rdram + self + 0x4618u, 4);
         g_origCtrlReplayAnim(rdram, ctx, runtime);
@@ -568,14 +567,14 @@ namespace
     {
         const uint32_t model = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_MASK;
         uint32_t sd = 0u;
-        if (model != 0u && model <= PS2_RAM_SIZE - 0xCCu)
+        if (model != 0u && model <= PS2_RAM_COMMITTED_TOP - 0xCCu)
             std::memcpy(&sd, rdram + model + 0xC8u, 4);
         sd &= PS2_RAM_MASK;
         // TEMP diag HCTP_MATCHUP_PROBE=1 (Hogan 80s invisible on matchup): every ~1 s per model: DrawChar args, bones,
         // world matrices (+0xD0, 64 B a bone) that are NaN/huge/degenerate, root/min/max translation, axis length of bone 0.
         static const bool s_mprobe = std::getenv("HCTP_MATCHUP_PROBE") != nullptr;
         recWatchCheck(rdram, "DrawChar", static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31])));
-        if (s_mprobe && sd != 0u && sd <= PS2_RAM_SIZE - 0x28u)
+        if (s_mprobe && sd != 0u && sd <= PS2_RAM_COMMITTED_TOP - 0x28u)
         {
             static std::map<uint32_t, uint32_t> s_cnt;
             if ((s_cnt[model]++ % 60u) == 0u)
@@ -587,7 +586,7 @@ namespace
                 world &= PS2_RAM_MASK;
                 int bad = 0, firstBad = -1, zeroAx = 0;
                 float mn[3] = {1e30f, 1e30f, 1e30f}, mx[3] = {-1e30f, -1e30f, -1e30f}, ax0 = 0.f;
-                if (bones <= 256u && world != 0u && world + bones * 64u <= PS2_RAM_SIZE)
+                if (bones <= 256u && world != 0u && world + bones * 64u <= PS2_RAM_COMMITTED_TOP)
                     for (uint32_t b = 0; b < bones; ++b)
                     {
                         float m[16];
@@ -611,12 +610,12 @@ namespace
                     std::memcpy(&cnt, rdram + model + 0xECu, 4);
                     loc &= PS2_RAM_MASK; rec &= PS2_RAM_MASK;
                     float lt[9] = {}, rf[12] = {};
-                    if (loc && loc + 11u * 64u <= PS2_RAM_SIZE)
+                    if (loc && loc + 11u * 64u <= PS2_RAM_COMMITTED_TOP)
                     {
                         std::memcpy(lt, rdram + loc + 64u + 48u, 12); std::memcpy(lt + 3, rdram + loc + 128u + 48u, 12);
                         std::memcpy(lt + 6, rdram + loc + 640u + 48u, 12);
                     }
-                    if (rec && rec + 160u <= PS2_RAM_SIZE)
+                    if (rec && rec + 160u <= PS2_RAM_COMMITTED_TOP)
                         std::memcpy(rf, rdram + rec + 80u + 0x10u, 48);
                     const uint32_t fu = g_mprobeFast[model]; g_mprobeFast[model] = 0u;
                     std::fprintf(stderr, "[mprobe2] model 0x%X count %u fastUpd %u loc1 %.2f %.2f %.2f loc2 %.2f %.2f %.2f loc10 %.2f %.2f %.2f rec1 %.2f %.2f %.2f %.2f | %.2f %.2f %.2f %.2f | %.2f %.2f %.2f %.2f%c",
@@ -625,12 +624,12 @@ namespace
                 }
             }
         }
-        if (sd == 0u || sd > PS2_RAM_SIZE - 0x28u)
+        if (sd == 0u || sd > PS2_RAM_COMMITTED_TOP - 0x28u)
         {
             g_origDrawCharBlood(rdram, ctx, runtime);
             return;
         }
-        auto rd = [&](uint32_t a) { uint32_t v = 0u; if (a <= PS2_RAM_SIZE - 4u) std::memcpy(&v, rdram + a, 4); return v; };
+        auto rd = [&](uint32_t a) { uint32_t v = 0u; if (a <= PS2_RAM_COMMITTED_TOP - 4u) std::memcpy(&v, rdram + a, 4); return v; };
         const uint32_t nMesh = rd(sd + 0x10u), meshes = rd(sd + 0x1Cu) & PS2_RAM_MASK;
         const uint32_t key = sd ^ (nMesh << 24);
         auto it = g_bloodMats.find(key);
@@ -639,7 +638,7 @@ namespace
             std::vector<uint32_t> mats;
             const uint32_t nTex = rd(sd + 0x18u), names = rd(sd + 0x24u) & PS2_RAM_MASK;
             std::vector<uint32_t> bloodTex, bandTex, bandMats;
-            if (nTex < 256u && names != 0u && names <= PS2_RAM_SIZE - nTex * 16u)
+            if (nTex < 256u && names != 0u && names <= PS2_RAM_COMMITTED_TOP - nTex * 16u)
                 for (uint32_t t = 0; t < nTex; ++t)
                 {
                     char nm[17] = {};
@@ -702,7 +701,7 @@ namespace
     PS2Runtime::RecompiledFunction g_origSkinModelDraw = nullptr;
     uint32_t nativeModelFingerprint(const uint8_t *rdram, uint32_t address, uint32_t bytes)
     {
-        if (!rdram || address > PS2_RAM_SIZE || bytes > PS2_RAM_SIZE - address)
+        if (!rdram || address > PS2_RAM_COMMITTED_TOP || bytes > PS2_RAM_COMMITTED_TOP - address)
             return 0u;
         uint32_t hash = 2166136261u; // FNV-1a: identity only, never a content validator.
         for (uint32_t i = 0; i < bytes; ++i)
@@ -712,12 +711,12 @@ namespace
     void skinModelDrawDiagnostics(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t model = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_MASK;
-        if (model <= PS2_RAM_SIZE - 0xccu)
+        if (model <= PS2_RAM_COMMITTED_TOP - 0xccu)
         {
             uint32_t skinData = 0u;
             std::memcpy(&skinData, rdram + model + 0xc8u, sizeof(skinData));
             skinData &= PS2_RAM_MASK;
-            if (skinData != 0u && skinData <= PS2_RAM_SIZE - 0x40u)
+            if (skinData != 0u && skinData <= PS2_RAM_COMMITTED_TOP - 0x40u)
             {
                 static std::array<uint32_t, 32> seen = {};
                 static size_t seenCount = 0u;
@@ -768,7 +767,7 @@ namespace
         static uint32_t s_n = 0;
         if (s_n++ % 300u == 0u)
         {
-            const uint32_t rope = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+            const uint32_t rope = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_COMMITTED_MASK;
             int32_t segs;
             std::memcpy(&segs, rdram + rope + 0x40u, 4);
             std::fprintf(stderr, "[ropelog] rope=0x%x segs=%d%c", rope, segs, 10);
@@ -780,8 +779,8 @@ namespace
                     {
                         float a, b;
                         const uint32_t at = rope + static_cast<uint32_t>(k * 0x40 + r * 0x340 + side * 0x9c0);
-                        std::memcpy(&a, rdram + ((at + 0x5a4u) & 0x1FFFFFFu), 4);
-                        std::memcpy(&b, rdram + ((at + 0x5a8u) & 0x1FFFFFFu), 4);
+                        std::memcpy(&a, rdram + ((at + 0x5a4u) & PS2_RAM_COMMITTED_MASK), 4);
+                        std::memcpy(&b, rdram + ((at + 0x5a8u) & PS2_RAM_COMMITTED_MASK), 4);
                         std::fprintf(stderr, " (%.2f,%.2f)", a, b);
                     }
                     std::fprintf(stderr, "%c", 10);
@@ -795,7 +794,7 @@ namespace
     // field here. HCTP_INTERLACE_OFFSET=1 keeps the game's offset.
     void gsSetHalfOffsetEven(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
     {
-        const uint32_t env = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        const uint32_t env = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_COMMITTED_MASK;
         const int64_t x = static_cast<int16_t>(_mm_cvtsi128_si32(ctx->r[5]));
         const int64_t y = static_cast<int16_t>(_mm_cvtsi128_si32(ctx->r[6]));
         uint64_t display;
@@ -831,9 +830,9 @@ namespace
     PS2Runtime::RecompiledFunction g_origClearChar = nullptr;
     void ymemProbeLog(uint8_t *rdram, const char *tag, uint32_t page)
     {
-        auto rd = [&](uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & 0x1FFFFFFu), 4); return v; };
+        auto rd = [&](uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & PS2_RAM_COMMITTED_MASK), 4); return v; };
         const uint32_t start = rd(0x500E00u + page * 16u), end = rd(0x500E04u + page * 16u);
-        if (!start || end <= start || (end & 0xFE000000u))
+        if (!start || end <= start || end > PS2_RAM_COMMITTED_TOP)
         {
             std::fprintf(stderr, "[ymem] %s page %u empty/invalid (%08X-%08X)%c", tag, page, start, end, 10);
             return;
@@ -875,113 +874,113 @@ namespace
     // Nov 11: real cast of a CAM entrance preview (set by rosterxInitEventParam before CSd5EventMng -> GameMem::Setup).
     // At Setup the slot-0 setup cast is still the CAM dummy 9200, so big SvR slot models (Andre 17130 = 665 KB) got the
     // 0x290 (656 KB) page and loaded nothing -> invisible wrestler.
-    uint16_t g_camEventCast = 0;
+    uint16_t g_camEventCast = 0; // Nov 12: no longer sizes pages (every GameMem char page is >= 4 MB in the high window)
+    // Nov 12 CHAR MEMORY EXPANSION (notes\CHAR_MEMORY_EXPANSION_RESEARCH_20261112.md sec 3/5/6). Native ymemReallocatePage
+    // 0x140c90, 1:1 with its MIPS (clear loop 0x140cbc-0x140cd4, carve 0x140d18-0x140d84, common page 0x140d8c-0x140de0,
+    // count++ / 0x500F00 / backup copy to 0x500F10 0x140de4-0x140e54) + ymemClearPage 0x140c20. One change: in GameMem::Setup's
+    // re-cut (first 2, table 0x419D60, call 0x1ff0a4) the 7 char pages *(0x526D60)+0..6 (GameMem::Char 0x1ff120 / ClearChar
+    // 0x1ff130) are placed in the host-committed window 0x02000000..PS2_RAM_COMMITTED_TOP, each max(table KB, HCTP_CHAR_PAGE_KB
+    // default 4096), and take 0 KB of the low region -> the common page gets all of it back (six-man hang = /MOT/GAME
+    // 14,282 KB ymemalignR NULL in common, note sec 5). The game's table keeps its own values. Replaces the Nov 5-12 per-slot
+    // growth rules (loose ring > 512 KB, B&P digit 3, entrance attire XXa4, CAM entrance cast, IsHebner 5100/5110; caps 0x400).
+    constexpr uint32_t kCharArenaBase = 0x02000000u;
+    uint32_t charPageKb()
+    {
+        static const uint32_t kb = [] {
+            const char *e = std::getenv("HCTP_CHAR_PAGE_KB");
+            const unsigned long v = e ? std::strtoul(e, nullptr, 0) : 0ul;
+            return v >= 0x40ul && v <= 0x2000ul ? static_cast<uint32_t>(v) : 0x1000u;
+        }();
+        return kb;
+    }
+    void ymemClearPageNative(uint8_t *rdram, uint32_t i, bool force) // ymemClearPage 0x140c20 (a0 page, a1 force)
+    {
+        if (i >= 16u || (!force && rdram[0x501010u + i] == 0u))
+            return;
+        uint32_t st = 0, en = 0;
+        std::memcpy(&st, rdram + 0x500E00u + i * 16u, 4);
+        std::memcpy(&en, rdram + 0x500E04u + i * 16u, 4);
+        if (st == 0u)
+            return;
+        const uint64_t one = 1u, n = static_cast<uint32_t>(en - st) >> 4; // subu/srl 4/dsll32+dsrl32 (zero-extend)
+        uint8_t *p = rdram + (st & PS2_RAM_COMMITTED_MASK);
+        std::memcpy(p, &one, 8);
+        std::memcpy(p + 8, &one, 8);
+        std::memcpy(p + 0x10, &n, 8);
+        std::memcpy(p + 0x18, &n, 8);
+    }
     void reallocatePageBigModels(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        // Nov 5 (Hogan session): generalised from SvR Molly (41x0) to every loose ring model > 512 KB (Hogan WM19 graft
-        // 3210 = 524800 B loaded nothing -> invisible body, only the separate gear pack drew). Sizes cached per code.
-        static std::map<uint16_t, uint64_t> s_looseSize;
+        (void)runtime;
         g_hoganTearBody = 0; // match memory setup: entrance over, ring models load by their own codes again
-        auto looseBig = [](uint16_t code) {
-            auto it = s_looseSize.find(code);
-            if (it == s_looseSize.end())
-            {
-                std::error_code ec;
-                const std::string key = std::to_string(code);
-                uint64_t sz = std::filesystem::file_size((code < 3000u ? "MODS/PAC/EMD/" : "MODS/PAC/EMD2/") + key, ec);
-                it = s_looseSize.emplace(code, ec ? 0u : sz).first;
-            }
-            return it->second;
-        };
-        auto looseSize = looseBig;
-        auto looseBigFn = [&looseSize](uint16_t code) { return looseSize(code) > 0x80000u; };
         const uint32_t first = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4]));
-        const uint32_t table = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5]));
-        if (first == 2u && table == 0x419d60u)
+        uint32_t table = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5]));
+        const uint32_t ra = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
+        auto rd = [&](uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & PS2_RAM_COMMITTED_MASK), 4); return v; };
+        auto wr = [&](uint32_t a, uint32_t v) { std::memcpy(rdram + (a & PS2_RAM_COMMITTED_MASK), &v, 4); };
+        const bool gameMem = first == 2u && table == 0x419d60u;
+        const uint32_t charBase = rd(0x526D60u); // GameMem::Init 0x1feeb0 stores 4
+        uint32_t count = rd(0x40F190u);
+        for (uint32_t i = first; i < count && i < 16u; ++i)
+            ymemClearPageNative(rdram, i, false);
+        const uint32_t s0 = rd(0x500DF4u + count * 16u); // end of the old last (common) page
+        uint32_t s1 = rd(0x500E00u + first * 16u);
+        count = first;
+        wr(0x40F190u, count);
+        uint32_t hi = kCharArenaBase, highKb = 0, highFirst = 0, highLast = 0, lowCharKb = 0;
+        if (table != 0u)
         {
-            if (g_camEventCast != 0u)
+            for (uint32_t i = first; i < 16u; ++i, table += 4u)
             {
-                uint16_t setup0 = 0;
-                std::memcpy(&setup0, rdram + 0x4920C0u + 0x10Au, 2);
-                uint32_t size0 = 0;
-                std::memcpy(&size0, rdram + table + 8u, 4);
-                uint64_t big = 0;
-                for (uint16_t k : {uint16_t(g_camEventCast), uint16_t(g_camEventCast + 30u), uint16_t(g_camEventCast + 3u),
-                                   uint16_t(g_camEventCast + 4u), uint16_t(g_camEventCast + 31u)})
-                    big = std::max<uint64_t>(big, looseSize(k));
-                // decoded model needs headroom over the file (Nov 7: SvR 642 KB in 0x290 = stuck pose; match rule
-                // > 0x258 KB -> 0x350); 688 KB for Andre 665 KB loaded but drew only the shadow.
-                uint32_t need = static_cast<uint32_t>((big + 1023u) / 1024u) + 0x60u;
-                if (big > 0x258u * 1024u)
-                    need = std::max<uint32_t>(need, 0x350u);
-                need = std::min<uint32_t>((need + 15u) & ~15u, 0x400u);
-                if (setup0 == 9200u && big > uint64_t(size0) * 1024u && need > size0)
+                const uint32_t kb = rd(table);
+                if (kb == 0u)
+                    break;
+                const uint32_t e = 0x500E00u + i * 16u;
+                uint32_t start = s1, bytes = kb << 10;
+                if (gameMem && charBase >= 2u && charBase < 16u && i >= charBase && i < charBase + 7u)
                 {
-                    std::fprintf(stderr, "[mem] CAM entrance cast %u: model %llu B > page 0x%X -> 0x%X%c", unsigned(g_camEventCast),
-                                 static_cast<unsigned long long>(big), size0, need, 10);
-                    std::memcpy(rdram + table + 8u, &need, 4);
-                }
-                g_camEventCast = 0;
-            }
-            for (uint32_t slot = 0; slot < 7u; ++slot)
-            {
-                uint16_t code = 0;
-                std::memcpy(&code, rdram + 0x4920C0u + slot * 32u + 0x10Au, 2);
-                uint32_t size = 0;
-                std::memcpy(&size, rdram + table + 8u + slot * 4u, 4);
-                if (hctpIsStockOrSlotCode(code) && code % 10u == 0u && size == 0x1E0u && looseBigFn(code))
-                {
-                    // Nov 7 Legend arms/turn lock: SvR06 beta 7800 (642 KB, 109 bones) in a 0x290 page = stuck
-                    // pose + no turning; in A4 the same file got 0x350 via its 794 KB entrance attire and was fine.
-                    size = looseSize(code) > 0x258u * 1024u ? 0x350u : 0x290u;
-                    std::memcpy(rdram + table + 8u + slot * 4u, &size, 4);
-                    std::fprintf(stderr, "[mem] slot %u cast %u big loose model 0x1E0 -> 0x%X%c", slot, unsigned(code), size, 10);
-                }
-                // Nov 7: loose entrance attires (XXa4, e.g. SvR06 Hogan 80s 7204 = 776 KB decoded) larger than the
-                // 0x290 page get the B&P part-3 size 0x350 (848 KB), whether the page is keyed by the entrance code
-                // or by the ring code whose entrance attire is armed.
-                // Nov 10 MOLLY B&P: GameMem::Setup 0x1feed0 gives attire digit 3 (bra & panties) a fixed 0x350 KB page; the SvR
-                // Molly B&P files (4103/4113, ~914 KB) overflow it (Nov 6 crash). Grow that slot's page to fit the loose file.
-                if (hctpIsStockOrSlotCode(code) && code % 10u == 3u)
-                {
-                    const uint64_t bytes = looseSize(code);
-                    if (bytes > uint64_t(size) * 1024u)
+                    const uint32_t want = std::max(kb, charPageKb());
+                    if (uint64_t(hi) + (uint64_t(want) << 10) <= PS2_RAM_COMMITTED_TOP)
                     {
-                        uint32_t need = static_cast<uint32_t>((bytes + 1023u) / 1024u) + 16u;
-                        need = (need + 15u) & ~15u;
-                        if (need > 0x400u)
-                            need = 0x400u;
-                        if (need > size)
-                        {
-                            std::fprintf(stderr, "[mem] slot %u cast %u big B&P model 0x%X -> 0x%X (%llu bytes)%c", slot,
-                                         unsigned(code), size, need, static_cast<unsigned long long>(bytes), 10);
-                            size = need;
-                            std::memcpy(rdram + table + 8u + slot * 4u, &size, 4);
-                        }
+                        start = hi;
+                        bytes = want << 10;
+                        hi += bytes;
+                        highKb += want;
+                        if (!highFirst) highFirst = i;
+                        highLast = i;
+                    }
+                    else
+                    {
+                        lowCharKb += kb;
+                        std::fprintf(stderr, "[charmem] page %u (%u KB) does not fit the high window -> low region%c", i, want, 10);
                     }
                 }
-                if (hctpIsStockOrSlotCode(code) && (code % 10u == 4u || code % 10u == 0u) && size < 0x350u)
-                {
-                    const uint16_t ent = static_cast<uint16_t>(code - code % 10u + 4u);
-                    // Nov 7 Legend: SvR06 7804 (651 KB) fits 0x290 but not a 0x1E0 page -> pick the smallest that fits.
-                    const uint32_t need = !g_cutEntranceCodes.count(ent) ? 0u
-                                          : looseSize(ent) > 0x290u * 1024u ? 0x350u
-                                          : looseSize(ent) > 0x1E0u * 1024u ? 0x290u : 0u;
-                    if (need > size)
-                    {
-                        std::fprintf(stderr, "[mem] slot %u cast %u entrance attire %u 0x%X -> 0x%X%c", slot,
-                                     unsigned(code), unsigned(ent), size, need, 10);
-                        size = need;
-                        std::memcpy(rdram + table + 8u + slot * 4u, &size, 4);
-                    }
-                }
+                wr(e + 8u, start);
+                wr(e, start);
+                wr(e + 0xCu, start);
+                wr(e + 4u, start + bytes);
+                ymemClearPageNative(rdram, i, false);
+                if (start == s1)
+                    s1 += bytes;
+                wr(0x40F190u, ++count);
             }
         }
-        g_origReallocatePage(rdram, ctx, runtime);
-        if (first == 2u && table == 0x419d60u && std::getenv("HCTP_YMEM_PROBE") && std::getenv("HCTP_YMEM_PROBE")[0] != '0')
+        const uint32_t ce = 0x500E00u + count * 16u; // common page = [s1, s0)
+        wr(ce + 8u, s1);
+        wr(ce, s1);
+        wr(ce + 0xCu, s1);
+        wr(ce + 4u, s0);
+        ymemClearPageNative(rdram, count, false);
+        wr(0x40F190u, ++count);
+        wr(0x500F00u, count - 1u);
+        std::memmove(rdram + 0x500F10u, rdram + 0x500E00u, 256u);
+        if (gameMem)
+            std::fprintf(stderr, "[charmem] GameMem::Setup: char pages %u..%u at 0x%08X-0x%08X (%u KB, %u KB each min), common page %u = %u KB%s%c",
+                         highFirst, highLast, kCharArenaBase, hi, highKb, charPageKb(), count - 1u, (s0 - s1) >> 10,
+                         lowCharKb ? " (some char pages low)" : "", 10);
+        ctx->pc = ra;
+        if (gameMem && std::getenv("HCTP_YMEM_PROBE") && std::getenv("HCTP_YMEM_PROBE")[0] != '0')
         {
-            uint32_t count = 0;
-            std::memcpy(&count, rdram + 0x40F190u, 4);
             for (uint32_t pg = 2; pg < count && pg < 16u; ++pg)
                 ymemProbeLog(rdram, "after Setup", pg);
         }
@@ -1024,7 +1023,7 @@ namespace
         if (!on) return;
         for (auto &w : g_recWatch)
         {
-            if (w.first > PS2_RAM_SIZE - 0x30u) continue;
+            if (w.first > PS2_RAM_COMMITTED_TOP - 0x30u) continue;
             uint32_t v[7]; std::memcpy(v, rdram + w.first + 0x10u, 28);
             const bool ok = (v[0] | v[1] | v[2] | v[4] | v[5] | v[6]) & 0x7FFFFFFFu;
             if (w.second.second && !ok)
@@ -1045,12 +1044,12 @@ namespace
         const uint32_t a2 = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[6])) & PS2_RAM_MASK;
         const uint32_t ra = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
         uint32_t recs = 0u, cnt = 0u;
-        if (model && model <= PS2_RAM_SIZE - 0xF4u) { std::memcpy(&recs, rdram + model + 0xF0u, 4); std::memcpy(&cnt, rdram + model + 0xECu, 4); }
+        if (model && model <= PS2_RAM_COMMITTED_TOP - 0xF4u) { std::memcpy(&recs, rdram + model + 0xF0u, 4); std::memcpy(&cnt, rdram + model + 0xECu, 4); }
         recs &= PS2_RAM_MASK;
         float b[3] = {}, af[3] = {}, sc[8] = {};
-        const bool okR = recs && recs <= PS2_RAM_SIZE - 0x100u;
+        const bool okR = recs && recs <= PS2_RAM_COMMITTED_TOP - 0x100u;
         if (okR) std::memcpy(b, rdram + recs + 80u + 0x10u, 12);
-        if (I == 1 && a2 && a2 <= PS2_RAM_SIZE - 32u) std::memcpy(sc, rdram + a2, 32);
+        if (I == 1 && a2 && a2 <= PS2_RAM_COMMITTED_TOP - 32u) std::memcpy(sc, rdram + a2, 32);
         g_origEditYmpFn[I](rdram, ctx, runtime);
         if (okR) std::memcpy(af, rdram + recs + 80u + 0x10u, 12);
         std::fprintf(stderr, "[editymp] %s model 0x%X bones %u ra 0x%X done %d rec1 %g %g %g -> %g %g %g scales0-1 %g %g %g %g | %g %g %g %g%c",
@@ -1093,7 +1092,7 @@ namespace
         // CKami1::Init 0x1c6160, stock body: this+4 = 1
         const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4]));
         const uint32_t one = 1u;
-        std::memcpy(rdram + ((self + 4u) & 0x1FFFFFFu), &one, 4);
+        std::memcpy(rdram + ((self + 4u) & PS2_RAM_COMMITTED_MASK), &one, 4);
         g_kamiInitSeen = true;
         ctx->pc = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
     }
@@ -1115,7 +1114,7 @@ namespace
             if (g_kamiInitSeen)
             {
                 const uint32_t one = 1u;
-                std::memcpy(rdram + ((c + 4u) & 0x1FFFFFFu), &one, 4);
+                std::memcpy(rdram + ((c + 4u) & PS2_RAM_COMMITTED_MASK), &one, 4);
             }
             kamiCallFn(rdram, ctx, runtime, runtime->lookupFunction(0x1c6170u), 0x1c6170u, {c});
         }
@@ -1144,16 +1143,16 @@ namespace
     PS2Runtime::RecompiledFunction g_origInitEventSystem = nullptr;
     void initEventSystemShirtTear(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_COMMITTED_MASK;
         const uint32_t event = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5]));
         // Ghidra: InitEventSystem selects a member through this+0x728[event], not member[event].
         // The old first-eight scan missed Hogan's selected member and never armed SetDressCast.
-        if (self && event < 16u && self + 0x728u + event * 4u < 0x2000000u)
+        if (self && event < 16u && self + 0x728u + event * 4u < PS2_RAM_COMMITTED_TOP)
         {
             uint32_t selected = 0;
             std::memcpy(&selected, rdram + self + 0x728u + event * 4u, 4);
             const uint32_t member = self + 0x88u + selected * 0xD4u;
-            if (selected < 32u && member + 0xCEu < 0x2000000u)
+            if (selected < 32u && member + 0xCEu < PS2_RAM_COMMITTED_TOP)
             {
                 uint16_t code = 0;
                 std::memcpy(&code, rdram + member, 2);
@@ -1621,7 +1620,7 @@ namespace
     int8_t rosterFlagAt(const uint8_t *rdram, uint32_t self, uint32_t i) { return static_cast<int8_t>(rdram[self + 0x2ECu + i]); }
     void checkRosterSpecialConditionGroups(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
     {
-        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_COMMITTED_MASK;
         uint32_t idx;
         std::memcpy(&idx, rdram + self + 0x458u, 4);
         uint32_t result = 0;
@@ -1646,7 +1645,7 @@ namespace
     PS2Runtime::RecompiledFunction g_origSetRosterSpecialCondition = nullptr;
     void setRosterSpecialConditionGroups(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu,
+        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_COMMITTED_MASK,
                        ra = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
         g_origSetRosterSpecialCondition(rdram, ctx, runtime); // stock Taker pair (keeps its feud/title preference)
         if (ctx->pc != ra)
@@ -1685,7 +1684,7 @@ namespace
         if (!rec)
         {
             // copy the stock record (5 lines: "@C", line1, line2, "Please select one.", "") and swap lines 1-2
-            const uint32_t stock = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[2])) & 0x1FFFFFFu;
+            const uint32_t stock = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[2])) & PS2_RAM_COMMITTED_MASK;
             uint32_t stockLines, count;
             std::memcpy(&stockLines, rdram + stock, 4);
             std::memcpy(&count, rdram + stock + 4u, 4);
@@ -1696,11 +1695,11 @@ namespace
             const uint32_t buf = runtime->guestMalloc(static_cast<uint32_t>(8u + 20u + l1 + l2));
             if (!buf)
                 return;
-            uint8_t *p = rdram + (buf & 0x1FFFFFFu);
+            uint8_t *p = rdram + (buf & PS2_RAM_COMMITTED_MASK);
             const uint32_t lines = buf + 8u, s1 = buf + 28u, s2 = s1 + static_cast<uint32_t>(l1);
             std::memcpy(p, &lines, 4);
             std::memcpy(p + 4, &count, 4);
-            std::memcpy(p + 8, rdram + (stockLines & 0x1FFFFFFu), 20);
+            std::memcpy(p + 8, rdram + (stockLines & PS2_RAM_COMMITTED_MASK), 20);
             std::memcpy(p + 12, &s1, 4);
             std::memcpy(p + 16, &s2, 4);
             std::memcpy(p + 28, grp.line1, l1);
@@ -1730,10 +1729,10 @@ namespace
     uint32_t rdU32(const uint8_t *rdram, uint32_t a)
     {
         uint32_t v;
-        std::memcpy(&v, rdram + (a & 0x1FFFFFFu), 4);
+        std::memcpy(&v, rdram + (a & PS2_RAM_COMMITTED_MASK), 4);
         return v;
     }
-    void wrU32(uint8_t *rdram, uint32_t a, uint32_t v) { std::memcpy(rdram + (a & 0x1FFFFFFu), &v, 4); }
+    void wrU32(uint8_t *rdram, uint32_t a, uint32_t v) { std::memcpy(rdram + (a & PS2_RAM_COMMITTED_MASK), &v, 4); }
     int16_t rdS16(const uint8_t *p)
     {
         int16_t v;
@@ -1756,7 +1755,7 @@ namespace
     void expandReaderList(uint8_t *rdram, PS2Runtime *runtime, uint32_t reader)
     {
         const uint32_t list = rdU32(rdram, reader + 0x20u);
-        if (list == 0u || list >= 0x2000000u)
+        if (list == 0u || list >= PS2_RAM_COMMITTED_TOP)
             return;
         // A reader re-read (or freed without the dtor and rebuilt at the same address) holds a fresh stock list: the
         // old entry is stale, so expand again instead of keeping the select screen on a dead long list.
@@ -1798,7 +1797,7 @@ namespace
             std::strncpy(reinterpret_cast<char *>(rec + 4), w->name, 0x1F);
             // Original ReadEndProcess fills only the stock 65. Never inherit
             // another wrestler's SmackDown names/situations from the template.
-            if (!hctp_restored_finishers::refresh(rdram, 0x2000000u, buf + n * kSelectRec, w->id))
+            if (!hctp_restored_finishers::refresh(rdram, PS2_RAM_COMMITTED_TOP, buf + n * kSelectRec, w->id))
             {
                 std::memset(rec + 0x24, 0, 0x44); // blank, never the template wrestler's finishers (Al Snow showed 619)
                 std::fprintf(stderr, "[selist] restored finisher display pending for %u%c", unsigned(w->id), 10);
@@ -1876,7 +1875,7 @@ namespace
         {
             const uint32_t p = rl->second.second + s * kSelectRec;
             const int16_t id = rdS16(rdram + p + 2);
-            if (id >= 0 && !hctp_restored_finishers::refresh(rdram, 0x2000000u, p, uint16_t(id)))
+            if (id >= 0 && !hctp_restored_finishers::refresh(rdram, PS2_RAM_COMMITTED_TOP, p, uint16_t(id)))
                 rosterxFinisherDisplay(rdram, p, uint16_t(id)); // Nov 11: slots (CAM edits included)
         }
         // Sized to the real list and freed by the screen's dtor: a lingering block splits the guest heap and
@@ -2088,8 +2087,8 @@ namespace
     void showStringLogged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         static std::set<std::string> seen;
-        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
-        const uint32_t str = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5])) & 0x1FFFFFFu;
+        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_COMMITTED_MASK;
+        const uint32_t str = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5])) & PS2_RAM_COMMITTED_MASK;
         if (seen.size() < 400 && str != 0u)
         {
             std::string raw;
@@ -2101,7 +2100,7 @@ namespace
             {
                 uint32_t font = 0, count = 0, table = 0;
                 std::memcpy(&font, rdram + self + 0x154u, 4);
-                font &= 0x1FFFFFFu;
+                font &= PS2_RAM_COMMITTED_MASK;
                 if (font)
                 {
                     std::memcpy(&count, rdram + font + 0x14u, 4);
@@ -2131,7 +2130,7 @@ namespace
                         for (uint32_t i = 0; i < count && i < 120u; ++i)
                         {
                             uint16_t c;
-                            std::memcpy(&c, rdram + ((table + i * 2u) & 0x1FFFFFFu), 2);
+                            std::memcpy(&c, rdram + ((table + i * 2u) & PS2_RAM_COMMITTED_MASK), 2);
                             std::cerr << " " << c;
                         }
                         std::cerr << std::dec << std::endl;
@@ -2150,8 +2149,8 @@ namespace
     void getFontCellLogged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         auto reg = [&](int r) { return static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[r])); };
-        const uint32_t self = reg(4) & 0x1FFFFFFu, c1 = reg(5) & 0xFFu, c2 = reg(6) & 0xFFu, ra = reg(31);
-        const uint32_t pCell = reg(8) & 0x1FFFFFFu, pW = reg(9) & 0x1FFFFFFu, pH = reg(10) & 0x1FFFFFFu;
+        const uint32_t self = reg(4) & PS2_RAM_COMMITTED_MASK, c1 = reg(5) & 0xFFu, c2 = reg(6) & 0xFFu, ra = reg(31);
+        const uint32_t pCell = reg(8) & PS2_RAM_COMMITTED_MASK, pW = reg(9) & PS2_RAM_COMMITTED_MASK, pH = reg(10) & PS2_RAM_COMMITTED_MASK;
         g_origGetFontCell(rdram, ctx, runtime);
         static std::set<uint64_t> seen;
         const uint64_t key = (static_cast<uint64_t>(ra) << 32) | (self << 8) ^ (c1 << 8) | c2;
@@ -2162,7 +2161,7 @@ namespace
             std::memcpy(&cell, rdram + pCell, 4);
             std::memcpy(&w, rdram + pW, 4);
             std::memcpy(&h, rdram + pH, 4);
-            cell &= 0x1FFFFFFu;
+            cell &= PS2_RAM_COMMITTED_MASK;
             if (cell)
                 std::memcpy(cf, rdram + cell, 16);
             static std::set<uint32_t> objSeen;
@@ -2195,8 +2194,8 @@ namespace
     template <int I>
     void setTex0Logged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
-        const uint32_t out = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5])) & 0x1FFFFFFu;
+        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_COMMITTED_MASK;
+        const uint32_t out = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5])) & PS2_RAM_COMMITTED_MASK;
         const uint32_t ra = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
         g_origSetTex0[I](rdram, ctx, runtime);
         uint64_t tex0 = 0;
@@ -2224,12 +2223,12 @@ namespace
         if (logged < 120 && raNow == 0x15eec8u)
         {
             ++logged;
-            const uint32_t obj = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
-            const uint32_t vec = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5])) & 0x1FFFFFFu;
+            const uint32_t obj = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_COMMITTED_MASK;
+            const uint32_t vec = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5])) & PS2_RAM_COMMITTED_MASK;
             char line[1024];
             int n = std::snprintf(line, sizeof(line), "[sprlog] obj=0x%x vec=0x%x ra=0x%x v:", obj, vec, raNow);
             uint32_t parent; std::memcpy(&parent, rdram + obj + 0x80, 4);
-            parent &= 0x1FFFFFFu;
+            parent &= PS2_RAM_COMMITTED_MASK;
             n += std::snprintf(line + n, sizeof(line) - n, " v0=(%g,%g) M:", *reinterpret_cast<float *>(rdram + vec), *reinterpret_cast<float *>(rdram + vec + 4));
             for (uint32_t off = 0x40; off < 0x80 && n < 600; off += 4)
                 n += std::snprintf(line + n, sizeof(line) - n, " %g", *reinterpret_cast<float *>(rdram + obj + off));
@@ -2249,7 +2248,7 @@ namespace
         static int logged = 0;
         if (logged++ < 12)
         {
-            const uint32_t data = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5])) & 0x1FFFFFFu;
+            const uint32_t data = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5])) & PS2_RAM_COMMITTED_MASK;
             const uint32_t size = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[6]));
             char line[1024];
             int n = std::snprintf(line, sizeof(line), "[sprdata] this=0x%x data=0x%x size=%u:",
@@ -2272,7 +2271,7 @@ namespace
         const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4]));
         std::cerr << "[skipmovie] TitleMovieSequence skip self=0x" << std::hex << self << std::dec << std::endl;
         const uint32_t state = 6u;
-        std::memcpy(rdram + ((self + 0x18u) & 0x1FFFFFFu), &state, 4);
+        std::memcpy(rdram + ((self + 0x18u) & PS2_RAM_COMMITTED_MASK), &state, 4);
         ctx->pc = 0x137ef0u;
         runtime->lookupFunction(0x137ef0u)(rdram, ctx, runtime); // TitleMovieSequence::GoNext
     }
@@ -2296,7 +2295,7 @@ namespace
         char line[400];
         int n = std::snprintf(line, sizeof(line), "[adxt] %s a0=%x a1=%x a2=%x a3=%x ra=%x", h.name, reg(4), reg(5), reg(6), reg(7), reg(31));
         const uint32_t strArg = I == 2 || I == 3 || I == 11 ? reg(5) : 0u; // StartFname/Lp/EntryFname (adxt, fname)
-        if (strArg && strArg < 0x2000000u)
+        if (strArg && strArg < PS2_RAM_COMMITTED_TOP)
             std::snprintf(line + n, sizeof(line) - n, " \"%.120s\"", reinterpret_cast<const char *>(rdram + strArg));
         std::cerr << line << std::endl;
         h.orig(rdram, ctx, runtime);
@@ -2695,7 +2694,7 @@ namespace
                 uint32_t sound = 0;
                 if (g_pbpRdram)
                     std::memcpy(&sound, g_pbpRdram + 0x526768u, 4);
-                if (g_pbpRdram && sound >= 0x100000u && sound < 0x1FFFFF0u)
+                if (g_pbpRdram && sound >= 0x100000u && sound < (PS2_RAM_COMMITTED_TOP - 0x10u))
                 {
                     uint8_t opt[12];
                     std::memcpy(opt, g_pbpRdram + sound + 4u, 12);
@@ -2761,8 +2760,8 @@ namespace
     // archive: BE u32 0, BE u32 count, then BE (offset, size) pairs relative to the archive
     bool adxFromGuest(uint8_t *rdram, uint32_t addr, uint32_t size, std::vector<uint8_t> &out)
     {
-        const uint32_t a = addr & 0x1FFFFFFu;
-        if (size < 0x40u || size > 0x1000000u || a + size > 0x2000000u)
+        const uint32_t a = addr & PS2_RAM_COMMITTED_MASK;
+        if (size < 0x40u || size > 0x1000000u || a + size > PS2_RAM_COMMITTED_TOP)
             return false;
         out.assign(rdram + a, rdram + a + size);
         return true;
@@ -2784,11 +2783,11 @@ namespace
         bool ok = false;
         if (indexed)
         {
-            const uint32_t base = a1 & 0x1FFFFFFu;
-            if (base + 8u <= 0x2000000u)
+            const uint32_t base = a1 & PS2_RAM_COMMITTED_MASK;
+            if (base + 8u <= PS2_RAM_COMMITTED_TOP)
             {
                 const uint32_t count = be32(rdram + base + 4u);
-                if (be32(rdram + base) == 0u && a2 < count && count < 4096u && base + 8u + (a2 + 1u) * 8u <= 0x2000000u)
+                if (be32(rdram + base) == 0u && a2 < count && count < 4096u && base + 8u + (a2 + 1u) * 8u <= PS2_RAM_COMMITTED_TOP)
                 {
                     const uint32_t off = be32(rdram + base + 8u + a2 * 8u), size = be32(rdram + base + 12u + a2 * 8u);
                     ok = adxFromGuest(rdram, a1 + off, size, data);
@@ -2942,7 +2941,7 @@ namespace
             // HCTP_PBP_BRAND_SD=0 flips it. (IsSmackDownEntry's +0x163 != 6 is roster membership, not the brand.)
             uint32_t ctrl = 0, mode = 0xFFFFFFFFu;
             std::memcpy(&ctrl, rdram + 0x526628u, 4);
-            if (ctrl != 0u && ctrl < 0x2000000u)
+            if (ctrl != 0u && ctrl < PS2_RAM_COMMITTED_TOP)
                 std::memcpy(&mode, rdram + ctrl + 4u, 4);
             static const int sdValue = [] {
                 const char *e = std::getenv("HCTP_PBP_BRAND_SD");
@@ -3036,8 +3035,8 @@ namespace
         g_pbpRdram = rdram;
         const uint32_t self = regU(ctx, 4);
         uint32_t order = 0, type = 0;
-        std::memcpy(&order, rdram + ((self + 0x64u) & 0x1FFFFFFu), 4);
-        std::memcpy(&type, rdram + ((self + 0x38u) & 0x1FFFFFFu), 4);
+        std::memcpy(&order, rdram + ((self + 0x64u) & PS2_RAM_COMMITTED_MASK), 4);
+        std::memcpy(&type, rdram + ((self + 0x38u) & PS2_RAM_COMMITTED_MASK), 4);
         g_origSetEvent(rdram, ctx, runtime);
         if (type == 2u && order < 8u)
             std::fprintf(stderr, "[hctp-pbp] entrance #%u set up%c", order, 10);
@@ -3066,7 +3065,7 @@ namespace
             uint32_t chara = 0;
             uint16_t charCode = 0xFFFFu, liveCode = 0xFFFFu;
             std::memcpy(&chara, rdram + 0x526EA0u, 4);
-            if (chara >= 0x100000u && chara < 0x2000000u)
+            if (chara >= 0x100000u && chara < PS2_RAM_COMMITTED_TOP)
                 std::memcpy(&charCode, rdram + chara + 0x30u, 2);
             std::memcpy(&liveCode, rdram + 0x4921CAu + uint32_t(order) * 0x20u, 2);
             const uint16_t code = charCode < 10000u ? charCode : liveCode;
@@ -3163,7 +3162,7 @@ namespace
         {
             uint32_t data = 0, mapped = 0xFFFFFFFFu;
             std::memcpy(&data, rdram + 0x52A0B8u, 4);
-            if (data != 0u && data < 0x2000000u)
+            if (data != 0u && data < PS2_RAM_COMMITTED_TOP)
                 std::memcpy(&mapped, rdram + data + 0x728u + uint32_t(order) * 4u, 4);
             if (mapped < 8u)
                 slot = mapped;
@@ -3171,7 +3170,7 @@ namespace
             // entrance title graphic when it is not 0xFF (else the belt the wrestler holds). A title match should set
             // it (challenger / belt at stake) -> wire SYM's title-match time tables 12-27 from this once logged.
             uint32_t title8c = 0xFFFFFFFFu;
-            if (data != 0u && data < 0x2000000u)
+            if (data != 0u && data < PS2_RAM_COMMITTED_TOP)
                 std::memcpy(&title8c, rdram + data + slot * 0xD4u + 0x8Cu, 4);
             std::fprintf(stderr, "[hctp-pbp] entrance #%d -> cast slot %u (event data 0x%X, title+0x8C 0x%X)%c", order, slot,
                          data, title8c, 10);
@@ -3241,7 +3240,7 @@ namespace
         {
             uint32_t data = 0, count = 0;
             std::memcpy(&data, rdram + 0x52A0B8u, 4);
-            if (data != 0u && data < 0x2000000u)
+            if (data != 0u && data < PS2_RAM_COMMITTED_TOP)
                 std::memcpy(&count, rdram + data + 0x84u, 4);
             const auto teamOf = [&](uint32_t i) {
                 return g_entranceTeam[i] >= 0 ? g_entranceTeam[i] : int8_t(rdram[0x4921C9u + i * 0x20u]);
@@ -3306,7 +3305,7 @@ namespace
     void commentaryGameSe(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t chara = regU(ctx, 4);
-        if (chara >= 0x100000u && chara < 0x2000000u)
+        if (chara >= 0x100000u && chara < PS2_RAM_COMMITTED_TOP)
         {
             uint32_t moveId = 0;
             std::memcpy(&moveId, rdram + chara + 0xA4u, 4);
@@ -3510,7 +3509,7 @@ namespace
     bool g_evtkStagePending = false; // restore 0x4922C0 at the scene's own /STG/ search (loads run after the dtor)
     void cfileSearchLoose(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t pathAddr = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        const uint32_t pathAddr = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_COMMITTED_MASK;
         char path[33] = {};
         for (int i = 0; i < 32 && rdram[pathAddr + i]; ++i)
             path[i] = static_cast<char>(std::toupper(rdram[pathAddr + i]));
@@ -3593,7 +3592,7 @@ namespace
     PS2Runtime::RecompiledFunction g_origGetEntranceEventNo = nullptr;
     void getEntranceEventNoPerAttire(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_COMMITTED_MASK;
         const uint32_t order = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5]));
         g_origGetEntranceEventNo(rdram, ctx, runtime);
         if (order >= 8)
@@ -3714,7 +3713,7 @@ namespace
         g_evtkEvent = ev;
         g_evtkCageDone = false;
         g_evtkSavedStage = rdram[0x4922C0u];
-        prm &= 0x1FFFFFFu;
+        prm &= PS2_RAM_COMMITTED_MASK;
         for (uint32_t i = 0; i < 8u; ++i) std::memcpy(&g_evtkSavedCasts[i], rdram + 0x4921CAu + i * 0x20u, 2);
         auto it = g_evtkRows.find(ev);
         if (it == g_evtkRows.end()) { std::fprintf(stderr, "[victory-evtk] %u not in evtk_sevp.txt%c", ev, 10); return; }
@@ -3722,7 +3721,7 @@ namespace
         for (const auto &c : it->second.chars)
         {
             if (c.second != 0x1000000u || w >= 8u) continue;
-            if (blk) rdram[(blk & 0x1FFFFFFu) + 0xC9u + w] = 1;
+            if (blk) rdram[(blk & PS2_RAM_COMMITTED_MASK) + 0xC9u + w] = 1;
             {
                 // Try 3: codes < 100 (6051 '40', 6050 '20') hung on /EMD/40 -> CAM dummy 9100 until decoded.
                 const uint32_t lit = (c.first < 100u && ev >= 6000u) ? 9100u : c.first; // Nov 9: TKME 4000s use today's ids (0 = Rock); only DORA 6050+ rows are old ids
@@ -3777,13 +3776,13 @@ namespace
     PS2Runtime::RecompiledFunction g_origActionEvent = nullptr;
     void actionEventEvtk(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t seq = uint32_t(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        const uint32_t seq = uint32_t(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_COMMITTED_MASK;
         uint32_t type = 0, pad = 0;
         if (g_evtkEvent != 0u && seq != 0u && seq < 0x1FFFF00u)
         {
             std::memcpy(&type, rdram + seq + 0x38u, 4);
             std::memcpy(&pad, rdram + 0x4FFA00u, 4);
-            pad &= 0x1FFFFFFu;
+            pad &= PS2_RAM_COMMITTED_MASK;
         }
         if (g_evtkEvent != 0u && seq != 0u && seq < 0x1FFFF00u)
         {
@@ -3827,7 +3826,7 @@ namespace
     {
         if (g_evtkCageDone || g_evtkEvent < 6050u || g_evtkEvent > 6055u || ctl == 0u) return;
         g_evtkCageDone = true;
-        const uint32_t loc = guestCall(rdram, ctx, runtime, 0x1001E0u, {0x20u}) & 0x1FFFFFFu;
+        const uint32_t loc = guestCall(rdram, ctx, runtime, 0x1001E0u, {0x20u}) & PS2_RAM_COMMITTED_MASK;
         if (loc == 0u || loc >= 0x1FFFF00u) { std::fprintf(stderr, "[victory-evtk] cage: new failed%c", 10); return; }
         std::memset(rdram + loc, 0, 0x20);
         const float rot[3] = {1.570796251296997f, -7.93289274270137e-08f, -1.1968239732595976e-07f};
@@ -3856,14 +3855,14 @@ namespace
     {
         // CSeasonSystem::HowToWait 0x253620 (a0 = common): Season waits here for X at the scene end. CAM (lent common)
         // has no Season driver -> end when CEventSystem (common+0x28) play state +0x10 == 4 (finished) or START held.
-        const uint32_t common = uint32_t(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        const uint32_t common = uint32_t(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_COMMITTED_MASK;
         g_origHowToWait(rdram, ctx, runtime);
-        if (g_evtkEvent == 0u || g_evtkEvent >= 5000u || g_evtkBlk == 0u || common != (g_evtkBlk & 0x1FFFFFFu)) return;
+        if (g_evtkEvent == 0u || g_evtkEvent >= 5000u || g_evtkBlk == 0u || common != (g_evtkBlk & PS2_RAM_COMMITTED_MASK)) return;
         if (_mm_cvtsi128_si32(ctx->r[2]) & 0xFF) return;
         uint32_t es = 0, st = 0, pad = 0; uint16_t btn = 0;
-        std::memcpy(&es, rdram + common + 0x28u, 4); es &= 0x1FFFFFFu;
+        std::memcpy(&es, rdram + common + 0x28u, 4); es &= PS2_RAM_COMMITTED_MASK;
         if (es != 0u && es < 0x1FFFF00u) std::memcpy(&st, rdram + es + 0x10u, 4);
-        std::memcpy(&pad, rdram + 0x4FFA00u, 4); pad &= 0x1FFFFFFu;
+        std::memcpy(&pad, rdram + 0x4FFA00u, 4); pad &= PS2_RAM_COMMITTED_MASK;
         if (pad != 0u && pad < 0x1FFFF00u) std::memcpy(&btn, rdram + pad + 4u, 2);
         if (st == 4u || (btn & 0x800u))
         {
@@ -3878,7 +3877,7 @@ namespace
         const uint32_t type = uint32_t(_mm_cvtsi128_si32(ctx->r[5]));
         int32_t pending; std::memcpy(&pending, rdram + 0x58CCF8u, 4);
         uint32_t common; std::memcpy(&common, rdram + 0x529400u, 4);
-        common &= 0x1FFFFFFu;
+        common &= PS2_RAM_COMMITTED_MASK;
         uint16_t cur = 0;
         if (common != 0u && common < 0x1FFFF00u)
             std::memcpy(&cur, rdram + common + 0x56u, 2);
@@ -3888,7 +3887,7 @@ namespace
         {
             // CAM entrance preview: MovesNext 0x3425a0 -> InitEventParam 0x342e30 puts the number at param(a3)+4 and in
             // the cast's game prop +0xEA (prop = 0x4C0F54 + id*0x170, or GetCommon+0x12F44 for the CAW/edit slot).
-            uint32_t param = uint32_t(_mm_cvtsi128_si32(ctx->r[7])) & 0x1FFFFFFu, pnum = 0;
+            uint32_t param = uint32_t(_mm_cvtsi128_si32(ctx->r[7])) & PS2_RAM_COMMITTED_MASK, pnum = 0;
             if (param != 0u && param < 0x1FFFF00u)
                 std::memcpy(&pnum, rdram + param + 4u, 4);
             if (cur == 3944u || pnum == 3944u)
@@ -3945,11 +3944,11 @@ namespace
             for (int i = 0; i < 8; ++i) ctx->r[4 + i] = saved[i];
             if (blk)
             {
-                std::memset(rdram + (blk & 0x1FFFFFFu), 0, 0x400u);
+                std::memset(rdram + (blk & PS2_RAM_COMMITTED_MASK), 0, 0x400u);
                 g_evtkBlk = blk; // kept alive: lent again around InitEventSystem
                 evtkArm(rdram, blk, uint32_t(pending), uint32_t(_mm_cvtsi128_si32(ctx->r[7])));
                 const uint16_t ev = uint16_t(pending);
-                std::memcpy(rdram + (blk & 0x1FFFFFFu) + 0x56u, &ev, 2);
+                std::memcpy(rdram + (blk & PS2_RAM_COMMITTED_MASK) + 0x56u, &ev, 2);
                 std::memcpy(rdram + 0x529400u, &blk, 4);
                 SET_GPR_U32(ctx, 5, 1u);
                 std::fprintf(stderr, "[victory-evtk] doramock %d -> type 1/4 with lent common 0x%X (CAM)%c", pending, blk, 10);
@@ -3979,17 +3978,17 @@ namespace
     void setWinnerVictoryTxt(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t ra = uint32_t(_mm_cvtsi128_si32(ctx->r[31]));
-        const uint32_t outP = uint32_t(_mm_cvtsi128_si32(ctx->r[5])) & 0x1FFFFFFu;
-        const uint32_t winP = uint32_t(_mm_cvtsi128_si32(ctx->r[6])) & 0x1FFFFFFu;
+        const uint32_t outP = uint32_t(_mm_cvtsi128_si32(ctx->r[5])) & PS2_RAM_COMMITTED_MASK;
+        const uint32_t winP = uint32_t(_mm_cvtsi128_si32(ctx->r[6])) & PS2_RAM_COMMITTED_MASK;
         g_origSetWinner(rdram, ctx, runtime);
-        if (ctx->pc != ra || rdram[0x4B6439u] != 0 || winP > 0x1FFFFF0u || outP > 0x1FFFFFCu)
+        if (ctx->pc != ra || rdram[0x4B6439u] != 0 || winP > (PS2_RAM_COMMITTED_TOP - 0x10u) || outP > (PS2_RAM_COMMITTED_TOP - 4u))
             return;
         uint32_t kind, prop, flag;
         std::memcpy(&kind, rdram + winP + 0x10u, 4);
         std::memcpy(&prop, rdram + winP, 4);
         std::memcpy(&flag, rdram + 0x58CCF0u, 4);
-        prop &= 0x1FFFFFFu;
-        if (kind != 1u || flag != 0u || prop == 0u || prop > 0x1FFFFF0u)
+        prop &= PS2_RAM_COMMITTED_MASK;
+        if (kind != 1u || flag != 0u || prop == 0u || prop > (PS2_RAM_COMMITTED_TOP - 0x10u))
             return;
         uint16_t cast; std::memcpy(&cast, rdram + prop + 0xAu, 2);
         uint32_t id = cast / 100u;
@@ -4078,7 +4077,7 @@ namespace
     {
         static std::set<uint32_t> seen;
         const uint32_t ra = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
-        const uint32_t sp = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[29])) & 0x1FFFFFFu;
+        const uint32_t sp = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[29])) & PS2_RAM_COMMITTED_MASK;
         if (seen.insert(ra).second)
         {
             char line[512];
@@ -4132,7 +4131,7 @@ namespace
             char name[96] = {};
             for (uint32_t k = 0; k + 1 < sizeof(name); ++k)
             {
-                const char c = static_cast<char>(rdram[(a0 + k) & 0x1FFFFFFu]);
+                const char c = static_cast<char>(rdram[(a0 + k) & PS2_RAM_COMMITTED_MASK]);
                 if (!c) break;
                 name[k] = c;
             }
@@ -4167,12 +4166,12 @@ namespace
         auto reg = [ctx](int r) { return static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[r])); };
         const int bank = static_cast<int>(reg(4));
         const uint32_t info = reg(5);
-        auto w32 = [rdram](uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & 0x1FFFFFCu), 4); return v; };
+        auto w32 = [rdram](uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & (PS2_RAM_COMMITTED_TOP - 4u)), 4); return v; };
         auto grab = [rdram](uint32_t adr, uint32_t size)
         {
             std::vector<uint8_t> v;
-            adr &= 0x1FFFFFFu;
-            if (adr != 0u && size != 0u && size < 0x1000000u && adr + size <= 0x2000000u)
+            adr &= PS2_RAM_COMMITTED_MASK;
+            if (adr != 0u && size != 0u && size < 0x1000000u && adr + size <= PS2_RAM_COMMITTED_TOP)
                 v.assign(rdram + adr, rdram + adr + size);
             return v;
         };
@@ -4230,7 +4229,7 @@ namespace
                                    g_skOrigHsynCtl = nullptr, g_skOrigHsynUnbind = nullptr, g_skOrigMsinUnbind = nullptr;
     uint32_t skReg(R5900Context *ctx, int r) { return static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[r])); }
     void skRet(R5900Context *ctx, uint32_t v) { ctx->r[2] = _mm_set_epi64x(0, static_cast<int64_t>(static_cast<int32_t>(v))); }
-    uint32_t skW32(uint8_t *rdram, uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & 0x1FFFFFCu), 4); return v; }
+    uint32_t skW32(uint8_t *rdram, uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & (PS2_RAM_COMMITTED_TOP - 4u)), 4); return v; }
 
     // CSkCtrl::BindMsinBank(bank) 0x2e3170 (Ghidra): HSYNTH_Bind(3, -1, HD adr +4, HD size +0x10, SPU adr +8, BD size
     // +0x14) -> bank, HSYNTH_Bind(5, -1, bank, 0) -> track, MSIN_Bind(0..) -> port, MSIN_Bind(5, track, port); the
@@ -4267,11 +4266,11 @@ namespace
             handle = hctpsk::kHandleBase + static_cast<int>(hctpsk::g_tracks.size()) - 1;
         }
         const uint32_t tr = skW32(rdram, info + 0x24u);
-        auto put = [rdram](uint32_t a, uint32_t v) { std::memcpy(rdram + (a & 0x1FFFFFCu), &v, 4); };
+        auto put = [rdram](uint32_t a, uint32_t v) { std::memcpy(rdram + (a & (PS2_RAM_COMMITTED_TOP - 4u)), &v, 4); };
         put(tr + 8u, static_cast<uint32_t>(handle));
         put(tr + 0u, static_cast<uint32_t>(handle));
         put(tr + 0xcu, static_cast<uint32_t>(handle));
-        rdram[(info + 0x2cu) & 0x1FFFFFFu] = 1;
+        rdram[(info + 0x2cu) & PS2_RAM_COMMITTED_MASK] = 1;
         std::fprintf(stderr, "[nativesk] effect bank spu 0x%x -> native track 0x%x%c", spu, handle, 10);
     }
 
@@ -4349,7 +4348,7 @@ namespace
     {
         const uint32_t a1 = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5]));
         const uint32_t n = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[7]));
-        const uint32_t t0 = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[8])) & 0x1FFFFFFu;
+        const uint32_t t0 = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[8])) & PS2_RAM_COMMITTED_MASK;
         static const uint32_t s_model = []
         {
             const char *v = std::getenv("HCTP_IKWATCH_MODEL");
@@ -4357,7 +4356,7 @@ namespace
         }();
         uint32_t world = 0;
         std::memcpy(&world, rdram + s_model + 0xD0u, 4);
-        const bool watched = (world & 0x1FFFFFFu) == t0 && (a1 & 0xF0000000u) == 0x70000000u && n > 89u;
+        const bool watched = (world & PS2_RAM_COMMITTED_MASK) == t0 && (a1 & 0xF0000000u) == 0x70000000u && n > 89u;
         MulN2Rec rec{};
         if (watched)
         {
@@ -4396,10 +4395,10 @@ namespace
     }
     void skinUpdateCommon(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, PS2Runtime::RecompiledFunction orig)
     {
-        const uint32_t model = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
-        auto rd = [&](uint32_t a) -> uint32_t { uint32_t v = 0; a &= 0x1FFFFFFu; if (a >= 0x100000u && a < 0x1FFFFFCu) std::memcpy(&v, rdram + a, 4); return v; };
+        const uint32_t model = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_COMMITTED_MASK;
+        auto rd = [&](uint32_t a) -> uint32_t { uint32_t v = 0; a &= PS2_RAM_COMMITTED_MASK; if (a >= 0x100000u && a < (PS2_RAM_COMMITTED_TOP - 4u)) std::memcpy(&v, rdram + a, 4); return v; };
         uint32_t ymp = rd(model + 0xC8u), bones = ymp ? rd(ymp + 0x14u) : 0u;
-        const uint32_t obj = rd(model + 0xE8u) & 0x1FFFFFFu;
+        const uint32_t obj = rd(model + 0xE8u) & PS2_RAM_COMMITTED_MASK;
         if (bones != 92u)
         {
             orig(rdram, ctx, runtime);
@@ -4409,8 +4408,8 @@ namespace
         // and its parent's (bone entry +0x30 = parent index, as Update 0x150c54 reads it). Kept in a ring of 120 calls;
         // dumped when the file skinupd.go appears in the game folder (deleted after).
         constexpr uint32_t kBone = 89u;
-        const uint32_t loc = rd(model + 0xCCu) & 0x1FFFFFFu, wld = rd(model + 0xD0u) & 0x1FFFFFFu;
-        const uint32_t table = rd(ymp + 0x20u) & 0x1FFFFFFu;
+        const uint32_t loc = rd(model + 0xCCu) & PS2_RAM_COMMITTED_MASK, wld = rd(model + 0xD0u) & PS2_RAM_COMMITTED_MASK;
+        const uint32_t table = rd(ymp + 0x20u) & PS2_RAM_COMMITTED_MASK;
         const int32_t parent = static_cast<int32_t>(rd(table + kBone * 80u + 0x30u));
         struct Rec { uint64_t call; int64_t ns; float locB[16], wldB[16], wldA[16], parA[16]; int32_t parent; uint32_t obj, ra, sp, model, ec, f0; };
         static std::vector<Rec> ring(120);
@@ -4422,7 +4421,7 @@ namespace
         r.obj = obj;
         r.model = model;
         r.ec = rd(model + 0xECu);
-        r.f0 = rd(model + 0xF0u) & 0x1FFFFFFu;
+        r.f0 = rd(model + 0xF0u) & PS2_RAM_COMMITTED_MASK;
         r.ra = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
         r.sp = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[29]));
         std::memcpy(r.locB, rdram + loc + kBone * 64u, 64);
@@ -4475,9 +4474,9 @@ namespace
     uint32_t g_camCalls = 0;
     void camMatLogged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t e = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5])) & 0x1FFFFFFu;
-        const uint32_t d = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[6])) & 0x1FFFFFFu;
-        if (e + 12u < 0x2000000u && d + 12u < 0x2000000u)
+        const uint32_t e = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5])) & PS2_RAM_COMMITTED_MASK;
+        const uint32_t d = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[6])) & PS2_RAM_COMMITTED_MASK;
+        if (e + 12u < PS2_RAM_COMMITTED_TOP && d + 12u < PS2_RAM_COMMITTED_TOP)
         {
             std::memcpy(g_camEye, rdram + e, 12);
             std::memcpy(g_camDir, rdram + d, 12);
@@ -4488,15 +4487,15 @@ namespace
     void camRootProbe(uint8_t *rdram, R5900Context *ctx)
     {
         static const uint32_t wantBones = [] { const char *v = std::getenv("HCTP_CAMROOT_BONES"); return v ? uint32_t(std::atoi(v)) : 71u; }();
-        const uint32_t model = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        const uint32_t model = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_COMMITTED_MASK;
         if (model < 0x100000u || model >= 0x1FFFE00u) return;
         uint32_t ymp = 0, bones = 0, world = 0;
         std::memcpy(&ymp, rdram + model + 0xC8u, 4);
         std::memcpy(&world, rdram + model + 0xD0u, 4);
-        ymp &= 0x1FFFFFFu; world &= 0x1FFFFFFu;
-        if (ymp < 0x100000u || ymp >= 0x1FFFFF0u) return;
+        ymp &= PS2_RAM_COMMITTED_MASK; world &= PS2_RAM_COMMITTED_MASK;
+        if (ymp < 0x100000u || ymp >= (PS2_RAM_COMMITTED_TOP - 0x10u)) return;
         std::memcpy(&bones, rdram + ymp + 0x14u, 4);
-        if (bones != wantBones || world < 0x100000u || world + 64u >= 0x2000000u) return;
+        if (bones != wantBones || world < 0x100000u || world + 64u >= PS2_RAM_COMMITTED_TOP) return;
         static float lastRoot[3]{}, lastEye[3]{}, lastDir[3]{};
         static uint32_t lastCamCalls = 0, n[4]{}, lines = 0, draws = 0;
         // Nov 10 v2: the 0x103ea8 hook never fires here (CSmackCamera::Update 0x158680 calls it by a direct jal at
@@ -4505,8 +4504,8 @@ namespace
         {
             uint32_t camp = 0;
             std::memcpy(&camp, rdram + 0x526E70u, 4);
-            camp &= 0x1FFFFFFu;
-            if (camp >= 0x100000u && camp + 0x120u < 0x2000000u)
+            camp &= PS2_RAM_COMMITTED_MASK;
+            if (camp >= 0x100000u && camp + 0x120u < PS2_RAM_COMMITTED_TOP)
             {
                 float E[4][4];
                 std::memcpy(E, rdram + camp + 0xE0u, 64);
@@ -4539,17 +4538,17 @@ namespace
     }
     void boneJitterLogged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t model = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        const uint32_t model = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_COMMITTED_MASK;
         if (model >= 0x100000u && model < 0x1FFFE00u)
         {
             uint32_t ymp = 0, bones = 0, world = 0;
             std::memcpy(&ymp, rdram + model + 0xC8u, 4);
             std::memcpy(&world, rdram + model + 0xD0u, 4);
-            ymp &= 0x1FFFFFFu;
-            world &= 0x1FFFFFFu;
-            if (ymp >= 0x100000u && ymp < 0x1FFFFF0u)
+            ymp &= PS2_RAM_COMMITTED_MASK;
+            world &= PS2_RAM_COMMITTED_MASK;
+            if (ymp >= 0x100000u && ymp < (PS2_RAM_COMMITTED_TOP - 0x10u))
                 std::memcpy(&bones, rdram + ymp + 0x14u, 4);
-            if (bones > 0u && bones <= 256u && world >= 0x100000u && world + bones * 64u < 0x2000000u)
+            if (bones > 0u && bones <= 256u && world >= 0x100000u && world + bones * 64u < PS2_RAM_COMMITTED_TOP)
             {
                 BoneJitterModel &m = g_boneJitter[model];
                 if (m.bones != bones)
@@ -4612,9 +4611,9 @@ namespace
                     {
                     const uint32_t base = (model > 0x180000u ? model - 0x80000u : 0x100000u) & ~0xFFFu;
                     constexpr uint32_t kScanWords = 0x100000u / 4u;
-                    if (base != scanBase || s1.size() != kScanWords || base + 0x100000u > 0x2000000u)
+                    if (base != scanBase || s1.size() != kScanWords || base + 0x100000u > PS2_RAM_COMMITTED_TOP)
                     {
-                        scanBase = base + 0x100000u <= 0x2000000u ? base : 0x1F00000u;
+                        scanBase = base + 0x100000u <= PS2_RAM_COMMITTED_TOP ? base : 0x1F00000u;
                         s1.assign(kScanWords, 0u);
                         s2.assign(kScanWords, 0u);
                         alt.assign(kScanWords, 0u);
@@ -4651,7 +4650,7 @@ namespace
                         {
                             uint32_t world0 = 0;
                             std::memcpy(&world0, rdram + model + 0xD0u, 4);
-                            std::fprintf(stderr, "[altscan] model %06x world %06x ymp %06x base %06x:", model, world0 & 0x1FFFFFFu,
+                            std::fprintf(stderr, "[altscan] model %06x world %06x ymp %06x base %06x:", model, world0 & PS2_RAM_COMMITTED_MASK,
                                          m.ymp, scanBase);
                             uint32_t runs = 0;
                             for (uint32_t i = 0; i < kScanWords && runs < 40u;)
@@ -4698,15 +4697,15 @@ namespace
             std::fprintf(stderr, "[bonejit] model %06x bones %u frames %u (Hanten %u, SetBoneData %u calls):", addr, m.bones,
                          m.frames, g_hantenCalls.exchange(0u), g_setBoneDataCalls.exchange(0u));
             uint32_t boneTable = 0;
-            if (m.ymp >= 0x100000u && m.ymp < 0x1FFFFF0u)
+            if (m.ymp >= 0x100000u && m.ymp < (PS2_RAM_COMMITTED_TOP - 0x10u))
                 std::memcpy(&boneTable, rdram + m.ymp + 0x20u, 4);
-            boneTable &= 0x1FFFFFFu;
+            boneTable &= PS2_RAM_COMMITTED_MASK;
             for (uint32_t i = 0; i < 6u && i < m.bones; ++i)
             {
                 const uint32_t b = order[i];
                 // FindBone 0x150b10: a bone's name is the first 16 bytes of its 80-byte entry
                 char name[17] = "?";
-                if (boneTable >= 0x100000u && boneTable + (b + 1u) * 80u < 0x2000000u)
+                if (boneTable >= 0x100000u && boneTable + (b + 1u) * 80u < PS2_RAM_COMMITTED_TOP)
                 {
                     std::memcpy(name, rdram + boneTable + b * 80u, 16);
                     name[16] = 0;
@@ -4735,7 +4734,7 @@ namespace
     std::map<uint32_t, IkAltState> g_ikAlt;
     void ikAltLogged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t ik = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        const uint32_t ik = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_COMMITTED_MASK;
         // Foot (bone 89) of the watched model (HCTP_IKWATCH_MODEL, hex, default c40110 = the shaking CAM model):
         // local and world matrices right before and after every IK call, in a timestamped ring of 120, dumped when
         // ikring.go appears in the game folder.
@@ -4744,8 +4743,8 @@ namespace
             const char *v = std::getenv("HCTP_IKWATCH_MODEL");
             return v ? static_cast<uint32_t>(std::strtoul(v, nullptr, 16)) : 0xc40110u;
         }();
-        auto rdw = [&](uint32_t a) -> uint32_t { uint32_t v = 0; a &= 0x1FFFFFFu; if (a >= 0x100000u && a < 0x1FFFFFCu) std::memcpy(&v, rdram + a, 4); return v; };
-        const uint32_t footLoc = (rdw(s_model + 0xCCu) & 0x1FFFFFFu) + 89u * 64u, footWld = (rdw(s_model + 0xD0u) & 0x1FFFFFFu) + 89u * 64u;
+        auto rdw = [&](uint32_t a) -> uint32_t { uint32_t v = 0; a &= PS2_RAM_COMMITTED_MASK; if (a >= 0x100000u && a < (PS2_RAM_COMMITTED_TOP - 4u)) std::memcpy(&v, rdram + a, 4); return v; };
+        const uint32_t footLoc = (rdw(s_model + 0xCCu) & PS2_RAM_COMMITTED_MASK) + 89u * 64u, footWld = (rdw(s_model + 0xD0u) & PS2_RAM_COMMITTED_MASK) + 89u * 64u;
         struct IkRec { int64_t ns; uint32_t ik, sp; float locB[16], locA[16], wldB[3], wldA[3]; };
         static std::vector<IkRec> ikRing(120);
         static uint64_t ikN = 0;
@@ -4821,7 +4820,7 @@ namespace
     std::map<uint32_t, IkTips> g_ikFlipLast;
     void ikFlipLogged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t ik = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & 0x1FFFFFFu;
+        const uint32_t ik = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4])) & PS2_RAM_COMMITTED_MASK;
         g_ikFlipOrig(rdram, ctx, runtime);
         if (ik < 0x100000u || ik > 0x1FFFE00u)
             return;
@@ -4894,7 +4893,7 @@ namespace
         ++h.calls;
         uint64_t sig = (uint64_t(a0) * 0x9E3779B97F4A7C15ull) ^ (uint64_t(a1) << 17) ^ (uint64_t(v0) << 40) ^ ra;
         const bool dumpA0 = h.name.find('@') != std::string::npos; // name with '@': also dump 32 words at a0
-        auto w32 = [rdram](uint32_t addr) { uint32_t v; std::memcpy(&v, rdram + (addr & 0x1FFFFFCu), 4); return v; };
+        auto w32 = [rdram](uint32_t addr) { uint32_t v; std::memcpy(&v, rdram + (addr & (PS2_RAM_COMMITTED_TOP - 4u)), 4); return v; };
         if (dumpA0)
             for (uint32_t k = 0; k < 32u; ++k)
                 sig = (sig ^ w32(a0 + k * 4u)) * 0x100000001B3ull;
@@ -4923,7 +4922,7 @@ namespace
             char text[64] = {};
             for (uint32_t k = 0; k + 1 < sizeof(text); ++k)
             {
-                const char c = static_cast<char>(rdram[(a1 + k) & 0x1FFFFFFu]);
+                const char c = static_cast<char>(rdram[(a1 + k) & PS2_RAM_COMMITTED_MASK]);
                 if (!c) break;
                 text[k] = (c >= 32 && c < 127) ? c : '.';
             }
@@ -4993,7 +4992,7 @@ namespace
         uint8_t donorSaved;
     } g_optRedir = {};
     inline uint32_t optArg(R5900Context *ctx, int r) { return static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[r])); }
-    inline uint8_t *optP(uint8_t *rdram, uint32_t a) { return rdram + (a & 0x1FFFFFFu); }
+    inline uint8_t *optP(uint8_t *rdram, uint32_t a) { return rdram + (a & PS2_RAM_COMMITTED_MASK); }
     inline uint32_t optR32(uint8_t *rdram, uint32_t a)
     {
         uint32_t v;
@@ -6624,7 +6623,7 @@ namespace
                 const uint32_t ch = optR32(rdram, 0x526ea0u + t * 4u);
                 uint16_t code = 0;
                 std::memcpy(&code, rdram + 0x4921CAu + t * 0x20u, 2);
-                if (!ch || ch >= 0x2000000u)
+                if (!ch || ch >= PS2_RAM_COMMITTED_TOP)
                     continue;
                 const uint8_t f = rdram[ch + 0x383u];
                 std::fprintf(stderr, " slot%u code %u flag %u", t, code, f);
@@ -7496,7 +7495,7 @@ namespace
                 std::memcpy(r + 0x10, buf + 0x10, 0x102);
             std::memcpy(moves, r + 0x20, 4);
         }
-        const bool ok = hctp_restored_finishers::refreshMoves(rdram, 0x2000000u, dest, moves);
+        const bool ok = hctp_restored_finishers::refreshMoves(rdram, PS2_RAM_COMMITTED_TOP, dest, moves);
         static std::set<uint16_t> logged;
         if (logged.insert(id).second)
             std::fprintf(stderr, "[rosterx] %s: matchup finishers %u/%u %s%c", s->name.c_str(), moves[0], moves[1],
@@ -7897,9 +7896,9 @@ namespace
             ok += svrEntranceRegister(kv.first, 0x2Du) > 0 ? 1 : 0;
         std::fprintf(stderr, "[svrent] table: %zu SvR04 rows, %d registered%c", g_svrTable.size(), ok, 10);
     }
-    uint32_t gU32(uint8_t *rdram, uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & 0x1FFFFFFu), 4); return v; }
-    uint16_t gU16(uint8_t *rdram, uint32_t a) { uint16_t v; std::memcpy(&v, rdram + (a & 0x1FFFFFFu), 2); return v; }
-    void gPut(uint8_t *rdram, uint32_t a, const void *src, size_t n) { std::memcpy(rdram + (a & 0x1FFFFFFu), src, n); }
+    uint32_t gU32(uint8_t *rdram, uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & PS2_RAM_COMMITTED_MASK), 4); return v; }
+    uint16_t gU16(uint8_t *rdram, uint32_t a) { uint16_t v; std::memcpy(&v, rdram + (a & PS2_RAM_COMMITTED_MASK), 2); return v; }
+    void gPut(uint8_t *rdram, uint32_t a, const void *src, size_t n) { std::memcpy(rdram + (a & PS2_RAM_COMMITTED_MASK), src, n); }
     // append the SvR row (+ its effects row) to the live SEVP header if missing
     void svrEnsureRow(uint8_t *rdram, PS2Runtime *runtime, uint32_t header, uint16_t ev, const SvrEvent &se)
     {
@@ -7949,7 +7948,7 @@ namespace
         g_svrRowCast[ev] = {chars, casts};
         const uint32_t rows = runtime->guestMalloc(12u * (evCount + 1u) + 16u);
         std::vector<uint8_t> tmp(12u * evCount);
-        std::memcpy(tmp.data(), rdram + (evRows & 0x1FFFFFFu), tmp.size());
+        std::memcpy(tmp.data(), rdram + (evRows & PS2_RAM_COMMITTED_MASK), tmp.size());
         gPut(rdram, rows, tmp.data(), tmp.size());
         uint8_t nr[12] = {};
         std::memcpy(nr, &ev, 2);
@@ -8010,7 +8009,7 @@ namespace
         }
         const uint32_t frows = runtime->guestMalloc(8u * (efCount + 1u) + 16u);
         std::vector<uint8_t> ftmp(8u * efCount);
-        std::memcpy(ftmp.data(), rdram + (efRows & 0x1FFFFFFu), ftmp.size());
+        std::memcpy(ftmp.data(), rdram + (efRows & PS2_RAM_COMMITTED_MASK), ftmp.size());
         gPut(rdram, frows, ftmp.data(), ftmp.size());
         uint8_t fr[8];
         const uint16_t svrN16 = static_cast<uint16_t>(svrN);
@@ -8725,7 +8724,7 @@ namespace
         g_svrRowCast[ev] = {chars, casts};
         const uint32_t rows = runtime->guestMalloc(12u * (evCount + 1u) + 16u);
         std::vector<uint8_t> tmp(12u * evCount);
-        std::memcpy(tmp.data(), rdram + (evRows & 0x1FFFFFFu), tmp.size());
+        std::memcpy(tmp.data(), rdram + (evRows & PS2_RAM_COMMITTED_MASK), tmp.size());
         gPut(rdram, rows, tmp.data(), tmp.size());
         uint8_t nr[12] = {};
         std::memcpy(nr, &ev, 2);
@@ -8751,7 +8750,7 @@ namespace
             for (uint32_t j = 0; j < donorN; ++j)
             {
                 uint8_t e[16];
-                std::memcpy(e, rdram + ((donorEnt + 16u * j) & 0x1FFFFFFu), 16);
+                std::memcpy(e, rdram + ((donorEnt + 16u * j) & PS2_RAM_COMMITTED_MASK), 16);
                 gPut(rdram, ents + 16u * j, e, 16);
             }
             const uint32_t par = ents + 16u * (donorN + 1u);
@@ -8769,7 +8768,7 @@ namespace
         }
         const uint32_t frows = runtime->guestMalloc(8u * (efCount + 1u) + 16u);
         std::vector<uint8_t> ftmp(8u * efCount);
-        std::memcpy(ftmp.data(), rdram + (efRows & 0x1FFFFFFu), ftmp.size());
+        std::memcpy(ftmp.data(), rdram + (efRows & PS2_RAM_COMMITTED_MASK), ftmp.size());
         gPut(rdram, frows, ftmp.data(), ftmp.size());
         uint8_t fr[8];
         const uint16_t dn16 = static_cast<uint16_t>(donorN);
@@ -9328,7 +9327,7 @@ namespace
     }
     void evsSetEventSvr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t self = regU(ctx, 4) & 0x1FFFFFFu;
+        const uint32_t self = regU(ctx, 4) & PS2_RAM_COMMITTED_MASK;
         const uint16_t ev = static_cast<uint16_t>(regU(ctx, 5));
         auto it = g_svrEvents.find(ev);
         g_svrEventActive = it != g_svrEvents.end();
@@ -9533,8 +9532,8 @@ namespace
             std::fprintf(stderr, "[svrlight] guestMalloc %zu failed%c", bank.size(), 10);
             return false;
         }
-        std::memcpy(runtime->memory().getRDRAM() + (g & 0x1FFFFFFu), bank.data(), bank.size());
-        g_svrEmotBank = g & 0x1FFFFFFu;
+        std::memcpy(runtime->memory().getRDRAM() + (g & PS2_RAM_COMMITTED_MASK), bank.data(), bank.size());
+        g_svrEmotBank = g & PS2_RAM_COMMITTED_MASK;
         uint32_t cnt = 0;
         std::memcpy(&cnt, &bank[0x100], 4);
         std::fprintf(stderr, "[svrlight] SvR04 EMOT bank 1: %zu B, %u light motions at %08x%c", bank.size(), cnt, g_svrEmotBank, 10);
@@ -9547,7 +9546,7 @@ namespace
             return;
         for (int k = 0; k < 2; ++k)
         {
-            const uint32_t key = gU32(rdram, 0x526e88u + 8u * k) & 0x1FFFFFFu;
+            const uint32_t key = gU32(rdram, 0x526e88u + 8u * k) & PS2_RAM_COMMITTED_MASK;
             g_svrLightKey[k] = (key != 0u && (k == 0 || key != g_svrLightKey[0])) ? key : 0u;
             if (g_svrLightKey[k] == 0u)
                 continue;
@@ -9658,7 +9657,7 @@ namespace
     {
         if (svrCamLerpOn())
         {
-            const uint32_t self = regU(ctx, 4) & 0x1FFFFFFu;
+            const uint32_t self = regU(ctx, 4) & PS2_RAM_COMMITTED_MASK;
             auto it = g_svrCamLerp.find(self);
             if (it != g_svrCamLerp.end() && it->second.k < it->second.n)
             {
@@ -9679,7 +9678,7 @@ namespace
     // the exact float position afterwards (this+0xA0 = pos * 0.01, 0x45d4f0).
     void camAnalyzeSvr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t self = regU(ctx, 4) & 0x1FFFFFFu, rec = regU(ctx, 5) & 0x1FFFFFFu;
+        const uint32_t self = regU(ctx, 4) & PS2_RAM_COMMITTED_MASK, rec = regU(ctx, 5) & PS2_RAM_COMMITTED_MASK;
         const int32_t len = static_cast<int32_t>(regU(ctx, 7));
         if (!g_svrEventActive || rec == 0u || rdram[self + 0x71u] != 0u || len <= 0 || len > 0x7F)
             return g_origCamAnalyze(rdram, ctx, runtime);
@@ -9806,7 +9805,7 @@ namespace
     void motionLightSetSvr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t ra = regU(ctx, 31);
-        g_motionLightThis = regU(ctx, 4) & 0x1FFFFFFu;
+        g_motionLightThis = regU(ctx, 4) & PS2_RAM_COMMITTED_MASK;
         // Nov 11 SYM entrance port: SYM light ops go to HCTP's own CMotionLight as-is (Jordan: every SYM light is already in
         // HCTP) - never the SvR04 EMOT swap. HCTP_SYMLIGHTS=0 = skip them (HCTP arena lighting kept).
         if (g_symActive && ra >= 0x1b3120u && ra < 0x1b4e30u)
@@ -9903,12 +9902,12 @@ namespace
                 std::fprintf(stderr, "[svr06light] guestMalloc failed%c", 10);
                 return;
             }
-            g_svr06LightBank = g & 0x1FFFFFFu;
+            g_svr06LightBank = g & PS2_RAM_COMMITTED_MASK;
         }
         std::memcpy(rdram + g_svr06LightBank, g_svr06LightHost.data(), g_svr06LightHost.size());
         for (int k = 0; k < 2; ++k)
         {
-            const uint32_t key = gU32(rdram, 0x526e88u + 8u * k) & 0x1FFFFFFu;
+            const uint32_t key = gU32(rdram, 0x526e88u + 8u * k) & PS2_RAM_COMMITTED_MASK;
             g_svrLightKey[k] = (key != 0u && (k == 0 || key != g_svrLightKey[0])) ? key : 0u;
             if (g_svrLightKey[k] == 0u)
                 continue;
@@ -9948,14 +9947,14 @@ namespace
         std::memcpy(&play, rdram + sys + 0x18u, 2);
         if (std::getenv("HCTP_PYRO_PLAYSCENE")) return play;
         std::memcpy(&cam, rdram + sys + 0x4Cu, 2);
-        const uint32_t arr = gU32(rdram, sys + 0x20u) & 0x1FFFFFFu;
+        const uint32_t arr = gU32(rdram, sys + 0x20u) & PS2_RAM_COMMITTED_MASK;
         if (arr == 0u || arr >= 0x1FFFF00u || cam > 64u) return play;
         std::memcpy(&raw, rdram + arr + 2u * cam, 2);
         return raw == 0xFFFFu ? play : raw;
     }
     void evsActionSvr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t sys = regU(ctx, 4) & 0x1FFFFFFu, ra = regU(ctx, 31);
+        const uint32_t sys = regU(ctx, 4) & PS2_RAM_COMMITTED_MASK, ra = regU(ctx, 31);
         g_origEvsActionSvr(rdram, ctx, runtime);
         if (g_pyro04Active && g_svrEventActive && !g_svr06Active && sys != 0u && sys < 0x1FFFF00u && ctx->pc == ra &&
             rdram[sys + 0x54u] != 0u && gU32(rdram, sys + 0x10u) == 2u)
@@ -9996,16 +9995,16 @@ namespace
     PS2Runtime::RecompiledFunction g_origWeaponActionLink = nullptr;
     void weaponActionLinkProbe(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t self = regU(ctx, 4) & 0x1FFFFFFu;
+        const uint32_t self = regU(ctx, 4) & PS2_RAM_COMMITTED_MASK;
         g_origWeaponActionLink(rdram, ctx, runtime);
         if (!g_svrEventActive)
             return;
-        const uint32_t attr = gU32(rdram, self + 0x24u) & 0x1FFFFFFu;
+        const uint32_t attr = gU32(rdram, self + 0x24u) & PS2_RAM_COMMITTED_MASK;
         if (attr == 0u || gU32(rdram, attr + 0x30u) < 2800u || gU32(rdram, attr + 0x30u) >= 3000u)
             return;
         static uint32_t last = 0xFFFFFFFFu;
         static int count = 0, logged = 0;
-        const uint32_t code = gU32(rdram, attr + 0x18u), obj = gU32(rdram, attr + 0x34u) & 0x1FFFFFFu;
+        const uint32_t code = gU32(rdram, attr + 0x18u), obj = gU32(rdram, attr + 0x34u) & PS2_RAM_COMMITTED_MASK;
         const bool changed = code != last;
         last = code;
         if ((!changed && (++count % 60) != 0) || logged >= 200)
@@ -10025,18 +10024,18 @@ namespace
     // entries); when "<x>_d" is missing, retry "<x>". Found names behave exactly as stock.
     int32_t findBoneNative(uint8_t *rdram, uint32_t model, const char *name16)
     {
-        const uint32_t ymp = gU32(rdram, model + 0xC8u) & 0x1FFFFFFu;
+        const uint32_t ymp = gU32(rdram, model + 0xC8u) & PS2_RAM_COMMITTED_MASK;
         if (ymp == 0u)
             return -1;
-        const uint32_t n = gU32(rdram, ymp + 0x14u), tab = gU32(rdram, ymp + 0x20u) & 0x1FFFFFFu;
-        for (uint32_t i = 0; i < n && tab + 80u * (i + 1u) <= 0x2000000u; ++i)
+        const uint32_t n = gU32(rdram, ymp + 0x14u), tab = gU32(rdram, ymp + 0x20u) & PS2_RAM_COMMITTED_MASK;
+        for (uint32_t i = 0; i < n && tab + 80u * (i + 1u) <= PS2_RAM_COMMITTED_TOP; ++i)
             if (std::memcmp(rdram + tab + 80u * i, name16, 16) == 0)
                 return static_cast<int32_t>(i);
         return -1;
     }
     void findBoneFallback(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
     {
-        const uint32_t model = regU(ctx, 4) & 0x1FFFFFFu, str = regU(ctx, 5) & 0x1FFFFFFu;
+        const uint32_t model = regU(ctx, 4) & PS2_RAM_COMMITTED_MASK, str = regU(ctx, 5) & PS2_RAM_COMMITTED_MASK;
         char name[16] = {};
         for (int i = 0; i < 16 && rdram[str + i] != 0; ++i)
             name[i] = static_cast<char>(rdram[str + i]);
@@ -10059,9 +10058,9 @@ namespace
     // pyro (bone world matrices = *(*(mm+0x20)+0xD0) + bone*64, the same read CCharIK::ActionLink 0x1b8af0 does after the call).
     void getBoneNoNote(uint8_t *rdram, R5900Context *ctx, PS2Runtime *)
     {
-        const uint32_t mm = regU(ctx, 4) & 0x1FFFFFFu, part = regU(ctx, 5);
+        const uint32_t mm = regU(ctx, 4) & PS2_RAM_COMMITTED_MASK, part = regU(ctx, 5);
         int16_t bone = 0;
-        std::memcpy(&bone, rdram + ((mm + 0x24u + 2u * part) & 0x1FFFFFFu), 2);
+        std::memcpy(&bone, rdram + ((mm + 0x24u + 2u * part) & PS2_RAM_COMMITTED_MASK), 2);
         SET_GPR_S32(ctx, 2, static_cast<int32_t>(bone));
         if (g_pyro04Active)
             hctpPyroNoteMotionModel(mm);
@@ -10458,7 +10457,7 @@ namespace
                 std::memcpy(&base, rdram + kRxEvtPtr[t], 4);
                 if (s.rowSet & (1u << t))
                     std::memcpy(rdram + dst, s.rows[t], stride);
-                else if (base != 0u && base < PS2_RAM_SIZE - 0x56u * stride && s.tmpl < 0x56u)
+                else if (base != 0u && base < PS2_RAM_COMMITTED_TOP - 0x56u * stride && s.tmpl < 0x56u)
                     std::memcpy(rdram + dst, rdram + base + s.tmpl * stride, stride);
                 else
                     std::memset(rdram + dst, 0, stride);
@@ -10582,7 +10581,7 @@ namespace
     // a1 at the slot's record (template org record + slot fields) -> template moves, stats, AI.
     RosterxSlot *rosterxFromChara(const uint8_t *rdram, uint32_t chara)
     {
-        if (!chara || chara > 0x2000000u - 0x34u)
+        if (!chara || chara > PS2_RAM_COMMITTED_TOP - 0x34u)
             return nullptr;
         uint32_t code;
         std::memcpy(&code, rdram + chara + 0x30u, 4);
@@ -10592,7 +10591,7 @@ namespace
                                    g_rxOrigSuccessAct = nullptr;
     void rosterxCreateACom(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        if (RosterxSlot *s = rosterxFromChara(rdram, rxArg(ctx, 4) & 0x1FFFFFFu))
+        if (RosterxSlot *s = rosterxFromChara(rdram, rxArg(ctx, 4) & PS2_RAM_COMMITTED_MASK))
             if (const uint32_t rec = rosterxRecord(rdram, runtime, *s))
                 SET_GPR_U32(ctx, 5, rec);
         g_rxOrigCreateACom(rdram, ctx, runtime);
@@ -10602,9 +10601,9 @@ namespace
     void rosterxWinnerProp(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         uint32_t sel;
-        std::memcpy(&sel, rdram + ((rxArg(ctx, 4) + rxArg(ctx, 5) * 4u) & 0x1FFFFFFu), 4);
-        sel &= 0x1FFFFFFu;
-        if (sel && sel < 0x2000000u - 0xCu)
+        std::memcpy(&sel, rdram + ((rxArg(ctx, 4) + rxArg(ctx, 5) * 4u) & PS2_RAM_COMMITTED_MASK), 4);
+        sel &= PS2_RAM_COMMITTED_MASK;
+        if (sel && sel < PS2_RAM_COMMITTED_TOP - 0xCu)
         {
             uint16_t raw;
             std::memcpy(&raw, rdram + sel + 0xAu, 2);
@@ -10629,9 +10628,9 @@ namespace
         for (uint32_t i = 0; i < 2; ++i)
         {
             uint32_t sel;
-            std::memcpy(&sel, rdram + ((rxArg(ctx, 4) + i * 4u) & 0x1FFFFFFu), 4);
-            sel &= 0x1FFFFFFu;
-            if (!sel || sel >= 0x2000000u - 0xCu)
+            std::memcpy(&sel, rdram + ((rxArg(ctx, 4) + i * 4u) & PS2_RAM_COMMITTED_MASK), 4);
+            sel &= PS2_RAM_COMMITTED_MASK;
+            if (!sel || sel >= PS2_RAM_COMMITTED_TOP - 0xCu)
                 continue;
             std::memcpy(&old[i], rdram + sel + 0xAu, 2);
             const uint32_t oc = hctpCodeDec(old[i]); // C2: sentinel -> u32 slot code (raw restored below)
@@ -10650,7 +10649,7 @@ namespace
     }
     void rosterxPropCtor(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t self = rxArg(ctx, 4) & 0x1FFFFFFu, chara = rxArg(ctx, 5) & 0x1FFFFFFu;
+        const uint32_t self = rxArg(ctx, 4) & PS2_RAM_COMMITTED_MASK, chara = rxArg(ctx, 5) & PS2_RAM_COMMITTED_MASK;
         if (RosterxSlot *s = rosterxFromChara(rdram, chara))
             if (const uint32_t rec = rosterxRecord(rdram, runtime, *s))
             {
@@ -10661,7 +10660,7 @@ namespace
                                  s->tmpl, 10);
             }
         g_rxOrigPropCtor(rdram, ctx, runtime);
-        if (!self || self > 0x2000000u - 0x190u || !chara || chara > 0x2000000u - 0x34u)
+        if (!self || self > PS2_RAM_COMMITTED_TOP - 0x190u || !chara || chara > PS2_RAM_COMMITTED_TOP - 0x34u)
             return;
         uint32_t code;
         std::memcpy(&code, rdram + chara + 0x30u, 4);
@@ -10717,17 +10716,17 @@ namespace
     }
     void rosterxSSInsert(uint8_t *rdram, uint32_t self)
     {
-        if (!self || self > 0x2000000u - 0xA0u)
+        if (!self || self > PS2_RAM_COMMITTED_TOP - 0xA0u)
             return;
         uint32_t type, buf, count;
         std::memcpy(&type, rdram + self + 0x24u, 4);
         std::memcpy(&buf, rdram + self + 0x94u, 4);
         std::memcpy(&count, rdram + self + 0x98u, 4);
-        buf &= 0x1FFFFFFu;
+        buf &= PS2_RAM_COMMITTED_MASK;
         // CAM picker = types 1/2 (FromUI_OK 0x395a58 / FromUI_Dir 0x344a28), Auto Setting superstars = type 0 (ids 0..0xA1
         // incl. presets). Type 3 = CAW list (0x20 ids) stays stock.
         const uint32_t cap = (0xA2u + uint32_t(g_rosterx.size())) * 8u;
-        if (type > 2u || !buf || count == 0u || count * 8u > cap || buf > 0x2000000u - cap)
+        if (type > 2u || !buf || count == 0u || count * 8u > cap || buf > PS2_RAM_COMMITTED_TOP - cap)
             return;
         struct Row { uint8_t raw[8]; uint32_t id; std::string key; };
         std::vector<Row> rows(count);
@@ -10766,12 +10765,12 @@ namespace
     PS2Runtime::RecompiledFunction g_rxOrigSSCreateUI = nullptr, g_rxOrigAutoCreateUI = nullptr;
     void rosterxSSCreateUI(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        rosterxSSInsert(rdram, rxArg(ctx, 4) & 0x1FFFFFFu);
+        rosterxSSInsert(rdram, rxArg(ctx, 4) & PS2_RAM_COMMITTED_MASK);
         g_rxOrigSSCreateUI(rdram, ctx, runtime);
     }
     void rosterxAutoCreateUI(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        rosterxSSInsert(rdram, rxArg(ctx, 4) & 0x1FFFFFFu);
+        rosterxSSInsert(rdram, rxArg(ctx, 4) & PS2_RAM_COMMITTED_MASK);
         g_rxOrigAutoCreateUI(rdram, ctx, runtime);
     }
     // Nov 11 CAM FREEZE FIX: CMovesSituationForTable::MakeFavoriteTable 0x245c40 keeps two "move row used" byte arrays of
@@ -10782,9 +10781,9 @@ namespace
     PS2Runtime::RecompiledFunction g_origMakeFavTable = nullptr;
     void makeFavoriteTableBig(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t self = rxArg(ctx, 4) & 0x1FFFFFFu, prop = rxArg(ctx, 5) & 0x1FFFFFFu, ra = rxArg(ctx, 31);
+        const uint32_t self = rxArg(ctx, 4) & PS2_RAM_COMMITTED_MASK, prop = rxArg(ctx, 5) & PS2_RAM_COMMITTED_MASK, ra = rxArg(ctx, 31);
         int32_t rows = 0;
-        if (self && self < 0x2000000u - 0x200u)
+        if (self && self < PS2_RAM_COMMITTED_TOP - 0x200u)
             std::memcpy(&rows, rdram + self + 0x28u, 4);
         if (!self || rows <= 0x7D0)
         {
@@ -10797,8 +10796,8 @@ namespace
             told = true;
             std::fprintf(stderr, "[movefav] MakeFavoriteTable native: %d move rows (> 2000 stack arrays)%c", rows, 10);
         }
-        auto rd32 = [&](uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & 0x1FFFFFFu), 4); return v; };
-        auto rd16s = [&](uint32_t a) { int16_t v; std::memcpy(&v, rdram + (a & 0x1FFFFFFu), 2); return int32_t(v); };
+        auto rd32 = [&](uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & PS2_RAM_COMMITTED_MASK), 4); return v; };
+        auto rd16s = [&](uint32_t a) { int16_t v; std::memcpy(&v, rdram + (a & PS2_RAM_COMMITTED_MASK), 2); return int32_t(v); };
         if (const uint32_t old = rd32(self + 0x1E4u))
             ppvCall(rdram, ctx, runtime, 0x100210u, {old});
         std::memset(rdram + self + 0x1E4u, 0, 4);
@@ -10815,7 +10814,7 @@ namespace
             ctx->pc = ra;
             return;
         }
-        const uint32_t table = ppvCall(rdram, ctx, runtime, 0x1001f0u, {cnt * 2u}) & 0x1FFFFFFu;
+        const uint32_t table = ppvCall(rdram, ctx, runtime, 0x1001f0u, {cnt * 2u}) & PS2_RAM_COMMITTED_MASK;
         std::memcpy(rdram + self + 0x1E4u, &table, 4);
         std::vector<uint8_t> used1(size_t(rows), 0), used2(size_t(rows), 0);
         uint32_t n = 0;
@@ -10857,8 +10856,8 @@ namespace
     PS2Runtime::RecompiledFunction g_rxOrigManDatEnd = nullptr;
     void rosterxManDatEnd(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t self = rxArg(ctx, 4) & 0x1FFFFFFu;
-        if (self && self < 0x2000000u - 0x200u)
+        const uint32_t self = rxArg(ctx, 4) & PS2_RAM_COMMITTED_MASK;
+        if (self && self < PS2_RAM_COMMITTED_TOP - 0x200u)
         {
             uint16_t id = 0;
             std::memcpy(&id, rdram + self + 0x20u, 2);
@@ -10885,14 +10884,14 @@ namespace
     PS2Runtime::RecompiledFunction g_rxOrigInitEventParam = nullptr;
     void rosterxInitEventParam(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t self = rxArg(ctx, 4) & 0x1FFFFFFu, prm = rxArg(ctx, 5) & 0x1FFFFFFu, ra = rxArg(ctx, 31);
+        const uint32_t self = rxArg(ctx, 4) & PS2_RAM_COMMITTED_MASK, prm = rxArg(ctx, 5) & PS2_RAM_COMMITTED_MASK, ra = rxArg(ctx, 31);
         // Nov 11 TEST AID: HCTP_CAM_FORCE_EV=<event no> -> every CAM entrance preview plays that event (a2).
         if (const char *fe = std::getenv("HCTP_CAM_FORCE_EV"); fe && std::atoi(fe) > 0)
         {
             SET_GPR_U32(ctx, 6, static_cast<uint32_t>(std::atoi(fe)));
             std::fprintf(stderr, "[camtest] forced entrance event %d%c", std::atoi(fe), 10);
         }
-        if (self == 0u || self > 0x2000000u - 0x1A8u)
+        if (self == 0u || self > PS2_RAM_COMMITTED_TOP - 0x1A8u)
             return g_rxOrigInitEventParam(rdram, ctx, runtime);
         uint32_t id;
         std::memcpy(&id, rdram + self + 0x24u, 4);
@@ -10901,7 +10900,7 @@ namespace
         {
             g_rxOrigInitEventParam(rdram, ctx, runtime);
             uint32_t c = 0u;
-            if (ctx->pc == ra && prm != 0u && prm < 0x2000000u - 0x28u)
+            if (ctx->pc == ra && prm != 0u && prm < PS2_RAM_COMMITTED_TOP - 0x28u)
                 std::memcpy(&c, rdram + prm + 0x24u, 4);
             g_camEventCast = c < 0x10000u ? static_cast<uint16_t>(c) : 0u;
             return;
@@ -10911,7 +10910,7 @@ namespace
         if (ctx->pc == ra)
             rdram[self + 0x1A4u] = flag;
         uint32_t cast = 0u;
-        if (prm != 0u && prm < 0x2000000u - 0x28u)
+        if (prm != 0u && prm < PS2_RAM_COMMITTED_TOP - 0x28u)
             std::memcpy(&cast, rdram + prm + 0x24u, 4);
         g_camEventCast = static_cast<uint16_t>(cast);
         std::fprintf(stderr, "[rosterx] CAM InitEventParam id 0x%X: CAW flag %u cleared -> cast %u (returned %d)%c", id,
@@ -10925,10 +10924,10 @@ namespace
         const uint32_t a0 = rxArg(ctx, 4), a1 = rxArg(ctx, 5), a2 = rxArg(ctx, 6), a3 = rxArg(ctx, 7), t0 = rxArg(ctx, 8),
                        ra = rxArg(ctx, 31);
         uint16_t lo = 0, hi = 0;
-        if ((a0 & 0x1FFFFFFu) < 0x2000000u - 0x880u)
+        if ((a0 & PS2_RAM_COMMITTED_MASK) < PS2_RAM_COMMITTED_TOP - 0x880u)
         {
-            std::memcpy(&lo, rdram + (a0 & 0x1FFFFFFu) + 0x878u, 2);
-            std::memcpy(&hi, rdram + (a0 & 0x1FFFFFFu) + 0x87Au, 2);
+            std::memcpy(&lo, rdram + (a0 & PS2_RAM_COMMITTED_MASK) + 0x878u, 2);
+            std::memcpy(&hi, rdram + (a0 & PS2_RAM_COMMITTED_MASK) + 0x87Au, 2);
         }
         g_origReserveTex(rdram, ctx, runtime);
         static unsigned n = 0;
@@ -10956,10 +10955,10 @@ namespace
     }
     void rosterxCatNext(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t self = rxArg(ctx, 4) & 0x1FFFFFFu, ra = rxArg(ctx, 31);
+        const uint32_t self = rxArg(ctx, 4) & PS2_RAM_COMMITTED_MASK, ra = rxArg(ctx, 31);
         const bool save = rxArg(ctx, 5) != 0u && rxArg(ctx, 6) == 0xBu;
         uint32_t id = 0;
-        if (self && self < 0x2000000u - 0x30u)
+        if (self && self < PS2_RAM_COMMITTED_TOP - 0x30u)
             std::memcpy(&id, rdram + self + 0x24u, 4);
         g_rxOrigCatNext(rdram, ctx, runtime);
         if (save && ctx->pc == ra)
@@ -11171,17 +11170,17 @@ namespace
     }
     void fastUpdateAnyBone(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
-        const uint32_t model = rxArg(ctx, 4) & 0x1FFFFFFu;
+        const uint32_t model = rxArg(ctx, 4) & PS2_RAM_COMMITTED_MASK;
         ++g_mprobeFast[model]; // TEMP diag HCTP_MATCHUP_PROBE (mprobe2)
         recWatchCheck(rdram, "FastUpdate", rxArg(ctx, 31));
         AnyBoneModel *restore = nullptr; // Nov 7 JAW: face bones whose HCTP motion input is put back after skinning
         uint32_t restoreLocals = 0u;
-        if (model && model < 0x2000000u - 0x100u)
+        if (model && model < PS2_RAM_COMMITTED_TOP - 0x100u)
         {
-            const uint32_t count = rdU32(rdram, model + 0xECu), bones = rdU32(rdram, model + 0xF0u) & 0x1FFFFFFu,
-                           locals = rdU32(rdram, model + 0xCCu) & 0x1FFFFFFu;
-            if (count > 0 && count <= 256 && bones && locals && bones + count * 80u < 0x2000000u &&
-                locals + count * 64u < 0x2000000u)
+            const uint32_t count = rdU32(rdram, model + 0xECu), bones = rdU32(rdram, model + 0xF0u) & PS2_RAM_COMMITTED_MASK,
+                           locals = rdU32(rdram, model + 0xCCu) & PS2_RAM_COMMITTED_MASK;
+            if (count > 0 && count <= 256 && bones && locals && bones + count * 80u < PS2_RAM_COMMITTED_TOP &&
+                locals + count * 64u < PS2_RAM_COMMITTED_TOP)
             {
                 AnyBoneModel &m = g_anyBone[model];
                 if (m.bones != bones || m.count != count)
@@ -11260,10 +11259,10 @@ namespace
                             // not abEuler's order -> d_kuchi (-90,125,0) came out wrong = jaw inside the head. Take the
                             // atama-relative bind straight from the model's inverse binds (+0xD4, skin = invBind * world):
                             // bindRel = inv(IB_bone) * IB_atama; localBind = bindRel * parentRel^T for face children.
-                            const uint32_t ibs = rdU32(rdram, model + 0xD4u) & 0x1FFFFFFu;
+                            const uint32_t ibs = rdU32(rdram, model + 0xD4u) & PS2_RAM_COMMITTED_MASK;
                             float b[9];
                             abEuler(r3[0], r3[1], r3[2], b);
-                            if (ibs && ibs + count * 64u < 0x2000000u)
+                            if (ibs && ibs + count * 64u < PS2_RAM_COMMITTED_TOP)
                             {
                                 float ib[16], ia[16];
                                 std::memcpy(ib, rdram + ibs + i * 64u, 64);
@@ -11435,7 +11434,7 @@ namespace
             auto it = g_anyBone.find(model);
             if (it != g_anyBone.end() && !it->second.rules.empty() && s_jpN < 300)
             {
-                const uint32_t cnt = it->second.count, bn = it->second.bones, lc = rdU32(rdram, model + 0xCCu) & 0x1FFFFFFu;
+                const uint32_t cnt = it->second.count, bn = it->second.bones, lc = rdU32(rdram, model + 0xCCu) & PS2_RAM_COMMITTED_MASK;
                 for (uint32_t i = 0; i < cnt && lc; ++i)
                     if (std::strncmp(reinterpret_cast<const char *>(rdram + bn + i * 80u), "d_kuchi", 8) == 0)
                     {
@@ -11460,46 +11459,176 @@ namespace
             for (const AnyBoneModel::Jaw &j : restore->jaws)
                 std::memcpy(rdram + restoreLocals + j.bone * 64u, j.saved, 64);
     }
-    // Nov 7 SvR THIGH LENGTH (SvR04 CCharIK ctor 0x1ab200, svr_all.c): IK limb lengths are sums of bone record offsets
-    // (+0x10). SvR: left thigh +0x140 = rec(29 l_momo_x).x + rec(14 l_sune).x, right +0x144 = rec(30 r_momo_x) + rec(18).
-    // HCTP ctor 0x1b83d0 (0x1b86c0 / 0x1b8710) takes only sune -> on SvR models the IK thigh is half length (Bret 2.18
-    // instead of 4.35) = broken knees. After the ctor, add momo_x's offset for models that have it.
-    PS2Runtime::RecompiledFunction g_origIkCtor = nullptr;
-    void ikCtorSvrThigh(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    // ===== SVR NATIVE MOTION (Nov 12; notes\SVR_NATIVE_ANIMATION_PLAN_20261112.md sec 6; runner side = hctp-newbase
+    // tools\patch_svr_native_motion.py). SvR04/SvR06 bone code ported 1:1 onto HCTP's CMotionModel/CMotionHokan/CCharIK.
+    // Entrances use the same objects: CEventSystem::StartScene 0x167f60 re-runs CMotionHokan::BoneCreate on the scene's chars
+    // (made by CreateGameChar 0x1fb5f0 / caCreateChar / MenuWrestler / EditCharCtrl / MatchWrestler -> ctor 0x1b4f50).
+    // HCTP models have none of the 4 extra bones -> shorts = -1 -> every path below is stock HCTP. HCTP_SVRNATIVE=0 = off.
+    bool svrNativeOff()
     {
-        const uint32_t self = rxArg(ctx, 4) & 0x1FFFFFFu, ra = rxArg(ctx, 31);
-        g_origIkCtor(rdram, ctx, runtime);
-        if (ctx->pc != ra || !self || self > 0x2000000u - 0x160u)
-            return;
-        const uint32_t link = rdU32(rdram, self + 0x2Cu) & 0x1FFFFFFu;
-        const uint32_t model = link ? rdU32(rdram, link + 0x20u) & 0x1FFFFFFu : 0u;
-        if (!model || !hctpIkSvrTwistBone(rdram, model, 0))
-            return;
-        const uint32_t recs = rdU32(rdram, model + 0xF0u) & 0x1FFFFFFu;
-        for (int side = 0; side < 2; ++side)
+        static const bool off = std::getenv("HCTP_SVRNATIVE") && std::getenv("HCTP_SVRNATIVE")[0] == '0';
+        return off;
+    }
+    int16_t mmShort(const uint8_t *rdram, uint32_t mm, int id) // = CMotionModel::GetBoneNo 0x1b4fe0 (lh +0x24 + id*2)
+    {
+        int16_t v;
+        std::memcpy(&v, rdram + ((mm + 0x24u + uint32_t(id) * 2u) & PS2_RAM_COMMITTED_MASK), 2);
+        // Guard (Nov 12, after the CAM crash = 0x60 alloc at 0x1fb5ac): an index past the model's real bone count (FindBone table
+        // n = *(*(skin+0xC8)+0x14), the same table findBoneNative walks) is not a bone -> stock (-1) + one log line per object.
+        if (v >= 0 && id >= 29)
         {
-            const int b = hctpIkSvrTwistBone(rdram, model, side + 1);
-            if (b < 0 || !recs)
-                continue;
-            float x, len;
-            std::memcpy(&x, rdram + recs + uint32_t(b) * 80u + 0x10u, 4);
-            std::memcpy(&len, rdram + self + 0x140u + side * 4u, 4);
-            const float before = len;
-            len += x;
-            std::memcpy(rdram + self + 0x140u + side * 4u, &len, 4);
-            std::fprintf(stderr, "[svrtwist] IK 0x%X %s thigh %.3f -> %.3f (+momo_x, SvR04 ctor 0x1ab200)%c", self,
-                         side ? "right" : "left", before, len, 10);
+            const uint32_t skin = rdU32(rdram, mm + 0x20u) & PS2_RAM_COMMITTED_MASK;
+            const uint32_t ymp = skin ? rdU32(rdram, skin + 0xC8u) & PS2_RAM_COMMITTED_MASK : 0u;
+            const uint32_t n = ymp ? rdU32(rdram, ymp + 0x14u) : 0u;
+            if (static_cast<uint32_t>(v) >= n)
+            {
+                static std::set<uint32_t> bad;
+                if (bad.size() < 64u && bad.insert(mm).second)
+                    std::fprintf(stderr, "[svrnative] BAD short %d = %d (bones %u) mm 0x%X -> treated as -1%c", id, v, n, mm, 10);
+                return -1;
+            }
         }
+        return v;
+    }
+    float recLen(const uint8_t *rdram, uint32_t skin, int idx) // bone record +0x10 (HCTP inline skin+0xF0 + idx*0x50)
+    {
+        float f;
+        std::memcpy(&f, rdram + ((rdU32(rdram, skin + 0xF0u) + uint32_t(idx) * 0x50u + 0x10u) & PS2_RAM_COMMITTED_MASK), 4);
+        return f;
+    }
+    // P1b: ctor 0x1b4f50 fills shorts 0..28 from name table 0x4127c0 via GetBoneNo_Name -> skin vt(0x98)[0xc] = FindBone
+    // 0x150b10 (vtable 0x47b820 slot 3, checked below). SvR04 0x345e60 adds 29 l_momo_x, 30 r_momo_x (loop 31); SvR06 0x337770
+    // adds 31 l_kote_x2, 32 r_kote_x2 (loop 0x21). Same lookup, same order, into the object grown to 0x68 (alloc sites patched).
+    // Nov 12 fix (sec 6.7): called INLINE from the runner at the ctor's loop exit 0x1b4fb8 (patch E, s1 = this). The old
+    // replaceFunction wrapper never saw pc==ra (GetBoneNo_Name tail-jumps `jr $t9` into the FindBone override) -> garbage shorts.
+    void svrMmShortsImpl(uint8_t *rdram, uint32_t self)
+    {
+        self &= PS2_RAM_COMMITTED_MASK;
+        if (!self || self > PS2_RAM_COMMITTED_TOP - 0x68u)
+            return;
+        static const char *kN[4] = {"l_momo_x", "r_momo_x", "l_kote_x2", "r_kote_x2"};
+        int16_t v[4] = {-1, -1, -1, -1};
+        const uint32_t skin = rdU32(rdram, self + 0x20u) & PS2_RAM_COMMITTED_MASK;
+        const uint32_t vt = skin ? rdU32(rdram, skin + 0x98u) & PS2_RAM_COMMITTED_MASK : 0u;
+        if (!svrNativeOff() && vt && rdU32(rdram, vt + 0xCu) == 0x150b10u)
+            for (int k = 0; k < 4; ++k)
+            {
+                char nm[16] = {};
+                std::strncpy(nm, kN[k], 15);
+                v[k] = static_cast<int16_t>(findBoneNative(rdram, skin, nm));
+            }
+        std::memcpy(rdram + self + 0x5Eu, v, 8);
+        static std::set<uint32_t> seen;
+        if ((v[0] >= 0 || v[2] >= 0) && seen.size() < 256u && seen.insert(skin).second)
+            std::fprintf(stderr, "[svrnative] CMotionModel 0x%X skin 0x%X: momo_x %d/%d kote_x2 %d/%d -> %s%c", self, skin, v[0], v[1],
+                         v[2], v[3], v[3] >= 0 ? "SvR06 33 bones" : "SvR04 31 bones", 10);
+    }
+    // P2: CMotionHokan::BoneCreate 0x1b5710 (SvR04 0x1a8340: 0x1a83ac FindBone("r_momo_x"), 0x1a8550 v!=-1 && i in{13,17} -> +0x12d=1,
+    // inside the same "CHAR link && type==7" block as the 6/10 ninoude flag; SvR06 ChangeHokanMode 0x2161e0 same rule). Type table
+    // 0x4127a0: type[6]=type[10]=type[13]=type[17]=7, so after the original "rec6.+0x12d==1" <=> that block ran.
+    // Called INLINE at BoneCreate's epilogue 0x1b5b3c (patch F, s1 = hokan) = "after the original returned".
+    void svrBoneCreateImpl(uint8_t *rdram, uint32_t hokan)
+    {
+        hokan &= PS2_RAM_COMMITTED_MASK;
+        if (!hokan || svrNativeOff())
+            return;
+        const uint32_t mm = rdU32(rdram, hokan + 0x38u) & PS2_RAM_COMMITTED_MASK, recs = rdU32(rdram, hokan + 0x20u) & PS2_RAM_COMMITTED_MASK;
+        const int32_t n = static_cast<int32_t>(rdU32(rdram, hokan + 0x24u));
+        if (!mm || !recs || n <= 17 || n > 64 || mmShort(rdram, mm, 30) < 0)
+            return;
+        if (rdram[recs + 6u * 0x130u + 0x12Cu] != 7u || rdram[recs + 6u * 0x130u + 0x12Du] != 1u)
+            return;
+        for (uint32_t i : {13u, 17u})
+            if (rdram[recs + i * 0x130u + 0x12Cu] == 7u)
+                rdram[recs + i * 0x130u + 0x12Du] = 1u;
+        static int logged = 0;
+        if (logged++ < 32)
+            std::fprintf(stderr, "[svrnative] hokan 0x%X (mm 0x%X): momo 13/17 twist flags on (momo_x %d/%d)%c", hokan, mm,
+                         mmShort(rdram, mm, 29), mmShort(rdram, mm, 30), 10);
+    }
+    // IK lengths (CCharIK ctor; HCTP 0x1b83d0: +0x140/+0x144 thigh = rec(0xe)/rec(0x12), +0x148/+0x14c forearm = rec(0x1b)+rec(8) /
+    // rec(0x1c)+rec(0xc)). SvR04 0x1ab4d8/0x1ab558: thigh += rec(29)/rec(30). SvR06 0x21ad60 mode2 (r_kote_x2): forearm +=
+    // rec(0x1f)/rec(0x20). Indices via the CMotionModel shorts = SvR GetBoneNo.
+    // Called INLINE at the CCharIK ctor's epilogue 0x1b8740 (patch G, s1 = this), after the 0x1b8718 block stored +0x154.
+    void svrIkLengthsImpl(uint8_t *rdram, uint32_t self)
+    {
+        self &= PS2_RAM_COMMITTED_MASK;
+        if (!self || self > PS2_RAM_COMMITTED_TOP - 0x160u || svrNativeOff())
+            return;
+        const uint32_t mm = rdU32(rdram, self + 0x2Cu) & PS2_RAM_COMMITTED_MASK;
+        const uint32_t skin = mm ? rdU32(rdram, mm + 0x20u) & PS2_RAM_COMMITTED_MASK : 0u;
+        if (!skin)
+            return;
+        auto add = [&](uint32_t off, int id, const char *what) {
+            const int b = mmShort(rdram, mm, id);
+            if (b < 0)
+                return;
+            float len;
+            std::memcpy(&len, rdram + self + off, 4);
+            const float before = len;
+            len += recLen(rdram, skin, b);
+            std::memcpy(rdram + self + off, &len, 4);
+            std::fprintf(stderr, "[svrnative] IK 0x%X %s %.3f -> %.3f (+bone %d)%c", self, what, before, len, b, 10);
+        };
+        add(0x140u, 29, "l thigh +momo_x");
+        add(0x144u, 30, "r thigh +momo_x");
+        if (mmShort(rdram, mm, 32) >= 0) // SvR06 mode 2 keys on r_kote_x2 (BoneCreate 0x215ff0)
+        {
+            add(0x148u, 31, "l forearm +kote_x2");
+            add(0x14Cu, 32, "r forearm +kote_x2");
+        }
+    }
+    // Log only: ymallocR 0x141020 returning 0 (was the SvR model page bump enough?).
+    PS2Runtime::RecompiledFunction g_origYmalloc = nullptr;
+    void ymallocFailLog(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t size = rxArg(ctx, 4), ra = rxArg(ctx, 31);
+        g_origYmalloc(rdram, ctx, runtime);
+        static int logged = 0;
+        if (ctx->pc == ra && rxArg(ctx, 2) == 0u && logged++ < 64)
+        {
+            uint32_t page = 0;
+            std::memcpy(&page, rdram + 0x500F00u, 4);
+            std::fprintf(stderr, "[svrnative] ymallocR FAILED size 0x%X ra 0x%X page %u%c", size, ra, page, 10);
+            ymemProbeLog(rdram, "ymallocR fail", page & 15u);
+        }
+    }
+    // Nov 12 (char memory expansion, note sec 5): ymemalignR 0x141110 (a0 size, a1 align; MemAlloc 0x140e80 + Align 0x140f60,
+    // not ymallocR) returned NULL for the six-man /MOT/GAME read buffer (CDataReader ctor 0x1488e4, no NULL check) -> silent
+    // endless load. Log only: size, align, ra, current page 0x500F00 and that page's size/used/free/largest.
+    PS2Runtime::RecompiledFunction g_origYmemalign = nullptr;
+    void ymemalignFailLog(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t size = rxArg(ctx, 4), align = rxArg(ctx, 5), ra = rxArg(ctx, 31);
+        g_origYmemalign(rdram, ctx, runtime);
+        static int logged = 0;
+        if (ctx->pc == ra && rxArg(ctx, 2) == 0u && size != 0u && logged++ < 64)
+        {
+            uint32_t page = 0;
+            std::memcpy(&page, rdram + 0x500F00u, 4);
+            std::fprintf(stderr, "[ymem] ymemalignR FAILED size 0x%X (%u KB) align 0x%X ra 0x%X page %u%c", size, size >> 10, align, ra,
+                         page, 10);
+            ymemProbeLog(rdram, "ymemalignR fail", page & 15u);
+        }
+    }
+    void installSvrNativeMotion(PS2Runtime &runtime)
+    {
+        // ctor shorts / BoneCreate flags / IK lengths run INLINE in the patched runner (patch_svr_native_motion.py E/F/G), no wrappers.
+        std::cerr << "[svrnative] inline: CMotionModel shorts 29..32, BoneCreate momo_x flags, CCharIK lengths"
+                  << (svrNativeOff() ? " OFF" : "") << std::endl;
+        if ((g_origYmalloc = runtime.lookupFunction(0x141020u)) != nullptr && runtime.replaceFunction(0x141020u, ymallocFailLog))
+            std::cerr << "[svrnative] ymallocR fail log" << std::endl;
+        if ((g_origYmemalign = runtime.lookupFunction(0x141110u)) != nullptr && runtime.replaceFunction(0x141110u, ymemalignFailLog))
+            std::cerr << "[ymem] ymemalignR fail log" << std::endl;
     }
     void installAnyBone(PS2Runtime &runtime)
     {
+        installSvrNativeMotion(runtime); // own switch HCTP_SVRNATIVE (also needed when HCTP_ANYBONE=0)
         if (const char *e = std::getenv("HCTP_ANYBONE"); e && e[0] == '0')
             return;
         if ((g_origFastUpdate = runtime.lookupFunction(0x151160u)) != nullptr &&
             runtime.replaceFunction(0x151160u, fastUpdateAnyBone))
             std::cerr << "[anybone] FastUpdate prelude on (SvR face bones follow HCTP drivers)" << std::endl;
-        if ((g_origIkCtor = runtime.lookupFunction(0x1b83d0u)) != nullptr && runtime.replaceFunction(0x1b83d0u, ikCtorSvrThigh))
-            std::cerr << "[svrtwist] CCharIK ctor thigh-length fix on (SvR momo_x)" << std::endl;
         if (!(std::getenv("HCTP_SVR_BLOOD") && std::getenv("HCTP_SVR_BLOOD")[0] == '0') &&
             (g_origCharCtor = runtime.lookupFunction(0x1b9c40u)) != nullptr && runtime.replaceFunction(0x1b9c40u, charCtorClearBlood))
             std::cerr << "[svrblood] CChar ctor clears +0x383 blood flag" << std::endl;
@@ -11828,7 +11957,7 @@ namespace
             runtime.replaceFunction(0x1ff130u, clearCharProbe);
         if ((g_origReallocatePage = runtime.lookupFunction(0x140c90u)) != nullptr &&
             runtime.replaceFunction(0x140c90u, reallocatePageBigModels))
-            std::cerr << "[hctp] big-model char pages (SvR Molly) on" << std::endl;
+            std::cerr << "[charmem] native ymem re-cut: GameMem char pages in host RAM 0x02000000+ (" << charPageKb() << " KB each)" << std::endl;
         if (!(std::getenv("HCTP_KAMI_EXTRA") && std::getenv("HCTP_KAMI_EXTRA")[0] == '0') &&
             (g_origKamiMake = runtime.lookupFunction(0x1c5f50u)) != nullptr &&
             (g_origKamiAction = runtime.lookupFunction(0x1c5d70u)) != nullptr &&
@@ -11998,8 +12127,8 @@ int32_t hctpCawOff(uint32_t v)
 // 17130 / DDP in CAM entrances; CChar+0x164 = 0.0 measured live). tools\patch_rosterx_scale.py points a1 here.
 uint32_t hctpRecordSrc(uint8_t *rdram, PS2Runtime *runtime, uint32_t a1, uint32_t sel)
 {
-    sel &= 0x1FFFFFFu;
-    if (sel == 0u || sel > 0x2000000u - 0xCu)
+    sel &= PS2_RAM_COMMITTED_MASK;
+    if (sel == 0u || sel > PS2_RAM_COMMITTED_TOP - 0xCu)
         return a1;
     uint16_t raw;
     std::memcpy(&raw, rdram + sel + 0xAu, 2);
@@ -12052,7 +12181,7 @@ bool hctpCodeLt10k(int64_t v)
 bool hctpPropBigWindow(const uint8_t *rdram, uint32_t id, uint32_t texpack, bool stockBig)
 {
     static const bool on = !(std::getenv("HCTP_PROP_TEXWINDOW") && std::getenv("HCTP_PROP_TEXWINDOW")[0] == '0');
-    if (stockBig || !on || texpack == 0u || texpack >= 0x2000000u - 0x40u)
+    if (stockBig || !on || texpack == 0u || texpack >= PS2_RAM_COMMITTED_TOP - 0x40u)
         return stockBig;
     auto u32 = [&](uint32_t a) { uint32_t v; std::memcpy(&v, rdram + a, 4); return v; };
     const uint32_t n = u32(texpack);
@@ -12067,7 +12196,7 @@ bool hctpPropBigWindow(const uint8_t *rdram, uint32_t id, uint32_t texpack, bool
     {
         const uint32_t off = u32(texpack + 0x10u + 0x20u * i + 0x18u);
         const uint32_t t = texpack + off;
-        if (off == 0u || t + 0x40u >= 0x2000000u || std::memcmp(rdram + t, "RTX3", 4) != 0)
+        if (off == 0u || t + 0x40u >= PS2_RAM_COMMITTED_TOP || std::memcmp(rdram + t, "RTX3", 4) != 0)
             continue;
         const uint64_t tex0 = uint64_t(u32(t + 8u)) | (uint64_t(u32(t + 12u)) << 32);
         const uint32_t tbp = uint32_t(tex0 & 0x3FFFu), psm = uint32_t((tex0 >> 20) & 0x3Fu);
@@ -12096,46 +12225,33 @@ bool hctpPropBigWindow(const uint8_t *rdram, uint32_t id, uint32_t texpack, bool
     return big;
 }
 
-// Nov 7 SvR TWIST LIST (notes\ANY_BONE_ANIMATION_RESEARCH_20261106.md s17): CCharIK::ActionLink 0x1b8860 re-solves
-// the bones of the 12-entry twist list 0x4129f0 after the limb IK (loop 0x1b933c..0x1b95c4). SvR04 ActionLink 0x1ab6f0
-// uses 14 entries 0x346020 = HCTP's with l/r_momo_x (enum 29/30) between momo and sune, limb groups >3,>7,>10, group
-// ends 3,7,10,13. HCTP has no enum 29/30 (name table 0x4127c0 = 29 names), so those two are found by bone name.
-// Hand edit in the runner ActionLink file calls these. Only for models that have "l_momo_x"; HCTP_ANYBONE=0 = off.
-namespace
+// SVR NATIVE (Nov 12): called by the patched runner (tools\patch_svr_native_motion.py). Twist list per model from the CMotionModel
+// shorts (SvR06 CCharIK::ActionLink 0x21bfd4 picks 0x337ae0/0x337b10/0x337b40 by hokan+0x700 = 2 r_kote_x2 / 1 r_kote_x / 0;
+// HCTP's stock list 0x4129f0 == SvR mode 1 minus momo_x, so: 2 = r_kote_x2 present, 1 = r_momo_x present (SvR04), else 0 = stock).
+int hctpSvrIkMode(const uint8_t *rdram, uint32_t mm)
 {
-    std::map<uint32_t, std::pair<int, int>> g_svrTwistModels; // key = bone records ptr ^ count -> (l, r momo_x) or (-1,-1)
+    mm &= PS2_RAM_COMMITTED_MASK;
+    if (!mm || svrNativeOff())
+        return 0;
+    const int m = mmShort(rdram, mm, 32) >= 0 ? 2 : mmShort(rdram, mm, 30) >= 0 ? 1 : 0;
+    static uint64_t calls[3] = {};
+    if (m && (++calls[m] % 20000u) == 1u)
+        std::fprintf(stderr, "[svrnative] IK twist list mode %d (%llu entries so far)%c", m, (unsigned long long)calls[m], 10);
+    return m;
 }
-int hctpIkSvrTwistBone(const uint8_t *rdram, uint32_t model, int which) // which 0 = probe (returns 1 if SvR), 1 = l, 2 = r
+void hctpSvrMmShorts(uint8_t *rdram, uint32_t self) { svrMmShortsImpl(rdram, self); }        // patch E (ctor 0x1b4fb8)
+void hctpSvrBoneCreate(uint8_t *rdram, uint32_t hokan) { svrBoneCreateImpl(rdram, hokan); } // patch F (BoneCreate 0x1b5b3c)
+void hctpSvrIkLengths(uint8_t *rdram, uint32_t ik) { svrIkLengthsImpl(rdram, ik); }         // patch G (CCharIK ctor 0x1b8740)
+bool hctpSvrKoteHalf(const uint8_t *rdram, uint32_t hokan) // P4: SvR06 RotationHokan 0x216660 flag 2 = RotX(0.5 x) on kote_x
 {
-    static const int s_off = (std::getenv("HCTP_ANYBONE") && std::getenv("HCTP_ANYBONE")[0] == '0') ? 1 : 0;
-    if (s_off || model == 0u || model > PS2_RAM_SIZE - 0xF4u)
-        return which ? -1 : 0;
-    uint32_t count = 0u, recs = 0u;
-    std::memcpy(&count, rdram + model + 0xECu, 4);
-    std::memcpy(&recs, rdram + model + 0xF0u, 4);
-    recs &= PS2_RAM_MASK;
-    const uint32_t key = recs ^ (count << 24);
-    auto it = g_svrTwistModels.find(key);
-    if (it == g_svrTwistModels.end())
-    {
-        std::pair<int, int> v{-1, -1};
-        if (count < 512u && recs != 0u && recs <= PS2_RAM_SIZE - count * 80u)
-            for (uint32_t b = 0; b < count; ++b)
-            {
-                char nm[17] = {};
-                std::memcpy(nm, rdram + recs + b * 80u, 16);
-                if (std::strcmp(nm, "l_momo_x") == 0) v.first = static_cast<int>(b);
-                if (std::strcmp(nm, "r_momo_x") == 0) v.second = static_cast<int>(b);
-            }
-        if (v.first < 0 || v.second < 0)
-            v = {-1, -1};
-        else
-            std::fprintf(stderr, "[svrtwist] model 0x%X: SvR04 14-entry twist list (l_momo_x %d, r_momo_x %d)%c", model, v.first, v.second, 10);
-        if (g_svrTwistModels.size() > 4096u)
-            g_svrTwistModels.clear();
-        it = g_svrTwistModels.emplace(key, v).first;
-    }
-    if (which == 0)
-        return it->second.first >= 0 ? 1 : 0;
-    return which == 1 ? it->second.first : it->second.second;
+    hokan &= PS2_RAM_COMMITTED_MASK;
+    if (!hokan || svrNativeOff())
+        return false;
+    const uint32_t mm = rdU32(rdram, hokan + 0x38u) & PS2_RAM_COMMITTED_MASK;
+    if (!mm || mmShort(rdram, mm, 32) < 0)
+        return false;
+    static uint64_t n = 0;
+    if ((++n % 20000u) == 1u)
+        std::fprintf(stderr, "[svrnative] kote_x half twist (%llu so far)%c", (unsigned long long)n, 10);
+    return true;
 }

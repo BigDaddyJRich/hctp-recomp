@@ -390,6 +390,11 @@ struct Particle
 struct Emitter
 {
     uint8_t drawType = 0, blend = 0;
+    // Nov 11 RETAILFIX: emitter record byte 0x62 -> ParticleBase+0x34 (CParticleGroup::AddParticle SvR04 retail 0x1f95d0 /
+    // SvR06 0x274510). ParticleBase::SetWorldMatrix (0x1fef90 / 0x2726d0): +0x34 == 0 copies the whole world matrix, else
+    // ONLY row 3 (position) -> the emitter follows its tag / bone position but keeps its own orientation. Set on SvR04 3047
+    // files 6-15 (chase sparks + trailing smoke) and 16 (Goldberg breath).
+    bool noWorldRot = false;
     uint16_t maxP = 0;
     uint32_t stBorn = 0, stLinkKill = 0, stNoTex = 0, stDraw = 0, stCull = 0; // HCTP_PYRO_EMSTATS (Nov 11 smoke hunt)
     uint32_t stZ = 0, stOff = 0, stBehind = 0; // Nov 11 PART12: cull reasons (z guard / off screen / w <= 0) per drawn copy
@@ -515,6 +520,7 @@ bool parsePrtc(const Bytes &fileBytes, File &out, const TexMap &local)
         Emitter em;
         em.drawType = b[e + 0xA] == 3 ? 0 : b[e + 0xA];
         em.blend = b[e + 0xB];
+        em.noWorldRot = b[e + 0x62] != 0;
         em.maxP = std::min<uint16_t>(rd16(b + e + 0x58), 512);
         em.ps.resize(em.maxP);
         em.copies = std::clamp<uint16_t>(rd16(b + e + 0x5A), 1, 16);
@@ -544,30 +550,34 @@ bool parsePrtc(const Bytes &fileBytes, File &out, const TexMap &local)
     return true;
 }
 
-// emitter rotation = local (Move) * world (tag)
-// SvR06 SetBirthVec 0x2752c0: dir = (1,0,0) * W(+0xC0, RotZYX of tag) * M60(+0x60) * cone  [MulMatrix(a,b): a = b*a]
-M3 emRot(const Instance &in, const Emitter &em) { return mul(in.wrot, em.lrotM); }
+// Nov 11 RETAILFIX A/B switch: HCTP_PYRO_LEGACY=1 = the pre-fix sim (2x alpha, world rotation on every emitter, gravity
+// rotated by W*M60, local pos rotated by W).
+bool legacySim()
+{
+    static const bool on = std::getenv("HCTP_PYRO_LEGACY") && std::getenv("HCTP_PYRO_LEGACY")[0] == '1';
+    return on;
+}
+// ParticleBase+0xC0 rotation part (see Emitter::noWorldRot)
+const M3 &worldRot(const Instance &in, const Emitter &em)
+{
+    static const M3 I = ident();
+    return (em.noWorldRot && !legacySim()) ? I : in.wrot;
+}
+// emitter rotation = world (tag / bone) * local (Move)
+// SetBirthVec (SvR06 0x2752c0, SvR04 retail 0x1fa4d0): T = cone; T = M60 * T; T = Wrot * T; dir = (1,0,0) * T
+// [MulMatrix(a,b): a = b*a]
+M3 emRot(const Instance &in, const Emitter &em) { return mul(worldRot(in, em), em.lrotM); }
 
 void stepInstance(Instance &in)
 {
-    // ParticleBase::Action 0x271d70 -> BlurUpDate 0x272750 first: data+0xB0 = data+0x80 for every particle
-    for (Emitter &em : in.f.em)
-    {
-        for (Particle &pt : em.ps)
-            if (pt.live) std::memcpy(pt.prev, pt.pos, sizeof(pt.prev));
-        em.birthRange = nullptr;
-        static const bool brOff = std::getenv("HCTP_PYRO_BIRTHRANGE") && std::getenv("HCTP_PYRO_BIRTHRANGE")[0] == '0';
-        if (!brOff)
-            for (const Action &a : em.acts)
-                if (a.id == BirthRange && a.start <= static_cast<uint32_t>(in.frame) && static_cast<uint32_t>(in.frame) < a.end)
-                    em.birthRange = &a;
-    }
+    static const bool brOff = std::getenv("HCTP_PYRO_BIRTHRANGE") && std::getenv("HCTP_PYRO_BIRTHRANGE")[0] == '0';
+    const bool legacy = legacySim();
     // ATTR particles follow their bone (SvR04 ParticleAttributeData::ActionLink re-runs StartParticleFromAtr -> matrix)
     if (in.bonePart >= 0 && g_rt)
     {
         uint8_t *rd = g_rt->memory().getRDRAM();
-        auto u32 = [&](uint32_t a) -> uint32_t { uint32_t v = 0; a &= 0x1FFFFFFu; if (a >= 0x100000u && a + 4 <= 0x2000000u) std::memcpy(&v, rd + a, 4); return v & 0x1FFFFFFu; };
-        const uint32_t mm = g_motionModel.load(std::memory_order_relaxed) & 0x1FFFFFFu;
+        auto u32 = [&](uint32_t a) -> uint32_t { uint32_t v = 0; a &= PS2_RAM_COMMITTED_MASK; if (a >= 0x100000u && a + 4 <= PS2_RAM_COMMITTED_TOP) std::memcpy(&v, rd + a, 4); return v & PS2_RAM_COMMITTED_MASK; };
+        const uint32_t mm = g_motionModel.load(std::memory_order_relaxed) & PS2_RAM_COMMITTED_MASK;
         const uint32_t skin = mm ? u32(mm + 0x20u) : 0u, mats = skin ? u32(skin + 0xD0u) : 0u;
         int16_t bone = -1;
         if (mm) std::memcpy(&bone, rd + mm + 0x24u + 2u * static_cast<uint32_t>(in.bonePart), 2);
@@ -590,31 +600,54 @@ void stepInstance(Instance &in)
             }
         }
     }
-    for (int pass = 0; pass < 3; ++pass)
-        for (Emitter &em : in.f.em)
+    // Nov 11 RETAILFIX: exact ParticleBase::Action order (SvR04 retail 0x1fe5d0 = beta 0x1fa560; SvR06 0x271d70). The
+    // group runs in mode 1 (ParticleGroup ctor: +0x20 = 1): AllAction alternates Action_Before (everything below) and
+    // Action_After (frame + 1, age / move) on successive calls = ONE step per 2 game frames (30 Hz), every emitter's
+    // Before first. Per emitter, in list order: BlurUpDate (+0xB0 = pos), Birth actions (skipped once +0x102 'death' is
+    // set), every other action except Link, then the Link actions.
+    const uint32_t fr = static_cast<uint32_t>(in.frame);
+    for (Emitter &em : in.f.em)
+    {
+        for (Particle &pt : em.ps)
+            if (pt.live) std::memcpy(pt.prev, pt.pos, sizeof(pt.prev));
+        em.birthRange = nullptr;
+        if (!brOff)
             for (const Action &a : em.acts)
+                if (a.id == BirthRange && a.start <= fr && fr < a.end) em.birthRange = &a;
+        for (int pass = 0; pass < 3; ++pass)
+            for (Action &a : em.acts)
             {
-                if (!(a.start <= static_cast<uint32_t>(in.frame) && static_cast<uint32_t>(in.frame) < a.end)) continue;
+                if (!(a.start <= fr && fr < a.end)) continue;
                 const bool isBirth = a.id == Birth, isLink = a.id == Link;
                 if ((pass == 0) != isBirth || (pass == 2) != isLink) continue;
                 if (isBirth && in.dead) continue; // ParticleBase::Action 0x271dc0: +0x108 skips the emitter actions
-                const float *p = a.p;
-                const M3 R = emRot(in, em);
+                float *p = a.p;
+                const M3 &W = worldRot(in, em);
+                const M3 R = mul(W, em.lrotM);
                 switch (a.id)
                 {
                 case Birth:
                 {
-                    int cnt = static_cast<int>(p[0]) + static_cast<int>(p[1] * rand2());
+                    // PrtActBirth::Action (SvR04 retail 0x1fa2a0): count = p0 + float(int(RandomFloat2 * int(p1))); walk the
+                    // slots from 0, a slot is free when !(age < life); life = p2 + rand2 * p3, a life <= 0 uses up one count
+                    // without a birth; stop when count <= 0.
+                    float cnt = p[0];
+                    if (const int r1 = static_cast<int>(p[1])) cnt += static_cast<float>(static_cast<int>(rand2() * static_cast<float>(r1)));
                     for (Particle &pt : em.ps)
                     {
-                        if (cnt <= 0) break;
+                        if (cnt <= 0.0f) break;
                         if (pt.live) continue;
-                        --cnt;
+                        float lifeF = p[2];
+                        if (p[3] != 0.0f) lifeF += p[3] * rand2();
+                        cnt -= 1.0f;
+                        const int life = static_cast<int>(lifeF);
+                        if (lifeF <= 0.0f || life <= 0) continue;
                         pt = Particle{};
                         pt.live = true;
                         ++em.stBorn;
-                        pt.life = std::max(1, static_cast<int>(p[2] + p[3] * rand2()));
-                        const float speed = p[4] + p[5] * rand2();
+                        pt.life = life;
+                        float speed = p[4];
+                        if (p[5] != 0.0f) speed += p[5] * rand2();
                         // cone: p6/2 deg, axes gated by int(p7) bits (0 -> 15): 1=Z 2=Y 4=X; acc = RX*RY*RZ
                         M3 cone = ident();
                         const float c = p[6] * 0.5f * kDeg;
@@ -630,15 +663,16 @@ void stepInstance(Instance &in)
                         float d[3];
                         vmul(d0, mul(R, cone), d);
                         for (int k = 0; k < 3; ++k) pt.vel[k] = d[k] * speed;
-                        float lp[3];
-                        vmul(em.lpos, in.wrot, lp);
+                        // SetBirthPos (SvR04 retail 0x1fa860, SvR06 0x275630): pos = range offset + ParticleBase+0x50 (the Move
+                        // position, NOT rotated by the world matrix) + world row 3.
+                        float lp[3] = {em.lpos[0], em.lpos[1], em.lpos[2]};
+                        if (legacy) vmul(em.lpos, in.wrot, lp);
                         for (int k = 0; k < 3; ++k) pt.pos[k] = in.wpos[k] + lp[k];
-                        // Nov 11 PART12 BIRTH RANGE (was ignored -> every particle born on one point: thin fountains, smoke
-                        // balls). SvR04 PrtActBirthRange::Action 0x1face0 -> ParticleBase::SetBirthType 0x1feca0 {+0xA4 f p0
-                        // radius, +0xA8 int(p1) type, +0xAC f p2 inner, +0xB0 p3 != 0}; SetBirthPos 0x1fa860 (after SetBirthVec):
+                        // Nov 11 PART12 BIRTH RANGE. SvR04 PrtActBirthRange::Action 0x1face0 -> ParticleBase::SetBirthType
+                        // 0x1feca0 {+0xA4 f p0 radius, +0xA8 int(p1) type, +0xAC f p2 inner, +0xB0 p3 != 0}; SetBirthPos:
                         // r = (p0 - p2) * RandomFloat[0,1] + p2; type 0 = normalize(rand2 x3) * r (no rotation); 1/2/3 = (r,0,0)
                         // RotY / RotZ / (0,r,0) RotX by rand2 * pi; 4/5/6 = +-r on x / y / z; types 1-6 * M60 (emitter rotation)
-                        // unless p3; then + emitter pos + world translation. Last active BirthRange wins (it re-sets every frame).
+                        // unless p3. Last active BirthRange wins (it re-sets every frame).
                         if (const Action *br = em.birthRange)
                         {
                             const float *q = br->p;
@@ -647,17 +681,17 @@ void stepInstance(Instance &in)
                             float o[3] = {0, 0, 0};
                             if (ty == 0)
                             {
-                                float d[3] = {rand2(), rand2(), rand2()};
-                                const float l = std::sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-                                if (l > 0) for (int k = 0; k < 3; ++k) o[k] = d[k] / l * r;
+                                float dd[3] = {rand2(), rand2(), rand2()};
+                                const float l = std::sqrt(dd[0] * dd[0] + dd[1] * dd[1] + dd[2] * dd[2]);
+                                if (l > 0) for (int k = 0; k < 3; ++k) o[k] = dd[k] / l * r;
                             }
                             else if (ty >= 1 && ty <= 6)
                             {
                                 if (ty <= 3)
                                 {
-                                    const float a = rand2() * 3.14159265f;
+                                    const float an = rand2() * 3.14159265f;
                                     float v[3] = {ty == 3 ? 0.0f : r, ty == 3 ? r : 0.0f, 0.0f};
-                                    vmul(v, ty == 1 ? rotY(a) : (ty == 2 ? rotZ(a) : rotX(a)), o);
+                                    vmul(v, ty == 1 ? rotY(an) : (ty == 2 ? rotZ(an) : rotX(an)), o);
                                 }
                                 else
                                 {
@@ -669,7 +703,7 @@ void stepInstance(Instance &in)
                             for (int k = 0; k < 3; ++k) pt.pos[k] += o[k];
                         }
                         std::memcpy(pt.prev, pt.pos, sizeof(pt.prev)); // SetBirthPos 0x275914: +0xB0 = birth pos
-                        if (em.drawType == 2) pt.base = mul(em.lrotM, in.wrot); // SetBirthVec 0x275534..0x2755fc: M00 = M60 * W
+                        if (em.drawType == 2) pt.base = mul(em.lrotM, W); // SetBirthVec 0x275534..0x2755fc: M00 = M60 * W
                     }
                     break;
                 }
@@ -692,6 +726,10 @@ void stepInstance(Instance &in)
                 }
                 case Link:
                 {
+                    // PrtActLink::Action (SvR04 retail 0x2015c0 = beta 0x1fd600): source = emitter int(p0) of the list; own
+                    // slot i pairs with source slot i % source count. Source slot dead: an age-0 particle is removed
+                    // (Set_Alpha(0), life 0), older ones are left alone. Source alive and uint(p2) <= age <= uint(p3):
+                    // bv = (src +0xB0 - src pos) * p1; pos = src +0xB0 + bv; own +0xB0 = pos + bv.
                     const int si = static_cast<int>(p[0]);
                     if (si < 0 || si >= static_cast<int>(in.f.em.size()) || &in.f.em[si] == &em) break;
                     const Emitter &src = in.f.em[si];
@@ -701,9 +739,18 @@ void stepInstance(Instance &in)
                         Particle &pt = em.ps[i];
                         if (!pt.live) continue;
                         const Particle &sp = src.ps[i % src.ps.size()];
-                        if (!sp.live && pt.age == 0) { pt.live = false; ++em.stLinkKill; continue; }
-                        if (sp.live && pt.age >= static_cast<int>(p[2]) && pt.age <= static_cast<int>(p[3]))
-                            for (int k = 0; k < 3; ++k) pt.pos[k] = sp.pos[k] - sp.vel[k] * p[1];
+                        if (!sp.live)
+                        {
+                            if (pt.age == 0) { pt.live = false; ++em.stLinkKill; }
+                            continue;
+                        }
+                        if (pt.age < static_cast<int>(p[2]) || pt.age > static_cast<int>(p[3])) continue;
+                        for (int k = 0; k < 3; ++k)
+                        {
+                            const float bv = (sp.prev[k] - sp.pos[k]) * p[1];
+                            pt.pos[k] = sp.prev[k] + bv;
+                            pt.prev[k] = pt.pos[k] + bv;
+                        }
                     }
                     break;
                 }
@@ -715,18 +762,29 @@ void stepInstance(Instance &in)
                         {
                         case Gravity:
                         {
+                            // PrtActGravity::Action (SvR04 retail 0x1fb740, SvR06 0x276530): g = (p0, -p1, p2); int(p3) == 0 ->
+                            // g * WORLD matrix (ParticleBase+0xC0, row 3 zeroed) - not the emitter's own M60.
                             float g[3] = {p[0], -p[1], p[2]};
-                            if (static_cast<int>(p[3]) == 0) vmul(g, R, g);
+                            if (static_cast<int>(p[3]) == 0) vmul(g, legacy ? R : W, g);
                             for (int k = 0; k < 3; ++k) pt.vel[k] += g[k];
                             break;
                         }
                         case Fade:
                         {
+                            // PrtActFade::Action (SvR04 retail 0x1fb2e0, SvR06 0x2760c0): age < int(p0): a = 255/p0 * age; else
+                            // life - age < int(p1): a = 255 - 255/p1 * (p1 - (life - age)), a == 0 kills the particle; else 255.
+                            // Then Set_Alpha(a / 2.0) -> data+0xA3 (max 0x7F); the packet sends every colour byte >> 1
+                            // (Updata 0x1f8100 / 0x273530) -> vertex A max 0x3F. (Old port sent 0x7F = twice the opacity.)
                             const int in_ = static_cast<int>(p[0]), out_ = static_cast<int>(p[1]);
-                            if (pt.age < in_) pt.alpha = 255 * pt.age / in_;
-                            else if (pt.life - pt.age < out_) pt.alpha = 255 * (pt.life - pt.age) / out_;
-                            else pt.alpha = 255;
-                            if (pt.alpha <= 0 && pt.age >= in_) pt.live = false; // fade-in starts at 0: only fade-out kills
+                            float af = 255.0f;
+                            if (pt.age < in_) af = 255.0f * static_cast<float>(pt.age) / static_cast<float>(in_);
+                            else if (pt.life - pt.age < out_)
+                            {
+                                af = 255.0f * static_cast<float>(pt.life - pt.age) / static_cast<float>(out_);
+                                if (af <= 0.0f) { pt.live = false; break; }
+                            }
+                            af = std::clamp(af, 0.0f, 255.0f);
+                            pt.alpha = legacy ? static_cast<int>(af) : static_cast<int>(af / 2.0f);
                             break;
                         }
                         case Roll:
@@ -745,15 +803,23 @@ void stepInstance(Instance &in)
                             break;
                         case Scaling:
                         {
+                            // PrtActScaling::Action (SvR04 retail 0x1fd080 = beta 0x1f8f60) + ResetParam(i) 0x1fd310: at age 0
+                            // rate = (max(0, p1 + rand2 * p2) - p0) / (int(p4) - int(p3)); int(p4) == int(p3) -> the action's
+                            // p0 becomes p1 for good, rate 0. age == int(p3): scale = max(0, p0); int(p3) < age <= int(p4):
+                            // scale = max(0, (age - p3) * rate + p0). The value lands on data+0xC8 + 4 * int(p6) (1 = aspect).
                             const int a0 = static_cast<int>(p[3]), a1 = static_cast<int>(p[4]);
-                            if (pt.age == a0)
+                            if (pt.age == 0)
                             {
-                                pt.scale = p[0];
-                                pt.sTarget = std::max(0.0f, p[1] + p[2] * rand2());
-                                pt.sRate = a1 > a0 ? (pt.sTarget - p[0]) / static_cast<float>(a1 - a0) : 0.0f;
+                                if (a1 == a0) { p[0] = p[1]; pt.sRate = 0.0f; }
+                                else
+                                {
+                                    pt.sTarget = std::max(0.0f, p[1] + p[2] * rand2());
+                                    pt.sRate = (pt.sTarget - p[0]) / static_cast<float>(a1 - a0);
+                                }
                             }
-                            else if (pt.age > a0 && pt.age <= a1)
-                                pt.scale = p[0] + static_cast<float>(pt.age - a0) * pt.sRate;
+                            float *dst = static_cast<int>(p[6]) == 1 ? &pt.aspect : &pt.scale;
+                            if (pt.age == a0) *dst = std::max(0.0f, p[0]);
+                            if (pt.age > a0 && pt.age <= a1) *dst = std::max(0.0f, static_cast<float>(pt.age - a0) * pt.sRate + p[0]);
                             if (em.drawType == 2) pt.aspect = p[5] / 100.0f; // 0x27878c: action+0x30 / 100.0 -> data+0xCC
                             break;
                         }
@@ -764,6 +830,7 @@ void stepInstance(Instance &in)
                     break;
                 }
             }
+    }
     ++in.frame;
     for (Emitter &em : in.f.em)
         for (Particle &pt : em.ps)
@@ -833,8 +900,8 @@ Cam readCam(uint8_t *rdram)
     Cam c;
     uint32_t cam;
     std::memcpy(&cam, rdram + 0x526E70u, 4);
-    cam &= 0x1FFFFFFu;
-    if (cam == 0 || cam + 0x120 > 0x2000000u) return c;
+    cam &= PS2_RAM_COMMITTED_MASK;
+    if (cam == 0 || cam + 0x120 > PS2_RAM_COMMITTED_TOP) return c;
     float E[4][4], A[4][4];
     std::memcpy(E, rdram + cam + 0xE0, 64);
     std::memcpy(A, rdram + cam + 0xA0, 64);
@@ -1007,8 +1074,8 @@ void prePresent()
     {
         uint32_t rnd = 0, cdm = 0;
         std::memcpy(&rnd, rdram + 0x524EB0u, 4);
-        rnd &= 0x1FFFFFFu;
-        if (rnd != 0 && rnd + 0x10600u < 0x2000000u)
+        rnd &= PS2_RAM_COMMITTED_MASK;
+        if (rnd != 0 && rnd + 0x10600u < PS2_RAM_COMMITTED_TOP)
         {
             int32_t sw = 0, sh = 0;
             std::memcpy(&sw, rdram + rnd + 0x1058Cu, 4);
@@ -1016,8 +1083,8 @@ void prePresent()
             if (sw >= 256 && sw <= 1024 && sh >= 192 && sh <= 1024) { halfW = static_cast<float>(sw >> 1); halfH = static_cast<float>(sh >> 1); }
         }
         std::memcpy(&cdm, rdram + 0x5262F8u, 4);
-        cdm &= 0x1FFFFFFu;
-        if (cdm != 0 && cdm + 0x80u < 0x2000000u)
+        cdm &= PS2_RAM_COMMITTED_MASK;
+        if (cdm != 0 && cdm + 0x80u < PS2_RAM_COMMITTED_TOP)
         {
             std::memcpy(PM, rdram + cdm + 0x40u, sizeof(PM));
             pmOk = std::isfinite(PM[3][3]) && (PM[0][0] != 0.0f || PM[1][1] != 0.0f);
@@ -1058,6 +1125,7 @@ void prePresent()
                 // Nov 10 DRAW PORT: SvR06 VU1 microcode 1:1 (My_dma_Particle = type 1 SPRITE, My_dma_ParticleRot = type 0
                 // TRISTRIP, My_dma_ParticlePolygon = type 2 FAN; decoded with tools\vu1dis2.py, notes SVR06_PYRO_COMPAT "DRAW PORT").
                 // Colour: Reset 0x272890 sets data+0xA0 = (FF,FF,FF,FF); Updata sends each byte >> 1 (0x2739d0) -> rgb 0x7F.
+                // pt.alpha = data+0xA3 (0xFF from Reset, Fade writes a/2); Updata sends it >> 1
                 const uint8_t a8 = static_cast<uint8_t>(std::clamp(pt.alpha, 0, 255) >> 1);
                 if (a8 == 0) continue; // ILW.w vi15, 0(vi5) + IBLEZ: rgba.w <= 0 -> particle skipped
                 const uint32_t key = (static_cast<uint32_t>(tid) << 8) | em.blend;
@@ -1254,7 +1322,7 @@ void hctpPyroArm(PS2Runtime *runtime, const char *id, uint32_t common)
 {
     std::lock_guard<std::mutex> lock(g_mx);
     g_rt = runtime;
-    g_common = common & 0x1FFFFFFu;
+    g_common = common & PS2_RAM_COMMITTED_MASK;
     g_lastEvScene = g_lastEvFrame = -1;
     g_evPacked.store(0xFFFFFFFFu);
     g_seFired.store(false);

@@ -2,7 +2,7 @@
 void convertDoramockFromMoves(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
 {
     const uint32_t p=uint32_t(_mm_cvtsi128_si32(ctx->r[4]));
-    if (p>0x02000000u-4u)
+    if (p>PS2_RAM_COMMITTED_TOP-4u)
     {
         std::fprintf(stderr,"[victory] invalid guest reference; preview rejected\n");
         ctx->pc=uint32_t(_mm_cvtsi128_si32(ctx->r[31]));

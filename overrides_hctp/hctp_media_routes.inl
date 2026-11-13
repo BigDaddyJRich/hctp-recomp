@@ -30,7 +30,7 @@ bool importedMediaRoute(char kind, uint8_t *rdram, R5900Context *ctx)
     if (it == g_mediaRoutes.end())
         return false;
     const uint32_t out = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4]));
-    if (out > 0x02000000u - 4u)
+    if (out > PS2_RAM_COMMITTED_TOP - 4u)
         return false;
     std::memcpy(rdram + out, &it->second.first, 2);
     std::memcpy(rdram + out + 2, &it->second.second, 2);
