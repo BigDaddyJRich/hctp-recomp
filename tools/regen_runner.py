@@ -25,6 +25,7 @@ PATCH_SCRIPTS = [  # order matters (MakeChar 0x345700 declaration order = canoni
     "patch_prop_texwindow.py",
     "patch_runner_handedits.py",
     "patch_rosterx_code32.py",  # Nov 12 Step C2 (32-bit cast codes)
+    "patch_svr_native_motion.py",  # Nov 12 SvR04/06 native motion (after handedits: rewrites its CCharIK twist hunks)
 ]
 
 
