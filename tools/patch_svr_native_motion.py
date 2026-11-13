@@ -1,5 +1,5 @@
 r"""Nov 12: SvR04/SvR06 native motion port, runner side (plan: F:\hctp-project\notes\SVR_NATIVE_ANIMATION_PLAN_20261112.md sec 6).
-Overrides side (P1b ctor shorts 29..32, P2 BoneCreate momo_x flags, IK lengths, mode helpers) = hctp_overrides.cpp "SVR NATIVE MOTION".
+Overrides side (helpers for E/F/G below + mode helpers) = hctp_overrides.cpp "SVR NATIVE MOTION".
   A. CMotionModel alloc 0x60 -> 0x68 at all 11 `li a0,0x60; jal __nw` sites before ctor 0x1b4f50 (SvR04 0x64, SvR06 0x68 at every site:
      33 shorts +0x24..+0x65). Verified in the ELF: every jal 0x1b4f50 caller has exactly one of these li's before its __nw.
   B. P3 CMotionHokan::ActionLink 0x1b5b60 at label_1b5da4: bone 13 -> a1 0x1d (l_momo_x), 17 -> 0x1e (r_momo_x) (SvR04 0x1a8a2c,
@@ -146,3 +146,40 @@ static const int kTwLen[3] = {12, 14, 16};''', "D tables")
     print("D: patched", os.path.basename(F))
 else:
     print("D: already patched")
+
+# ---- E/F/G (Nov 12 fix, plan sec 6.7). The overrides used replaceFunction wrappers that ran their code only when the original
+# returned with pc == ra; the CMotionModel ctor never did (GetBoneNo_Name 0x1b4f20 tail-jumps `jr $t9` into the FindBone
+# override) -> shorts 29..32 kept garbage. Now the helpers run INLINE at the exact points (no wrapper, no early-exit risk):
+#   E ctor 0x1b4f50 loop exit 0x1b4fb8 (s1 = this, set 0x1b4f68, loop i = 29 done)  -> hctpSvrMmShorts
+#   F CMotionHokan::BoneCreate 0x1b5710 epilogue 0x1b5b3c (s1 = hokan, set 0x1b5730; only jr $ra 0x1b5b58) -> hctpSvrBoneCreate
+#   G CCharIK ctor 0x1b83d0 epilogue 0x1b8740 (s1 = this, set 0x1b83e4; after 0x1b8718 GetBoneNo(0x13) -> +0x154) -> hctpSvrIkLengths
+INL = [
+    ("E", "ps2___ct__12CMotionModelFP10CSkinModel_0x1b4f50.cpp", "void hctpSvrMmShorts(uint8_t *rdram, uint32_t self);",
+     '''    ctx->pc = 0x1B4FB8u;
+    // 0x1b4fb8: 0x220102d  daddu       $v0, $s1, $zero''',
+     '''    ctx->pc = 0x1B4FB8u;
+    hctpSvrMmShorts(rdram, GPR_U32(ctx, 17)); // SVRNATIVE E: shorts 29..32 (SvR04 0x345e60 / SvR06 0x337770), s1 = this
+    // 0x1b4fb8: 0x220102d  daddu       $v0, $s1, $zero'''),
+    ("F", "BoneCreate__12CMotionHokanFiP5CLink_0x1b5710.cpp", "void hctpSvrBoneCreate(uint8_t *rdram, uint32_t hokan);",
+     '''    ctx->pc = 0x1B5B3Cu;
+    // 0x1b5b3c: 0xdfbf0060  ld          $ra, 0x60($sp)''',
+     '''    ctx->pc = 0x1B5B3Cu;
+    hctpSvrBoneCreate(rdram, GPR_U32(ctx, 17)); // SVRNATIVE F: momo_x twist flags 13/17 (SvR04 0x1a8550), s1 = hokan
+    // 0x1b5b3c: 0xdfbf0060  ld          $ra, 0x60($sp)'''),
+    ("G", "ps2___ct__7CCharIKFP5CLink_0x1b83d0.cpp", "void hctpSvrIkLengths(uint8_t *rdram, uint32_t ik);",
+     '''    { float f = ctx->f[0]; uint32_t bits; std::memcpy(&bits, &f, sizeof(bits)); WRITE32(ADD32(GPR_U32(ctx, 17), 340), bits); }
+    // 0x1b8740: 0xdfbf0020  ld          $ra, 0x20($sp)''',
+     '''    { float f = ctx->f[0]; uint32_t bits; std::memcpy(&bits, &f, sizeof(bits)); WRITE32(ADD32(GPR_U32(ctx, 17), 340), bits); }
+    hctpSvrIkLengths(rdram, GPR_U32(ctx, 17)); // SVRNATIVE G: thigh += momo_x, forearm += kote_x2 (SvR04 0x1ab4d8, SvR06 0x21ad60), s1 = IK
+    // 0x1b8740: 0xdfbf0020  ld          $ra, 0x20($sp)'''),
+]
+for tag, fn, decl, old, new in INL:
+    F = os.path.join(RUN, fn)
+    s = rd(F)
+    if MARK in s:
+        print(f"{tag}: already patched")
+        continue
+    s = once(s, old, new, f"{tag} call")
+    s = once(s, '#include "ps2_stubs.h"\n', '#include "ps2_stubs.h"\n' + decl + " " + MARK + "\n", f"{tag} decl")
+    wr(F, s)
+    print(f"{tag}: patched", fn)
