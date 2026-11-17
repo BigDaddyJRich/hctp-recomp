@@ -11,8 +11,8 @@ namespace HctpSettings.ViewModels;
 
 public partial class MainViewModel : ObservableObject
 {
-    public const string XUrl = "https://x.com/jcsix";
-    public const string GitHubUrl = "https://github.com/jcsix694";
+    public const string XUrl = "https://github.com/BigDaddyJRich/hctp-recomp/issues";
+    public const string GitHubUrl = "https://github.com/BigDaddyJRich";
 
     public GameFolder Folder { get; }
     public SettingsViewModel Settings { get; }

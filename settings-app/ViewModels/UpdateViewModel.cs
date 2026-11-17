@@ -532,10 +532,10 @@ public partial class UpdateViewModel : ObservableObject
         {
             "download" => "Check your internet connection and try again.",
             "damaged" => "Try again: it downloads afresh.",
-            "build" => "Try again. If it keeps failing, open the update's log and send it to @jcsix on X.",
+            "build" => "Try again. If it keeps failing, open the update's log and post it at github.com/BigDaddyJRich/hctp-recomp/issues.",
             "busy" => "",
             "interrupted" => "Try again when you're ready.",
-            _ => "Try again. If it keeps failing, open the update's log and send it to @jcsix on X.",
+            _ => "Try again. If it keeps failing, open the update's log and post it at github.com/BigDaddyJRich/hctp-recomp/issues.",
         };
         foreach (var s in Steps.Where(s => s.State == "now"))
             s.State = "next";

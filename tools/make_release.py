@@ -74,7 +74,7 @@ What's inside:
   game\mc0 - Settings > About > "Open save data" takes you there), disc\ (your disc as an .iso), settings.toml,
   logs\ and build\ (the build's working files: can be deleted once the game runs, to save space).
 
-Made by @jcsix on X (https://x.com/jcsix) and jcsix694 on GitHub (https://github.com/jcsix694).
+Made by BigDaddyJRich (https://github.com/BigDaddyJRich).
 Free software under the GNU GPL version 3:
 files\source\LICENSE. Every part it uses and its licence: files\source\THIRD-PARTY-NOTICES.txt (also on the
 About page of HCTP Recompiled Settings). Def Jam Vendetta is (c) its owners. This download includes none of it.

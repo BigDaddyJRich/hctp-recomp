@@ -15,6 +15,13 @@ The parts below keep their own licences. Their full texts come with them: in the
 in files\source\deps\<name>\ in the release, or at the address given.
 
 
+Settings program (settings-app\)
+-------------------------------
+The settings program, and the optional paraLLEl-GS renderer setup, are adapted from Def Jam Vendetta Recompiled.
+  Copyright (C) 2026 jcsix694 - GNU GPL version 3 - https://github.com/jcsix694/def-jam-vendetta-recomp
+  Our changes to it are under the same licence.
+
+
 Built into the game
 -------------------
 WWE Crush Hour PC (native-renderer build only): the native Windows host (PS2Recomp\ps2xRuntime\src\lib\host\win32_host.cpp)

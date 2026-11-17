@@ -8,8 +8,9 @@ compiled for the PC. It now runs on its own **native Windows host**: a Direct3D 
 native C++ versions of the game's VU1 vertex programs, XInput controllers and XAudio2 sound. No emulator window or
 Vulkan is needed.
 
-Built on **[Def Jam Vendetta Recompiled](https://github.com/jcsix694/def-jam-vendetta-recomp)** by jcsix694 (original
-README: [README_VENDETTA.md](README_VENDETTA.md)), adapted for HCTP.
+The settings program (launcher) and the optional paraLLEl-GS renderer setup are adapted from
+**[Def Jam Vendetta Recompiled](https://github.com/jcsix694/def-jam-vendetta-recomp)** (Copyright (C) 2026 jcsix694, GPL-3.0).
+The native Direct3D 11 renderer and the HCTP work are our own.
 
 **No game files are in this repository or in any release.** You need your own copy of the game.
 
@@ -80,7 +81,7 @@ Visual Studio 2022+ (MSVC x64), CMake, Ninja, Python.
 ## Credits
 
 - [ran-j/PS2Recomp](https://github.com/ran-j/PS2Recomp): the recompiler and runtime
-- [jcsix694/def-jam-vendetta-recomp](https://github.com/jcsix694/def-jam-vendetta-recomp): the base project
+- [jcsix694/def-jam-vendetta-recomp](https://github.com/jcsix694/def-jam-vendetta-recomp): the settings program and the paraLLEl-GS renderer setup
 - Kaiko's Crush Hour port: native D3D11 PS2Recomp port, used as a renderer reference
 - [PCSX2](https://github.com/PCSX2/pcsx2): hardware behaviour reference
 - [paraLLEl-GS](https://github.com/Arntzen-Software/parallel-gs): earlier GS backend, used as a reference
