@@ -132,7 +132,7 @@ def publish(version, repo):
     if os.path.basename(path) != ZIP_NAME:
         raise SystemExit(f'the file must be called {ZIP_NAME} (the README\'s link and the settings program look for it)')
     cmd = ['gh', 'release', 'create', tag, path, '--repo', repo, '--title',
-           f'Def Jam Vendetta Recompiled {version}', '--notes-file', notes_file, '--latest']
+           f'HCTP Recompiled {version}', '--notes-file', notes_file, '--latest']
     if repo == GITHUB_REPO:
         # the real release: from a commit that is on GitHub, tagged here
         if run('git', 'status', '--porcelain'):
@@ -143,7 +143,7 @@ def publish(version, repo):
             raise SystemExit('this commit is not on GitHub yet: push first')
         if run('git', 'tag', '--list', tag):
             raise SystemExit(f'{tag} exists already')
-        run('git', 'tag', '-a', tag, '-m', f'Def Jam Vendetta Recompiled {version}')
+        run('git', 'tag', '-a', tag, '-m', f'HCTP Recompiled {version}')
         run('git', 'push', 'origin', tag)
         cmd.append('--verify-tag')
     # (a test repository: GitHub makes the tag there, on its default branch)

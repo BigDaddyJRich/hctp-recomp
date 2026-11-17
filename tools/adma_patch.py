@@ -54,8 +54,8 @@ patch('core/iop_memory.cpp', [
             {
                 // The SPU2 reads AutoDMA data over the transfer, not at the kick: read it at completion
                 // (iop_emulator), so a block the driver finishes writing after kicking is not taken stale (CRI rna
-                // movie audio: the right channel came 8192 samples late, with pops). VENDETTA_ADMA_AT_KICK=1 = old.
-                static const bool atKick = std::getenv("VENDETTA_ADMA_AT_KICK") != nullptr;
+                // movie audio: the right channel came 8192 samples late, with pops). HCTP_ADMA_AT_KICK=1 = old.
+                static const bool atKick = std::getenv("HCTP_ADMA_AT_KICK") != nullptr;
                 if (atKick)
                     start.pcm = autoDmaFrames(source, bytes);
                 else

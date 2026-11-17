@@ -1,7 +1,7 @@
 # HCTP automated test: boot, clear ATTENTION / memory-card screens, sit idle on PRESS START until the attract-mode demo
 # match runs; screenshot the game window every N seconds; dump the audio; stop after -Seconds.
 # Output: F:\hctp-newbase\logs\auto\ (game.err, shot_NNN.png, audio.pcm).
-# Usage: powershell -ExecutionPolicy Bypass -File F:\hctp-newbase\tools\autotest.ps1 [-Seconds 240] [-Every 5] [-Extra "VENDETTA_VU1_COMPILED=0"]
+# Usage: powershell -ExecutionPolicy Bypass -File F:\hctp-newbase\tools\autotest.ps1 [-Seconds 240] [-Every 5] [-Extra "HCTP_VU1_COMPILED=0"]
 param(
     [int]$Seconds = 240,
     [int]$Every = 5,
@@ -30,11 +30,11 @@ public static class W32 {
 
 $env:HCTP_MOVIES = '1'
 $env:HCTP_PCPROF = '1'
-$env:VENDETTA_HOSTPROF = '1'
-$env:VENDETTA_SPULOG = '1'
-$env:VENDETTA_AUDIOLOG = '1'
-$env:VENDETTA_PADSCRIPT = $Pad
-$env:VENDETTA_AUDIODUMP = "$out\audio.pcm"
+$env:HCTP_HOSTPROF = '1'
+$env:HCTP_SPULOG = '1'
+$env:HCTP_AUDIOLOG = '1'
+$env:HCTP_PADSCRIPT = $Pad
+$env:HCTP_AUDIODUMP = "$out\audio.pcm"
 foreach ($kv in ($Extra -join ",").Split(",", [StringSplitOptions]::RemoveEmptyEntries)) { $k, $v = $kv.Split('=', 2); Set-Item -Path "env:$k" -Value $v }
 
 $exe = $Exe

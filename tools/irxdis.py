@@ -1,6 +1,6 @@
 # Disassembles part of an IOP module (.IRX) as it sits in IOP memory: applies the module's relocations at its load
 # base (PS2Recomp prints it: "[IOP] loaded IRX id=N entry=... base=0x...") and labels calls into other modules'
-# exports as library:ordinal (e.g. sifcmd:12 = sceSifSendCmd), matching VENDETTA_IOPLOG's [iop-call] lines.
+# exports as library:ordinal (e.g. sifcmd:12 = sceSifSendCmd), matching HCTP_IOPLOG's [iop-call] lines.
 # usage: python tools\irxdis.py <irx> <load base hex> <start hex> <end hex>
 #   e.g. python tools\irxdis.py game\MODULES\SNDDRV.IRX 24200 2d600 2d650     (needs: pip install capstone)
 import struct, sys, capstone

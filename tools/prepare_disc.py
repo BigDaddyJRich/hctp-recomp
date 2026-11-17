@@ -5,12 +5,12 @@
 #                        treats this folder as cdrom0: (IOP modules, file-name opens)
 # usage: python tools/prepare_disc.py [--check] <disc.chd | disc.iso>
 #   --check: only says whether it is the right disc (prints "ok SLUS-20787"), writes nothing
-#   VENDETTA_DATA=<folder>: where disc/ and game/ go (default: the repository)
+#   HCTP_DATA=<folder>: where disc/ and game/ go (default: the repository)
 import os
 import shutil
 import sys
 
-ROOT = os.environ.get('VENDETTA_DATA') or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+ROOT = os.environ.get('HCTP_DATA') or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), 'disc'))
 SECTOR = 2048
 SERIAL_FILE = 'SLUS_207.87'

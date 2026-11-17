@@ -94,7 +94,7 @@ This is a work in progress: see the project page for what works and the known bu
   https://github.com/BigDaddyJRich/hctp-recomp
 
 Free software under the GNU GPL version 3: files\source\LICENSE; the parts it uses and their licences:
-files\source\THIRD-PARTY-NOTICES.txt. Built on PS2Recomp (ran-j); the settings program is adapted from Def Jam Vendetta Recompiled (jcsix694).
+files\source\THIRD-PARTY-NOTICES.txt. Built on PS2Recomp (ran-j); every part and its authors are listed there.
 WWE SmackDown! Here Comes the Pain is (c) its owners. This download includes none of it.
 """
 

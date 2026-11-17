@@ -15,9 +15,16 @@ SLUS_*
 # mods: animations and other content converted from games (yours, never committed)
 /mods/
 
-# generated config (tools/make_config.py) — generated files are local-only
-config/vendetta.toml
-config/vendetta_functions.csv
+# developer-only scripts and notes (kept locally, never in the repository or a release)
+/developer/
+/CODEX_HANDOFF.md
+/README_DRAFT.md
+/goodbase_stubs.txt
+/play_logged.bat
+/build-diag.bat
+/run_cutroster_test.bat
+/run_legshake_*.bat
+/run_nameplate_*.bat
 
 # logs, runtime UI state, caches
 /logs/

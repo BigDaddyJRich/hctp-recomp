@@ -4,9 +4,9 @@
 # process, given up after 15 s so a blocked window cannot hang the run), stops the game at -Stop seconds.
 # Times are ONE string: through powershell -File a comma list arrives as one string, and an en-GB machine reads
 # '90,150' as 90150. Env switches pass through, e.g.
-#   $env:VENDETTA_PADSCRIPT='50:START,55:START,60:START,65:START'   (reaches a CPU match ~60-90 s in)
-#   $env:VENDETTA_HOSTPROF='1' (or '2' = + code-address profile), VENDETTA_VU1_VERIFY=1, VENDETTA_IOP_VERIFY=1,
-#   VENDETTA_THREADS=1, VENDETTA_AUDIOLOG=1.
+#   $env:HCTP_PADSCRIPT='50:START,55:START,60:START,65:START'   (reaches a CPU match ~60-90 s in)
+#   $env:HCTP_HOSTPROF='1' (or '2' = + code-address profile), HCTP_VU1_VERIFY=1, HCTP_IOP_VERIFY=1,
+#   HCTP_THREADS=1, HCTP_AUDIOLOG=1.
 # -Close: at -Stop, close the window like the user would (not kill the process) and report how long the exit took.
 # -Burst 'start count intervalMs': instead, a burst of pictures from start seconds (shots\<Name>-burst-NN.png).
 param([string]$Name, [string]$Seconds = '', [int]$Stop = 120, [switch]$Close, [string]$Build = 'fast', [string]$Burst = '', [switch]$Max)  # -Build runtime = the full-speed build; -Max = maximised window
@@ -14,15 +14,15 @@ $times = @($Seconds -split '[ ;,]+' | Where-Object { $_ -ne '' } | ForEach-Objec
 $r = Split-Path -Parent $PSScriptRoot
 # the real keyboard / controllers are ignored in test runs (only a pad script drives the game): Enter typed elsewhere
 # while the game window had focus skipped the intro movie
-$env:VENDETTA_NO_HOST_INPUT = '1'
+$env:HCTP_NO_HOST_INPUT = '1'
 # and the player's settings.toml too (the built-in defaults, no file written); a normal window unless -Max
-if (-not $env:VENDETTA_SETTINGS) { $env:VENDETTA_SETTINGS = 'none' }
-if (-not $Max -and -not $env:VENDETTA_MAXIMISED) { $env:VENDETTA_MAXIMISED = '0' }
-$p = Start-Process -FilePath "$r\PS2Recomp\out\$Build\ps2xRuntime\ps2EntryRunner.exe" -ArgumentList "`"$r\game\SLUS_206.39`"" -WorkingDirectory $r -RedirectStandardOutput "$r\shots\$Name.log" -RedirectStandardError "$r\shots\$Name.log.err" -PassThru
+if (-not $env:HCTP_SETTINGS) { $env:HCTP_SETTINGS = 'none' }
+if (-not $Max -and -not $env:HCTP_MAXIMISED) { $env:HCTP_MAXIMISED = '0' }
+$p = Start-Process -FilePath "$r\PS2Recomp\out\$Build\ps2xRuntime\ps2EntryRunner.exe" -ArgumentList "`"$r\game\SLUS_207.87`"" -WorkingDirectory $r -RedirectStandardOutput "$r\shots\$Name.log" -RedirectStandardError "$r\shots\$Name.log.err" -PassThru
 "started pid $($p.Id)"
 if ($Max) {
   Add-Type 'using System; using System.Runtime.InteropServices; public static class WmMax { [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd); }'
-  for ($i = 0; $i -lt 100; $i++) { Start-Sleep -Milliseconds 100; $p.Refresh(); if ($p.MainWindowHandle -ne 0 -and $p.MainWindowTitle -match '^(PS2-Recomp|Def Jam Vendetta)') { break } }
+  for ($i = 0; $i -lt 100; $i++) { Start-Sleep -Milliseconds 100; $p.Refresh(); if ($p.MainWindowHandle -ne 0 -and $p.MainWindowTitle -match '^(PS2-Recomp|HCTP|WWE)') { break } }
   [void][WmMax]::ShowWindow($p.MainWindowHandle, 3)
 }
 $start = Get-Date

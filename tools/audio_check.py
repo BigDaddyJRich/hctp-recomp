@@ -1,4 +1,4 @@
-# Audio check for VENDETTA_AUDIODUMP output (raw 16-bit stereo PCM, 48 kHz).
+# Audio check for HCTP_AUDIODUMP output (raw 16-bit stereo PCM, 48 kHz).
 # Prints per 10 s window: L/R level, the lag of R behind L (cross-correlation on a decimated envelope, +-1 s) and the
 # number of clicks (sample-to-sample jumps far above the window's typical slope) per channel.
 # Usage: python -I audio_check.py F:\hctp-newbase\logs\auto\audio.pcm

@@ -1,6 +1,6 @@
-// Headless query helper for adjmk's analysed Ghidra project of Def Jam Vendetta (SLUS_206.39).
+// Headless query helper for an analysed Ghidra project (HCTP: SLUS_207.87).
 // Usage (after the program has been imported + analysed):
-//   C:\Tools\ghidra-headless.bat C:\Tools\ghidra-projects adjmk -process SLUS_206.39 -noanalysis ^
+//   C:\Tools\ghidra-headless.bat C:\Tools\ghidra-projects adjmk -process SLUS_207.87 -noanalysis ^
 //       -scriptPath <repo>\tools\ghidra -postScript AdjmkQuery.java <query> [<query> ...]
 // Queries:
 //   info                 program summary (language, image base, function count, memory blocks)

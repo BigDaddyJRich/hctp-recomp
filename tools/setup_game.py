@@ -1,10 +1,6 @@
-# A player's first-run setup, step by step (run by HCTP Recompiled Settings; also by hand):
-#   python tools/setup_game.py --data <install folder> [--disc <disc.chd | disc.iso>]
-# 1. the disc -> disc/ + game/ in the install folder, 2. Microsoft's C++ build tools (installed when missing: one
-# Windows prompt), 3. PS2Recomp's recompiler, 4. the game's code -> C++, 5. the game, 6. "SmackDown! Here Comes the Pain
-# Recompiled.exe" in the install folder. The build folders are build/recomp and build/game there.
-#
-# What it prints for a program to follow (each on its own line, besides everything the tools print):
+# The setup's shared steps and helpers; tools/hctp_setup.py is the setup itself (the launcher runs it):
+# Microsoft's C++ build tools (installed when missing: one Windows prompt), PS2Recomp's recompiler, the build with
+# retries, and the lines it prints for a program to follow (each on its own line, besides what the tools print):
 #   [step] <n> <of> <title>    [progress] <0-1 within the step>    [done]    [error] <what went wrong>
 #   [detail] <a line of the tool's own error, shown under the [error] line; they come just before it>
 # The libraries PS2Recomp's CMake would clone with git come with a release (source/deps/<name>), so no git is needed.
@@ -22,7 +18,6 @@ import urllib.request
 
 SRC = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 PS2RECOMP = os.path.join(SRC, 'PS2Recomp')
-GAME_EXE = 'HCTP Recompiled.exe'
 VS_INSTALLER_URL = 'https://aka.ms/vs/17/release/vs_BuildTools.exe'
 VS_COMPONENTS = ['Microsoft.VisualStudio.Workload.VCTools', 'Microsoft.VisualStudio.Component.VC.Tools.x86.x64',
                  'Microsoft.VisualStudio.Component.VC.CMake.Project', 'Microsoft.VisualStudio.Component.Windows11SDK.22621']
@@ -166,30 +161,6 @@ def step_tools():
     return env
 
 
-# --- 2. the disc ----------------------------------------------------------------------------------------------------
-
-def step_disc(data, disc):
-    step(1, STEPS[0])
-    elf = os.path.join(data, 'game', 'SLUS_207.87')
-    iso = os.path.join(data, 'disc', 'SLUS-20787.iso')
-    if not disc:
-        if os.path.isfile(elf) and os.path.isfile(iso):
-            say('the disc is already prepared')
-            progress(1.0)
-            return
-        raise SetupError('no disc chosen')
-    env = dict(os.environ, VENDETTA_DATA=data)
-
-    def parse(line):
-        m = re.match(r'(\d+)/(\d+) sectors', line)
-        if m:
-            progress(0.9 * int(m.group(1)) / max(1, int(m.group(2))))
-    run([sys.executable, os.path.join(SRC, 'tools', 'prepare_disc.py'), disc], env=env, parse=parse)
-    if not os.path.isfile(elf):
-        raise SetupError('the disc was read but SLUS_207.87 is missing')
-    progress(1.0)
-
-
 # --- 3-5. building ----------------------------------------------------------------------------------------------------
 
 def deps_args():
@@ -270,129 +241,3 @@ def sync_progress(start, end):
     return parse
 
 
-def step_recompile(recompiler, data):
-    step(4, STEPS[3])
-    env = dict(os.environ, VENDETTA_DATA=data)
-    logs = os.path.join(data, 'logs')
-    os.makedirs(logs, exist_ok=True)
-    # where the time goes (an update, 2026-10-12): the recompiler ~0.5 min, the file comparison ~6 min
-    run([sys.executable, os.path.join(SRC, 'tools', 'make_config.py')], env=env, cwd=SRC)
-    progress(0.02)
-    say("Turning the game's code into C++")
-    log = os.path.join(logs, 'recomp.log')
-    say(f'> {recompiler} config/vendetta.toml (its output: {log})')
-    with open(log, 'w', encoding='utf-8', errors='replace') as out:
-        code = subprocess.run([recompiler, os.path.join(SRC, 'config', 'vendetta.toml')], cwd=SRC, env=env,
-                              stdout=out, stderr=subprocess.STDOUT).returncode
-    if code != 0:
-        raise SetupError(f'the recompiler failed (exit code {code}); see {log}')
-    progress(0.15)
-    run([sys.executable, os.path.join(SRC, 'tools', 'vu1_recomp.py')], env=env, cwd=SRC)
-    progress(0.18)
-    run([sys.executable, os.path.join(SRC, 'tools', 'sync_generated.py')], env=env, cwd=SRC,
-        parse=sync_progress(0.18, 1.0))
-    progress(1.0)
-
-
-def step_game(env, data):
-    step(5, STEPS[4])
-    build = os.path.join(data, 'build', 'game')
-    # the same build as build-fast.bat (out\fast)
-    run(['cmake', '-S', PS2RECOMP, '-B', build, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=RelWithDebInfo',
-         '-DCMAKE_CXX_FLAGS_RELWITHDEBINFO=/O2 /Ob1 /DNDEBUG /arch:AVX2', '-DCMAKE_C_FLAGS_RELWITHDEBINFO=/O2 /DNDEBUG',
-         '-DCMAKE_EXE_LINKER_FLAGS_RELWITHDEBINFO=/INCREMENTAL:NO /DEBUG /OPT:REF /OPT:ICF', '-DPS2X_BUILD_RECOMP=OFF',
-         '-DPS2X_BUILD_TEST=OFF', '-DPS2X_BUILD_STUDIO=OFF', '-DPS2X_BUILD_ANALYZER=OFF', '-DPS2X_ENABLE_AGRESSIVE_LOGS=OFF',
-         '-DPS2X_SHOW_WINDOWS_CONSOLE=OFF',  # a windowed program: no terminal behind the game (its output: logs\)
-         f'-DPS2X_PARALLEL_GS_DIR={os.path.join(SRC, "third_party", "parallel-gs")}',
-         # double-click the game: it finds game/SLUS_207.87 beside itself (main.cpp)
-         '-DPS2X_DEFAULT_BOOT_ELF=game/SLUS_207.87'] + deps_args(), env=env)
-    progress(0.03)
-    build_with_retry(build, env, 0.03, 1.0)
-    progress(1.0)
-    return os.path.join(build, 'ps2xRuntime')
-
-
-def step_extras(data, pack):
-    """The extras pack: a zip whose MODS/ folder goes over game/MODS (the game's own files are never touched).
-    Files it replaces are kept in game/backup_before_extras first."""
-    import zipfile
-    say('installing the extras pack')
-    game = os.path.join(data, 'game')
-    backup = os.path.join(game, 'backup_before_extras')
-    with zipfile.ZipFile(pack) as z:
-        names = [n for n in z.namelist() if n.replace(chr(92), '/').startswith('MODS/') and not n.endswith('/')]
-        if not names:
-            raise SetupError('that zip is not an HCTP extras pack (no MODS folder in it)')
-        for i, name in enumerate(names):
-            dest = os.path.normpath(os.path.join(game, name))
-            if not dest.startswith(os.path.normpath(game) + os.sep):
-                raise SetupError(f'bad path in the extras pack: {name}')
-            if os.path.isfile(dest):
-                keep = os.path.join(backup, name)
-                os.makedirs(os.path.dirname(keep), exist_ok=True)
-                if not os.path.exists(keep):
-                    shutil.copy2(dest, keep)
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
-            with z.open(name) as src, open(dest, 'wb') as out:
-                shutil.copyfileobj(src, out)
-            progress((i + 1) / len(names))
-    say(f'extras pack: {len(names)} files installed')
-
-
-def step_finish(out_dir, data):
-    step(6, STEPS[5])
-    exe = os.path.join(out_dir, 'ps2EntryRunner.exe')
-    if not os.path.isfile(exe):
-        raise SetupError('the game was not built')
-    # each copied beside its place first, then swapped in: an update's rebuild replaces the game only once it is all here
-    files = [(exe, GAME_EXE)] + [(os.path.join(out_dir, name), name) for name in os.listdir(out_dir)
-                                  if name.lower().endswith('.dll')]  # the DLLs it needs (ffmpeg)
-    for source, name in files:
-        shutil.copyfile(source, os.path.join(data, name + '.new'))
-    for _, name in files:
-        os.replace(os.path.join(data, name + '.new'), os.path.join(data, name))
-    say(f'the game: {os.path.join(data, GAME_EXE)}')
-    progress(1.0)
-
-
-def main():
-    parser = argparse.ArgumentParser(description='First-run setup: your disc -> HCTP Recompiled.exe')
-    parser.add_argument('--data', required=True, help='the install folder (disc/, game/, the game program, build/)')
-    parser.add_argument('--extras', help='optional: the HCTP extras pack zip (models, trons, music, portraits)')
-    parser.add_argument('--disc', help='your disc: .chd or .iso (USA, SLUS-20787)')
-    args = parser.parse_args()
-    data = os.path.abspath(args.data)
-    try:
-        step_disc(data, args.disc)
-        if args.extras:
-            step_extras(data, args.extras)
-        if os.path.isfile(os.path.join(data, 'HCTP Recompiled.exe')):
-            say('the game program came with this release: no build needed')
-            say('[done]')
-            return 0
-        env = step_tools()
-        recompiler = step_recompiler(env, data)
-        step_recompile(recompiler, data)
-        out_dir = step_game(env, data)
-        step_finish(out_dir, data)
-    except SetupError as error:
-        # the step it stopped in, the tool's own error lines, and what they mean when it is a known one
-        where = f'{STEPS[current_step - 1]}: ' if 1 <= current_step <= len(STEPS) else ''
-        message = where + str(error)
-        for pattern, meaning in KNOWN_ERRORS:
-            if any(pattern.search(line) for line in error.details):
-                message += '. ' + meaning
-                break
-        for line in error.details:
-            say(f'[detail] {line}')
-        say(f'[error] {message}')
-        return 1
-    except Exception as error:  # anything unexpected: still a clear last line
-        say(f'[error] {type(error).__name__}: {error}')
-        return 1
-    say('[done]')
-    return 0
-
-
-if __name__ == '__main__':
-    sys.exit(main())
