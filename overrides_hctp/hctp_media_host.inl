@@ -52,11 +52,15 @@ void installHostMedia(PS2Runtime &runtime)
     uint32_t id;
     while (routes >> kind >> id >> part >> entry)
     {
-        if (id > 255 || !hostMediaPath(kind, part, entry))
+        // Nov 17: ids up to 65535 (roster slot wide music, rosterxPlayBGM; MEDIA_ROUTES M 256..). The Nov 16 21:00 build
+        // still had id > 255 here -> the new M 256-267 rows cleared EVERY host route + file (all added themes silent, added
+        // trons = stock Rock tron, host commentary packs gone). A bad row is now skipped, never the whole table.
+        if (id > 65535 || !hostMediaPath(kind, part, entry))
         {
-            g_hostRoutes.clear(); g_hostMedia.clear();
-            std::fprintf(stderr, "[hctp] missing imported media route; import disabled\n");
-            return;
+            static int bad = 0;
+            if (bad++ < 16)
+                std::fprintf(stderr, "[hctp] host media route %c %u -> %u/%u skipped (id or file missing)\n", kind, id, part, entry);
+            continue;
         }
         g_hostRoutes[{kind,id}] = {uint16_t(part),uint16_t(entry)};
     }

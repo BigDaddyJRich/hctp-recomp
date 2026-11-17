@@ -17,10 +17,22 @@ bool applyMediaDefaults(uint8_t *ram, uint32_t record, uint32_t code)
     return hctp_media_defaults::apply(ram+record,ram+0x4c0f54u+id*0x170u,chosen->second);
 }
 
+// Nov 17: MEDIA_DEFAULTS music > 255 (wide id, no u8 record byte). apply() leaves the record byte alone for those;
+// the wide id plays while the record still holds the stock byte (= no deliberate CAM choice). 0 = none.
+uint32_t camDefaultWide(const uint8_t *ram, uint32_t code, uint32_t record)
+{
+    if (code >= 8600u || record > PS2_RAM_COMMITTED_TOP - 0x170u) return 0;
+    const unsigned id=code/100u;
+    auto chosen=g_mediaDefaults.find({id,int(code/10u%10u)});
+    if(chosen==g_mediaDefaults.end())chosen=g_mediaDefaults.find({id,-1});
+    if(chosen==g_mediaDefaults.end() || chosen->second.music<=255)return 0;
+    return ram[record+0x15fu]==ram[0x4c0f54u+id*0x170u+0x15fu] ? uint32_t(chosen->second.music) : 0u;
+}
+
 void mediaDefaultPropertyCtor(uint8_t *ram,R5900Context *ctx,PS2Runtime *runtime)
 {
-    const uint32_t self=uint32_t(_mm_cvtsi128_si32(ctx->r[4]))&0x1ffffffu;
-    const uint32_t character=uint32_t(_mm_cvtsi128_si32(ctx->r[5]))&0x1ffffffu;
+    const uint32_t self=uint32_t(_mm_cvtsi128_si32(ctx->r[4]))&PS2_RAM_COMMITTED_MASK;
+    const uint32_t character=uint32_t(_mm_cvtsi128_si32(ctx->r[5]))&PS2_RAM_COMMITTED_MASK;
     g_originalMediaPropCtor(ram,ctx,runtime);
     if (!self || self>PS2_RAM_COMMITTED_TOP-0x190u || !character || character>PS2_RAM_COMMITTED_TOP-0x34u) return;
     uint32_t code;std::memcpy(&code,ram+character+0x30,4);
@@ -36,7 +48,7 @@ void mediaDefaultPropertyCtor(uint8_t *ram,R5900Context *ctx,PS2Runtime *runtime
 
 void mediaDefaultEntranceCtor(uint8_t *ram,R5900Context *ctx,PS2Runtime *runtime)
 {
-    const uint32_t self=uint32_t(_mm_cvtsi128_si32(ctx->r[4]))&0x1ffffffu;
+    const uint32_t self=uint32_t(_mm_cvtsi128_si32(ctx->r[4]))&PS2_RAM_COMMITTED_MASK;
     g_originalMediaEntranceCtor(ram,ctx,runtime);
     if (!self || self>PS2_RAM_COMMITTED_TOP-0x2a4u) return;
     // g_pChar[0] is the selected CAM character. The original entrance constructor
@@ -70,7 +82,7 @@ void installMediaDefaults(PS2Runtime &runtime)
         int id,attire,music,video;
         if(line.empty() || line[0]=='#')continue;
         if(std::sscanf(line.c_str(),"%d %d %d %d",&id,&attire,&music,&video)!=4 ||
-           id<0 || id>=86 || attire < -1 || attire>9 || music < -1 || music>255 || video < -1 || video>255)
+           id<0 || id>=86 || attire < -1 || attire>9 || music < -1 || music>65535 || video < -1 || video>255)
         {
             g_mediaDefaults.clear();std::fprintf(stderr,"[hctp] invalid MEDIA_DEFAULTS; disabled\n");return;
         }

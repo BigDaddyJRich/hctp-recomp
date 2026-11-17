@@ -1,7 +1,10 @@
 #include <utility>
 #include "hctp_restored_finishers.h"
+#include "hctp_svr04_cue.h"
 #include <atomic>
 #include <array>
+#include <bitset>
+#include <functional>
 // WWE SmackDown! Here Comes the Pain (USA, SLUS-20787) - runtime overrides for this game build.
 // Copied into ps2xRuntime/src/runner/ by tools/sync_generated.py; edit this file in the repo's overrides_hctp/ folder.
 //
@@ -13,9 +16,20 @@ bool hctpPyroEventTick(uint32_t scene, uint32_t frame, uint32_t frameMax); // hc
 void hctpPyroDisarm();
 bool hctpPyroHas(const char *id); // hctp_svr06_pyro.cpp: PCEN + GMEV pack exists for this SvR06 event id
 void hctpPyroSetSource(int game); // hctp_svr06_pyro.cpp: 4 = MODS/SVR04 prtcls/gm (Nov 11), 6 = MODS/SVR06
+bool hctpSvr04CtxArm(uint32_t svrNo); // hctp_svr04_ctx.cpp (Nov 14 arm)
+void hctpSvr04CtxInstall(PS2Runtime &runtime); // hctp_svr04_ctx.cpp: HCTP_SVR04_CTX=1 SvR04 particle engine in its own memory (Nov 13 STEP 2)
 void hctpPyroNoteMotionModel(uint32_t mm); // hctp_svr06_pyro.cpp: PART12 attribute particles follow this model's bones
 void hctpMatrixInstall(PS2Runtime &runtime); // hctp_matrix.cpp: SYM L1 matrix / L2 replay (HCTP_MATRIX=1)
+void hctpSceneViewerInstall(PS2Runtime &runtime); // hctp_scene_viewer.cpp: Season THEATER -> SCENE VIEWER (HCTP_SCENE_VIEWER=1)
 bool g_pyro04Active = false; // Nov 11: SvR04 entrance pyro armed (ticked by evsActionSvr)
+bool g_svr04CtxOn = false; // Nov 14: native SvR04 context owns this SvR04 entrance (hctp_svr04_ctx.cpp)
+void hctpSvr04CtxEventTick(uint32_t scene, uint32_t frame); // hctp_svr04_ctx.cpp
+// Nov 14 (SVR06_PYRO_MODULE_HANDOFF_20261114.md sec 4): HCTP_SVR06_CTX=1 = SvR06's own particle engine + FireWorks gimmicks
+bool hctpSvr06CtxArm(uint32_t svrNo); // hctp_svr06_ctx.cpp
+void hctpSvr06CtxEventTick(uint32_t scene, uint32_t frame); // hctp_svr06_ctx.cpp
+void hctpSvr06CtxTakeSe(std::vector<int32_t> &out); // hctp_svr06_ctx.cpp: ids from SvR06's pyro SE call 0x1ce9d0
+void hctpSvr06CtxInstall(PS2Runtime &runtime); // hctp_svr06_ctx.cpp
+bool g_svr06CtxOn = false; // Nov 14: native SvR06 context owns this SvR06 entrance's pyro + pyro SE
 static int g_svr06CamEvent = 0; // Nov 9: HCTP event no of the SvR06 4044 reader event (CAM row 3944), 0 = none
 #include "runtime/ee_scheduler.h"
 #include "game_overrides.h"
@@ -278,7 +292,33 @@ namespace
         const uint32_t ra = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
         g_origCharCtor(rdram, ctx, runtime);
         if (ctx->pc == ra && self != 0u && self <= PS2_RAM_COMMITTED_TOP - 0x384u)
+        {
             rdram[self + 0x383u] = 0u;
+            // Nov 17 PAD PROBE (log only, first 48 chars): ctor 0x1ba6a0-0x1ba744 loads PAC parts 6/7 (elbow pads) into
+            // +0x504[2] and binds 4 arm bones each by name (table 0x412A60): +0x524 + side*0x190 + i*4 = u16 pad bone
+            // (lookup in the pad, 0x1ba6c8) and u16 body bone (lookup in +0x34, 0x1ba6f8). -1 = name not found.
+            static int s_padLog = 0;
+            if (s_padLog < 48)
+            {
+                uint16_t code = 0; uint32_t pad[2] = {};
+                std::memcpy(&code, rdram + self + 0x30u, 2);
+                std::memcpy(pad, rdram + self + 0x504u, 8);
+                if (pad[0] || pad[1])
+                {
+                    ++s_padLog;
+                    std::fprintf(stderr, "[padprobe] CChar %X code %u pads %08X %08X", self, code, pad[0], pad[1]);
+                    for (uint32_t side = 0; side < 2u; ++side)
+                        for (uint32_t i = 0; i < 4u; ++i)
+                        {
+                            int16_t pb, bb;
+                            std::memcpy(&pb, rdram + self + 0x524u + side * 0x190u + i * 4u, 2);
+                            std::memcpy(&bb, rdram + self + 0x526u + side * 0x190u + i * 4u, 2);
+                            std::fprintf(stderr, " %u:%d/%d", side * 4u + i, pb, bb);
+                        }
+                    std::fprintf(stderr, "%c", 10);
+                }
+            }
+        }
     }
     // TEMP diag HCTP_REPLAY_PROBE=1 (Nov 7, replay restore, notes\REPLAY_RESTORE_PLAN_20261107.md): log-only.
     // MakeCamEff(type,len) 0x208890 (type 1 = replay), MakeGameReplay(int) 0x1f7350, GameReplay::Action 0x1f6d50
@@ -810,6 +850,19 @@ namespace
     // everyone else gets the ring (or high-poly) model. Restored wrestlers with an XXA4 pack get their entrance attire.
     uint16_t g_hoganTearBody = 0; // Hogan after-tear body override (see initEventSystemShirtTear)
     PS2Runtime::RecompiledFunction g_origGetEntranceCastNo = nullptr;
+    // Nov 17 CAM DRESS RULE (all wrestlers): SvR XX04 entrance bodies are worn UNDER the XXa2 gear (Taker jacket: no
+    // arms/back). The gear is drawn only when the member's dress flag is set, and only CSd5EventData::SetSuperStarData
+    // 0x2ae4e0 sets it (IsDress 0x2af300 at 0x2ae744/0x2ae900/0x2ae950, logged before InitEventSystem in matches).
+    // Create-a-Moveset previews never run it (no IsDress call in any CAM log) -> retail shows the ring model there.
+    // So: an XX04 that needs gear is served only after SetSuperStarData ran for this show; otherwise the ring code.
+    bool g_superStarDataRan = false; // set by SetSuperStarData, cleared at each bell (kPbpBell)
+    PS2Runtime::RecompiledFunction g_origSetSuperStarData = nullptr;
+    void setSuperStarDataDressGate(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        g_superStarDataRan = true;
+        g_origSetSuperStarData(rdram, ctx, runtime);
+    }
+    bool hctpAttireHasDress(const uint8_t *rdram, uint32_t code); // Nov 17, defined after RosterxSlot
     void getEntranceCastNoCutRoster(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t code = hctpCodeNorm(static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[5])));
@@ -817,6 +870,15 @@ namespace
         const uint32_t entrance = code - code % 10u + 4u;
         if (hctpIsStockOrSlotCode(code) && g_cutEntranceCodes.count(static_cast<uint16_t>(entrance)))
             SET_GPR_U32(ctx, 2, entrance);
+        const uint32_t got = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[2])) & 0xFFFFu;
+        if (got % 10u == 4u && !g_superStarDataRan && hctpIsStockOrSlotCode(code) && hctpAttireHasDress(rdram, got))
+        {
+            static int logged = 0;
+            if (logged++ < 32)
+                std::fprintf(stderr, "[entrance] %u needs gear %u2 but no SetSuperStarData (CAM preview) -> ring %u%c", got,
+                             got / 10u, got - got % 10u, 10);
+            SET_GPR_U32(ctx, 2, got - got % 10u);
+        }
     }
     // Molly Holly SvR port (Nov 5): GameMem::Setup 0x1feed0 sizes the 7 character pages (KB, table 0x419d68[slot],
     // cast code at 0x4920C0 + slot*32 + 0x10A): part 0 (ring) = 0x1E0, other parts 0x290, B&P mode part 3 = 0x350, then
@@ -853,8 +915,170 @@ namespace
                      (end - start) >> 10, (unsigned long long)(used >> 10), (unsigned long long)(freeb >> 10),
                      (unsigned long long)(largest >> 10), 10);
     }
+    // Nov 13 YMEM GUARD (log only, on with HCTP_RESWATCH=1; CHAR_MEMORY note sec 14). Resident boot objects (pages 0/1: CRender 0x746020,
+    // shadow models 0x730CE0/0x73D240) get overwritten after an SvR six-man. yfree 0x141160 resolves the block's prev/next links
+    // (qword indexes) against the CURRENT start of the page named by the byte at ptr-4, so a block freed after its page moved
+    // (re-cut) or a corrupted header writes headers anywhere. Logs: full page table at every re-cut, any yfree whose block is not
+    // inside its page, and any ymallocR/ymemalignR result outside the current page or inside resident pages 0/1 while page >= 2.
+    bool ymemGuardOn()
+    {
+        static const bool on = std::getenv("HCTP_RESWATCH") && std::getenv("HCTP_RESWATCH")[0] != '0';
+        return on;
+    }
+    void ymemGuardTable(uint8_t *rdram, const char *tag, uint32_t ra)
+    {
+        auto rd = [&](uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & PS2_RAM_COMMITTED_MASK), 4); return v; };
+        const uint32_t count = rd(0x40F190u);
+        std::fprintf(stderr, "[ymemguard] %s ra %08X count %u cur %u cache %u:", tag, ra, count, rd(0x500F00u), rd(0x40F2B8u));
+        for (uint32_t i = 0; i < count && i < 16u; ++i)
+            std::fprintf(stderr, " p%u %08X-%08X", i, rd(0x500E00u + i * 16u), rd(0x500E04u + i * 16u));
+        std::fprintf(stderr, "%c", 10);
+    }
+    // Nov 12 SHADOW PROBE (opt-in HCTP_SHADOW_PROBE=1; notes\CHAR_MEMORY_EXPANSION_RESEARCH_20261112.md sec 9/10). CAM superstar-cycle
+    // crash = CCharDrawShadow::Draw 0x1b9c30 (j CChar::DrawShadow, a0 = *(node+0x28)) on a CChar whose +0x4F8 is not the resident
+    // shadow CSkinModel (*(0x527998) / *(0x5279A0), CChar ctor 0x1ba8c0). Draw lists: CObjControl *(0x4FE1C8), [+0x24, +0x2C) of
+    // 12 B {begin, capEnd, cur} (RegistDraw 0x13db30, DelDraw 0x13db80 = FIRST match -> -1, DrawGarbageCollection 0x13dc70).
+    // Vtables: CChar 0x47DAB0, CCharDrawShadow 0x47DB00 (ctor 0x1b9bfc). Logs node/char/pages/slots/duplicate entries, skips that draw.
+    PS2Runtime::RecompiledFunction g_origCharDrawShadow = nullptr;
+    uint32_t g_shadowProbeCalls = 0;
+    uint32_t probeRd(uint8_t *rdram, uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & PS2_RAM_COMMITTED_MASK), 4); return v; }
+    int probePageOf(uint8_t *rdram, uint32_t a)
+    {
+        for (uint32_t p = 0; p < 16u; ++p)
+        {
+            const uint32_t s = probeRd(rdram, 0x500E00u + p * 16u), e = probeRd(rdram, 0x500E04u + p * 16u);
+            if (s && e > s && a >= s && a < e) return int(p);
+        }
+        return -1;
+    }
+    // ymem block containing a (walk like ymemGetInfo 0x140b40): 1 = free block, 0 = used, -1 = not found
+    int probeBlockFree(uint8_t *rdram, uint32_t a, int page)
+    {
+        if (page < 0) return -1;
+        const uint32_t start = probeRd(rdram, 0x500E00u + page * 16u), end = probeRd(rdram, 0x500E04u + page * 16u);
+        uint32_t cur = start;
+        for (int guard = 0; cur < end && guard < 200000; ++guard)
+        {
+            const uint32_t next = probeRd(rdram, cur), idx = (cur - start) >> 4;
+            if (next <= idx) break;
+            const uint32_t nb = start + next * 16u;
+            if (a >= cur && a < nb) return probeRd(rdram, cur + 8u) ? 1 : 0;
+            cur = nb;
+        }
+        return -1;
+    }
+    uint32_t probeDrawRefs(uint8_t *rdram, uint32_t node, int *prio) // entries == node over all priorities
+    {
+        const uint32_t oc = probeRd(rdram, 0x4FE1C8u);
+        if (prio) *prio = -1;
+        if (!oc) return 0;
+        const uint32_t lb = probeRd(rdram, oc + 0x24u), le = probeRd(rdram, oc + 0x2Cu);
+        uint32_t n = 0;
+        for (uint32_t e = lb, pr = 0; e < le && pr < 64u; e += 12u, ++pr)
+        {
+            const uint32_t b = probeRd(rdram, e), c = probeRd(rdram, e + 8u);
+            for (uint32_t s = b; s < c && s - b < 0x40000u; s += 4u)
+                if (probeRd(rdram, s) == node) { ++n; if (prio && *prio < 0) *prio = int(pr); }
+        }
+        return n;
+    }
+    void charDrawShadowProbe(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        static uint32_t logged = 0;
+        ++g_shadowProbeCalls;
+        const uint32_t node = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4]));
+        const uint32_t ch = probeRd(rdram, node + 0x28u), m = probeRd(rdram, ch + 0x4F8u);
+        const uint32_t s0 = probeRd(rdram, 0x527998u), s1 = probeRd(rdram, 0x5279A0u);
+        { // Nov 13: the resident shadow CSkinModels' +0xC8 (ympSkinModel*, set once by Create 0x14feb4 at boot) must never change
+            static uint32_t boot0 = 0, boot1 = 0, warned = 0;
+            const uint32_t y0 = s0 ? probeRd(rdram, s0 + 0xC8u) : 0u, y1 = s1 ? probeRd(rdram, s1 + 0xC8u) : 0u;
+            if (!boot0 && !boot1) { boot0 = y0; boot1 = y1; }
+            else if ((y0 != boot0 || y1 != boot1) && warned < 6u)
+            {
+                ++warned;
+                std::fprintf(stderr, "[shadowprobe] RESIDENT shadow +C8 changed call %u: %08X+C8 %08X (boot %08X) %08X+C8 %08X (boot %08X)%c",
+                             g_shadowProbeCalls, s0, y0, boot0, s1, y1, boot1, 10);
+            }
+        }
+        if (m == 0u || m == s0 || m == s1)
+        {
+            g_origCharDrawShadow(rdram, ctx, runtime);
+            return;
+        }
+        if (logged < 12u)
+        {
+            ++logged;
+            int prio = -1;
+            const uint32_t refs = probeDrawRefs(rdram, node, &prio);
+            const int pn = probePageOf(rdram, node), pc = probePageOf(rdram, ch);
+            std::fprintf(stderr, "[shadowprobe] BAD #%u call %u node %08X vt %08X (want 47DB00) flag %u ch %08X vt %08X (want 47DAB0) +4F8 %08X"
+                         " (res %08X/%08X) +188 %02X | node page %d free %d, char page %d free %d | refs %u prio %d%c",
+                         logged, g_shadowProbeCalls, node, probeRd(rdram, node), unsigned(rdram[(node + 8u) & PS2_RAM_COMMITTED_MASK]), ch,
+                         probeRd(rdram, ch), m, s0, s1, unsigned(rdram[(ch + 0x188u) & PS2_RAM_COMMITTED_MASK]), pn,
+                         probeBlockFree(rdram, node, pn), pc, probeBlockFree(rdram, ch, pc), refs, prio, 10);
+            std::fprintf(stderr, "[shadowprobe]   slots 526EA0:");
+            for (uint32_t i = 0; i < 8u; ++i)
+            {
+                const uint32_t c = probeRd(rdram, 0x526EA0u + i * 4u);
+                std::fprintf(stderr, " %u=%08X(p%d)", i, c, c ? probePageOf(rdram, c) : -1);
+            }
+            std::fprintf(stderr, "%c", 10);
+        }
+        ctx->pc = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31])); // probe run only: skip this one draw
+    }
+    void probeDrawsInRange(uint8_t *rdram, uint32_t st, uint32_t en, const char *tag) // live draw nodes inside [st, en)
+    {
+        const uint32_t oc = probeRd(rdram, 0x4FE1C8u);
+        if (!oc) return;
+        const uint32_t lb = probeRd(rdram, oc + 0x24u), le = probeRd(rdram, oc + 0x2Cu);
+        uint32_t n = 0, shadows = 0;
+        for (uint32_t e = lb, pr = 0; e < le && pr < 64u; e += 12u, ++pr)
+        {
+            const uint32_t b = probeRd(rdram, e), c = probeRd(rdram, e + 8u);
+            for (uint32_t s = b; s < c && s - b < 0x40000u; s += 4u)
+            {
+                const uint32_t d = probeRd(rdram, s);
+                if (d == 0xFFFFFFFFu || d < st || d >= en) continue;
+                ++n;
+                const uint32_t vt = probeRd(rdram, d);
+                if (vt == 0x47DB00u) ++shadows;
+                if (n <= 6u)
+                    std::fprintf(stderr, "[shadowprobe]   %s live draw prio %u node %08X vt %08X flag %u%c", tag, pr, d, vt,
+                                 unsigned(rdram[(d + 8u) & PS2_RAM_COMMITTED_MASK]), 10);
+            }
+        }
+        std::fprintf(stderr, "[shadowprobe] %s: %u live draw nodes inside page (%u CCharDrawShadow)%c", tag, n, shadows, 10);
+    }
     void clearCharProbe(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        if (g_origCharDrawShadow)
+        {
+            const uint32_t ci = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4]));
+            const uint32_t cb = probeRd(rdram, 0x526D60u);
+            if (ci < 8u && cb < 16u)
+            {
+                const uint32_t pg = cb + ci, st = probeRd(rdram, 0x500E00u + pg * 16u), en = probeRd(rdram, 0x500E04u + pg * 16u);
+                std::fprintf(stderr, "[shadowprobe] ClearChar(%u) page %u %08X-%08X call %u slots:", ci, pg, st, en, g_shadowProbeCalls);
+                for (uint32_t k = 0; k < 8u; ++k) std::fprintf(stderr, " %08X", probeRd(rdram, 0x526EA0u + k * 4u));
+                std::fprintf(stderr, "%c", 10);
+                probeDrawsInRange(rdram, st, en, "clearchar");
+                // Nov 13 HCTP_RESWATCH=1: hardware write watch on the resident boot objects that went bad after an SvR six-man
+                // (CRender *(0x524EB0) +0x10564 packet ptr = CChar::Draw 0x1bb968 crash; resident shadow models +0xC8 = CAM crash)
+                static const bool resWatch = std::getenv("HCTP_RESWATCH") && std::getenv("HCTP_RESWATCH")[0] != '0';
+                if (resWatch && ci == 0u)
+                {
+                    const uint32_t render = probeRd(rdram, 0x524EB0u), sh0 = probeRd(rdram, 0x527998u), sh1 = probeRd(rdram, 0x5279A0u);
+                    const uint32_t addrs[3] = {render + 0x10564u, sh0 + 0xC8u, sh1 + 0xC8u}, modes[3] = {1u, 0u, 0u};
+                    const char *const tags[3] = {"CRender+10564", "shadow0+C8", "shadow1+C8"};
+                    std::fprintf(stderr, "[reswatch] CRender %08X shadow %08X/%08X%c", render, sh0, sh1, 10);
+                    if (render)
+                        std::fprintf(stderr, "[ymemguard] CRender pkt buf0 %08X buf1 %08X cur %08X size %X qw%c", probeRd(rdram, render + 0x1055Cu),
+                                     probeRd(rdram, render + 0x10560u), probeRd(rdram, render + 0x10564u), probeRd(rdram, render + 0x10550u), 10);
+                    ymemGuardTable(rdram, "clearchar0", 0u);
+                    ps2HwWatchArm(addrs, modes, tags, (render && sh0 && sh1) ? 3 : 0);
+                }
+            }
+        }
         const uint32_t i = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4]));
         uint32_t base = 0, count = 0;
         std::memcpy(&base, rdram + 0x526D60u, 4);
@@ -979,11 +1203,81 @@ namespace
                          highFirst, highLast, kCharArenaBase, hi, highKb, charPageKb(), count - 1u, (s0 - s1) >> 10,
                          lowCharKb ? " (some char pages low)" : "", 10);
         ctx->pc = ra;
+        if (ymemGuardOn())
+        {
+            char tag[48];
+            std::snprintf(tag, sizeof tag, "re-cut first %u", first);
+            ymemGuardTable(rdram, tag, ra);
+        }
         if (gameMem && std::getenv("HCTP_YMEM_PROBE") && std::getenv("HCTP_YMEM_PROBE")[0] != '0')
         {
             for (uint32_t pg = 2; pg < count && pg < 16u; ++pg)
                 ymemProbeLog(rdram, "after Setup", pg);
         }
+    }
+    // Nov 13 CRENDER PACKET BUFFERS IN HOST RAM (CHAR_MEMORY_EXPANSION note sec 15). AppInitialize 0x100230 switches to ymem page 0
+    // (0x100254/0x1002bc), SetBufferSize(0xC0000) 0x1002f4 -> CRender+0x10550 = 0xC000 qw, CRender::Init 0x14cea0 delete[]s the old
+    // +0x1055C/+0x10560 (0x14cec8/0x14cee4) and new[]s two 768 KB buffers (0x14cef8/0x14cf18) on page 0; Menu/Season/NowLoading/
+    // ReturnToSeason re-Init on page 0 with the same size. Synch 0x14db00 sets cur +0x10564 = buf[frame&1], remaining +0x10554 = size.
+    // Writers only test remaining >= 5 qw (DrawEasy 0x151650, CChar::DrawShadow 0x1bbd08) and SendPacket 0x14e760 / AddEndTag
+    // 0x14c690 never test -> a frame with more than 768 KB of packets (SvR models) writes past buf1 into the next page-0 objects
+    // (resident shadow CSkinModels 0x730CE0/0x73D240) and page 1 (CRender 0x746020 itself, +0x10564 cursor) = the CAM shadow crash,
+    // CChar::Draw 0x1bb968 crash and the post-six-man hang. Lift: both buffers come from a dedicated ymem page 15 in host RAM
+    // (0x07000000, HCTP_PKT_BUF_KB each, default 6 MB = 8x stock); the game's own size field +0x10550 is set to match, so every
+    // remaining-check and Synch work as the game wrote them. delete[] of an arena pointer is a no-op (page 15 is re-cleared on
+    // the next Init's first new[]). Page 15 is never re-cut (count <= 12) nor cleared by GameMem::ClearAll 0x1ff160 (pages 3..10).
+    constexpr uint32_t kPktArenaBase = 0x07000000u, kPktPage = 15u;
+    uint32_t pktBufBytes()
+    {
+        static const uint32_t b = [] {
+            const char *e = std::getenv("HCTP_PKT_BUF_KB");
+            const unsigned long v = e ? std::strtoul(e, nullptr, 0) : 0ul;
+            return (v >= 768ul && v <= 8000ul ? static_cast<uint32_t>(v) : 6144u) << 10;
+        }();
+        return b;
+    }
+    uint32_t pktArenaEnd() { return kPktArenaBase + 2u * (pktBufBytes() + 0x40u) + 0x40u; }
+    PS2Runtime::RecompiledFunction g_origNewArrPkt = nullptr, g_origDelArrPkt = nullptr;
+    void crenderPktNew(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // operator new[] 0x1001f0 (j ymallocR)
+    {
+        const uint32_t ra = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
+        if (ra != 0x14CF00u && ra != 0x14CF20u) // CRender::Init buf0 / buf1 new[]
+        {
+            g_origNewArrPkt(rdram, ctx, runtime);
+            return;
+        }
+        auto wr = [&](uint32_t a, uint32_t v) { std::memcpy(rdram + (a & PS2_RAM_COMMITTED_MASK), &v, 4); };
+        uint32_t savedPage = 0;
+        std::memcpy(&savedPage, rdram + 0x500F00u, 4);
+        const uint32_t self = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[16])); // s0 = this (Init 0x14ceb8)
+        const uint32_t bytes = pktBufBytes(), e = 0x500E00u + kPktPage * 16u;
+        if (ra == 0x14CF00u) // first buffer of this Init: (re)build page 15 = the whole arena
+        {
+            wr(e, kPktArenaBase);
+            wr(e + 4u, pktArenaEnd());
+            wr(e + 8u, kPktArenaBase);
+            wr(e + 0xCu, kPktArenaBase);
+            ymemClearPageNative(rdram, kPktPage, true);
+        }
+        wr(self + 0x10550u, bytes >> 4); // the game's own SetBufferSize field: Init copies it to remaining (0x14d1cc), Synch each frame
+        SET_GPR_U32(ctx, 4, bytes);
+        wr(0x500F00u, kPktPage);
+        g_origNewArrPkt(rdram, ctx, runtime); // ymallocR: leaf, no waits
+        wr(0x500F00u, savedPage);
+        static int logged = 0;
+        if (logged++ < 4)
+            std::fprintf(stderr, "[pktbuf] CRender %08X buf%u = %08X (%u KB, page %u)%c", self, ra == 0x14CF00u ? 0u : 1u,
+                         static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[2])), bytes >> 10, kPktPage, 10);
+    }
+    void crenderPktDelete(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime) // operator delete[] 0x100210 (j yfree)
+    {
+        const uint32_t p = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[4]));
+        if (p >= kPktArenaBase && p < pktArenaEnd())
+        {
+            ctx->pc = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
+            return;
+        }
+        g_origDelArrPkt(rdram, ctx, runtime);
     }
     // Hair chains (Nov 6): CKami (hair physics, 0x1F0 B, ctor 0x1c5980) keeps its CKami1 chain pointers at +0x1C,
     // null-terminated, and +0x58 is its "reinit" flag -> room for 14 chains. The ctor loop calls CKami1::Make
@@ -1525,6 +1819,57 @@ namespace
     // CSeasonCharaFrame ctor 0x316ba0 (a0 this): builds its pickable roster (u16 list at +0x88, count +0x1EC) from
     // GetCharaGameProp types, which restoreCutRoster made valid for the restored slots. Season has no story data for
     // them -> drop them from the list after the stock ctor returns.
+    // Nov 17 MOVE ADDER (notes\MOVESETS_ALL_SLOTS_20261117.md "MOVE ADDER BUILD", MOVE_PORTING_RESEARCH sec 8): one host bank of
+    // the move records HCTP lacks (tools\build_svr04_move_bank_1117.py -> MODS/MOVES/svr04_add_game.bin, HCTP CEKey bank format,
+    // sorted keys, own event table) lives in host window 0x06000000 and is put in slot 7 of the live CEKey ([0x526E80]+0x1C)
+    // after each loader that builds that CEKey really returned:
+    //   GameLoad_Motion::LoadEnd 0x1fd200 (match: /MOT/GAME subs -> slots 0-4; MotionAdd 0x1fd530 = slot 5),
+    //   CMovesLoadCommonMotion::LoadEnd 0x387cf0 (Create-a-Moveset: /MOVE/MOTN), CMovesLoadRemake::ReadEndProcess 0x388290
+    //   (/MOVE/REMT -> slot 3), MenuMotionReader::ReadEndProcessCdata 0x242d50 (own CEKey this+0x30 -> 0x526E80).
+    // CEKey::Search 0x168960 walks slots 0..7 in order -> a stock id is always found in 0-5 first (never overridden). Slot 7 (not 6)
+    // because CEventSystem::Init 0x166c30 puts its event bank in GetEmptyIndex 0x168e00 = first zero slot (stock worst case
+    // 0-4 + 5 + event = 7 slots), so event motions keep stock precedence. MOTN/REMT records are byte copies of MOT/GAME (measured),
+    // so the GAME bank serves CAM too. SYM/SvR06 moves go into this SAME bank (one slot). HCTP_MOVE_ADDER=0 = off.
+    constexpr uint32_t kMoveAddWindow = 0x06000000u, kMoveAddWindowEnd = 0x07000000u;
+    uint32_t g_moveAddBank = 0u; // guest address of the loaded bank, 0 = none
+    PS2Runtime::RecompiledFunction g_origMoveLoadEnd[4] = {};
+    void moveAddLoadBank(uint8_t *rdram)
+    {
+        std::ifstream f("MODS/MOVES/svr04_add_game.bin", std::ios::binary | std::ios::ate);
+        if (!f) { std::fprintf(stderr, "[moveadd] MODS/MOVES/svr04_add_game.bin missing, adder off%c", 10); return; }
+        const std::streamoff n = f.tellg();
+        uint32_t cnt = 0;
+        if (n < 0x104 || n > static_cast<std::streamoff>(kMoveAddWindowEnd - kMoveAddWindow)) { std::fprintf(stderr, "[moveadd] bad size %lld%c", static_cast<long long>(n), 10); return; }
+        f.seekg(0);
+        f.read(reinterpret_cast<char *>(rdram + kMoveAddWindow), n);
+        std::memcpy(&cnt, rdram + kMoveAddWindow + 0x100u, 4);
+        if (!f || cnt == 0u || 0x104ull + cnt * 16ull > static_cast<uint64_t>(n)) { std::fprintf(stderr, "[moveadd] bad bank (count %u)%c", cnt, 10); return; }
+        g_moveAddBank = kMoveAddWindow;
+        std::fprintf(stderr, "[moveadd] bank %lld B, %u records at %08X (CEKey slot 7)%c", static_cast<long long>(n), cnt, kMoveAddWindow, 10);
+    }
+    template <int I>
+    void moveAddAfterLoad(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t ra = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
+        g_origMoveLoadEnd[I](rdram, ctx, runtime);
+        if (ctx->pc != ra || g_moveAddBank == 0u)
+            return;
+        uint32_t key = 0, slot7 = 0;
+        std::memcpy(&key, rdram + 0x526E80u, 4);
+        key &= PS2_RAM_MASK;
+        if (key == 0u || key > PS2_RAM_COMMITTED_TOP - 0x20u)
+            return;
+        std::memcpy(&slot7, rdram + key + 0x1Cu, 4);
+        if (slot7 != 0u && slot7 != g_moveAddBank)
+        {
+            std::fprintf(stderr, "[moveadd] loader %d: CEKey %08X slot 7 busy (%08X), not added%c", I, key, slot7, 10);
+            return;
+        }
+        std::memcpy(rdram + key + 0x1Cu, &g_moveAddBank, 4);
+        static int s_log = 0;
+        if (s_log++ < 16)
+            std::fprintf(stderr, "[moveadd] loader %d: CEKey %08X slot 7 = %08X%c", I, key, g_moveAddBank, 10);
+    }
     PS2Runtime::RecompiledFunction g_origSeasonCharaFrameCtor = nullptr;
     void seasonCharaFrameCtorCutRoster(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
@@ -2966,6 +3311,7 @@ namespace
             hctpCommentaryArena(stage);
             hctpCommentaryParticipants(ids, n);
             g_entranceSnapFresh = false; // [COMMFIX Nov 6] the next entrance without a setup = a preview (CAM)
+            g_superStarDataRan = false; // Nov 17 CAM DRESS RULE: next show must run SetSuperStarData again
             hctpCommentaryBellRule(rdram[0x4920C0u], rdram[0x4920E7u]); // B&P = rule +0x27 (MakeKindBit2 0x1d37b0)
             hctpCommentaryEvent(1u);
         } // kPbpBell: match start / match end (debounced in hctp_commentary.cpp)
@@ -3622,8 +3968,12 @@ namespace
         // Nov 7: slot code (model 86..99 * 100, < 10000 = never a CAW code) -> slot entrance. The GetCharaGameProp
         // redirect refuses id 0x56+ while that CAW block is used, so the stock path read the CAW's event (3071).
         // Stage plane = IsStagePlane 0x2af240 (arena byte 0x4922C0 in A,B,E,F,12,13,30,31,34,35): +200 (<3400) / +100.
-        if (const int slotEv = rosterxEntranceForModel(code / 100u); slotEv > 0)
+        if (int slotEv = rosterxEntranceForModel(code / 100u); slotEv > 0)
         {
+            // Nov 14 (Jordan, Bret A3): per-attire entrance for roster slots too - MODS\PAC\entrances.txt
+            // "<model no> <attire> <event>" wins over slot.txt entrance= (attire 2 = SvR04 body + SvR04 3077 = 7053).
+            if (auto at = g_attireEntrance.find((code / 100u) * 10u + (code / 10u) % 10u); at != g_attireEntrance.end())
+                slotEv = static_cast<int>(at->second);
             const int8_t arena = static_cast<int8_t>(rdram[0x4922C0u]);
             static const int8_t kPlane[] = {0xA, 0xB, 0xE, 0xF, 0x12, 0x13, 0x30, 0x31, 0x34, 0x35};
             const bool plane = std::find(std::begin(kPlane), std::end(kPlane), arena) != std::end(kPlane);
@@ -4209,6 +4559,7 @@ namespace
 
 #include "hctp_native_sk.inl"
 #include "hctp_host_se.inl"
+#include "hctp_sfx_list.inl" // Nov 13 native GetSfxInfo (SvR six-man sfx crash)
 
 // The game's own recompiled libvu0 functions (runner), for HCTP_VU0_RECOMP=1: A/B against the host stubs (leg twitch).
 #define HCTP_VU0_FN(name, addr) void name##_##addr(uint8_t *, R5900Context *, PS2Runtime *);
@@ -4471,6 +4822,8 @@ namespace
     // its last draw. Theory: camera steps at 30 Hz while the body moves at 60 Hz (or the reverse) -> camOnly/rootOnly.
     PS2Runtime::RecompiledFunction g_camMatOrig = nullptr;
     float g_camEye[3]{}, g_camDir[3]{};
+    float g_camProbeRoot[3]{};   // Nov 17 [camprobe] (HCTP_SVR06_CAMPROBE): root of the last drawn >= 60-bone model
+    uint32_t g_camProbeModel = 0;
     uint32_t g_camCalls = 0;
     void camMatLogged(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
@@ -4495,6 +4848,11 @@ namespace
         ymp &= PS2_RAM_COMMITTED_MASK; world &= PS2_RAM_COMMITTED_MASK;
         if (ymp < 0x100000u || ymp >= (PS2_RAM_COMMITTED_TOP - 0x10u)) return;
         std::memcpy(&bones, rdram + ymp + 0x14u, 4);
+        if (bones >= 60u && bones < 256u && world >= 0x100000u && world + 64u < PS2_RAM_COMMITTED_TOP)
+        {
+            std::memcpy(g_camProbeRoot, rdram + world + 0x30u, 12);
+            g_camProbeModel = model;
+        }
         if (bones != wantBones || world < 0x100000u || world + 64u >= PS2_RAM_COMMITTED_TOP) return;
         static float lastRoot[3]{}, lastEye[3]{}, lastDir[3]{};
         static uint32_t lastCamCalls = 0, n[4]{}, lines = 0, draws = 0;
@@ -7440,6 +7798,20 @@ namespace
                 return &s;
         return nullptr;
     }
+    bool hctpAttireHasDress(const uint8_t *rdram, uint32_t code) // code = id*100 + attire*10 (+part)
+    {
+        const uint32_t a = (code % 100u) / 10u;
+        if (code < 10000u && code / 100u < 0x56u && a < 6u)
+            return rdram[0x41B5C0u + (code / 100u) * 6u + a] != 0u; // the table IsDress reads
+        if (const RosterxSlot *s = rosterxByModel(code / 100u); s && !s->pacs.empty())
+        {
+            char own[8];
+            std::snprintf(own, sizeof(own), "%u2.pac", a);
+            std::error_code ec;
+            return std::filesystem::exists(std::filesystem::path(s->pacs[0]).parent_path() / own, ec);
+        }
+        return false;
+    }
     int rosterxEntranceForModel(uint32_t model)
     {
         const RosterxSlot *s = model >= kRosterxFirstId ? rosterxByModel(model) : nullptr;
@@ -7507,8 +7879,8 @@ namespace
         std::memcpy(r, rdram + 0x4C0F54u + s.tmpl * 0x170u, 0x170u);
         if (s.record.size() == 0x170u)
             std::memcpy(r, s.record.data(), 0x170u);
-        if (s.music >= 0)
-            r[0x15F] = static_cast<uint8_t>(s.music);
+        if (s.music >= 0 && s.music < 256)
+            r[0x15F] = static_cast<uint8_t>(s.music); // wide ids (> 255) keep the record byte; served by rosterxPlayBGM
         if (s.video >= 0)
             r[0x15E] = static_cast<uint8_t>(s.video);
         if (s.modelNo != 0u)
@@ -7637,6 +8009,11 @@ namespace
     std::map<uint16_t, SvrEvent> g_svrEvents;      // virtual event no (and +100 variant) -> SvR event
     // Nov 10 Mr. America: virtual event -> HCTP light motion that replaces the SvR lights (entrances.txt light=<n>)
     std::map<uint16_t, uint16_t> g_svrLightOverride;
+    // Nov 14 Mr. America (Jordan: "I need the yellow to be blue ... just blue and red"): entrances.txt recolor=yellow2blue ->
+    // that number plays the SvR06 event's own lights with every yellow key turned blue and the red keys pure red (the
+    // other numbers sharing the bank, e.g. Hulk Hogan 2 7448, keep the original). Applied to the guest copy in svr06BankSwapIn.
+    std::set<uint16_t> g_svrLightYellow2Blue;
+    uint32_t g_evsSys = 0; // Nov 16: CEventSystem of the running event (evsActionSvr a0), B4 hosei scene clock
     uint16_t g_svrCurEv = 0;                       // event of the last CEventSystem::SetEvent
     // MODS\SVR04\entrances.txt (tools\stage_entrance_port.py from notes\ENTRANCE_PORT_MASTER_20261110.csv):
     // "<svr04 no> <hctp event> <donor hctp event> <name>" -> fixed virtual numbers (7000+, plane +100).
@@ -7652,6 +8029,10 @@ namespace
     // Nov 10 SvR06 build 10: reader event playing (game 6), CMotionLight ('CMOL' link, seen at CMotionLight::Set),
     // host light bank built from the SvR06 bank's global obj 0xB tracks y1..y8 (see svr06Register / svr06LightsStart).
     bool g_svr06Active = false, g_svr06LightsSet = false;
+    // Nov 16 S11 per-scene SvR06 lights: SvR06 no -> scene byte -> slot mask (rows 0x3F00 + scene*8 + slot); current event copy
+    std::map<uint16_t, std::map<uint8_t, uint8_t>> g_svr06LightSceneMasks;
+    std::map<uint8_t, uint8_t> g_svr06CurLightScenes;
+    int g_svr06LightApplied = -1;
     uint32_t g_motionLightThis = 0, g_svr06LightBank = 0;
     uint8_t g_svr06LightMask = 0;
     std::vector<uint8_t> g_svr06LightHost;
@@ -7812,6 +8193,152 @@ namespace
             return static_cast<uint16_t>(model + 100u);
         return model;
     }
+    // Nov 15 OPEN LIST item 5 (Jordan: on flat arenas SvR04 + SvR06 entrants still walk like on a stage). HCTP's own plane
+    // variants, read from Vanilla pac\evtEnt.pac (N vs N+200, 72 differing pairs, Mod Maker hctp_motion.keys roots): the stage
+    // scenes and the ring side are identical; only roots in the ramp range 87 < z < 237 change, PER SCENE: a scene that
+    // starts on the stage keeps stage level (3045 -> 3245 scene 0: z 220..180 root y -5.7 -> -8.5), a scene that starts
+    // below walks on the arena floor (3047 -> 3247 scene 1: z 186..138 root y -5.2 -> +2.6; 3064 -> 3264 the same). Ground
+    // (model units, y down): stage 0, arena floor 11.8 (root y -9.3 / +2.5); stage geometry = Mod Maker hctp_entrance.py
+    // ground(). SvR04 IsStagePlane 0x4ce980 = return 0 -> SvR04 never authored plane banks (its banks walk HCTP's ramp).
+    float svrStageGround(float z) { return z >= 237.f ? 0.f : (z <= 87.f ? 11.8f : 11.8f * (237.f - z) / 150.f); }
+    float svrPlaneGround(float z, bool sceneOnStage) { return z >= 237.f ? 0.f : (z <= 87.f ? 11.8f : (sceneOnStage ? 0.f : 11.8f)); }
+    // CEKey stream walk (HCTP CEKey::GetData 0x168f00): b < 0x60 skip b frames, 0x60 = u8 size follows, else size b - 0x60;
+    // one record = one frame. fn(frame, record start, record size).
+    template <class Fn> void svrWalkKeys(std::vector<uint8_t> &bk, size_t p, size_t pe, Fn &&fn)
+    {
+        uint32_t fr = 0;
+        while (p < pe)
+        {
+            const uint8_t c = bk[p];
+            if (c < 0x60u) { fr += c; ++p; continue; }
+            if (c == 0x60u && p + 1 >= pe) return;
+            const size_t sz = c == 0x60u ? bk[p + 1] : size_t(c - 0x60u), r0 = p + (c == 0x60u ? 2u : 1u);
+            if (r0 + sz > pe) return;
+            fn(fr, r0, sz);
+            p = r0 + sz;
+            ++fr;
+        }
+    }
+    // Plane copy of one SvR04 EVET bank (HCTP layout: 0x100 op table, u32 n, n x 16 B dir {obj<<16|scene<<8|y, off}, then
+    // the streams). Cast roots (y 0 tracks of castObjs; root ops as in the SvR06 stage pass) move by plane - stage ground;
+    // the scene's cameras (obj | 0x4000, 19 B keys [count][f32 pos][s16 rot], Mod Maker GAMES svr04) follow the entrant.
+    // Returns the number of root keys moved (0 = bank unchanged).
+    uint32_t svr04PlaneBank(std::vector<uint8_t> &bk, const std::set<uint32_t> &castObjs, const std::set<uint32_t> &propObjs,
+                            uint32_t &camKeys, uint32_t &floorScenes)
+    {
+        camKeys = floorScenes = 0;
+        if (bk.size() < 0x104u)
+            return 0;
+        uint32_t n = 0;
+        std::memcpy(&n, &bk[0x100], 4);
+        const size_t data0 = 0x104u + 16u * size_t(n);
+        if (n == 0 || data0 > bk.size())
+            return 0;
+        std::vector<std::pair<uint32_t, uint32_t>> dir(n);
+        std::vector<uint32_t> offs;
+        for (uint32_t i = 0; i < n; ++i)
+        {
+            std::memcpy(&dir[i].first, &bk[0x104u + 16u * i], 4), std::memcpy(&dir[i].second, &bk[0x104u + 16u * i + 4u], 4);
+            if (dir[i].second != 0xFFFFFu && data0 + dir[i].second < bk.size()) offs.push_back(dir[i].second);
+        }
+        std::sort(offs.begin(), offs.end());
+        offs.erase(std::unique(offs.begin(), offs.end()), offs.end());
+        auto segEnd = [&](uint32_t o) {
+            auto it = std::upper_bound(offs.begin(), offs.end(), o);
+            return it == offs.end() ? bk.size() : data0 + *it;
+        };
+        std::map<uint32_t, std::vector<float>> dAt; // scene -> per-frame entrant delta (0.01 units, + = down)
+        std::set<uint32_t> done;
+        uint32_t keys = 0;
+        for (const auto &e : dir)
+        {
+            const uint32_t obj = (e.first >> 16) & 0x3FFFu;
+            if ((!castObjs.count(obj) && !propObjs.count(obj)) || (e.first & 0xFFu) != 0u || e.second == 0xFFFFFu ||
+                data0 + e.second >= bk.size() || done.count(e.second))
+                continue;
+            if (!castObjs.count(obj)) // world-positioned prop only (first root > 15 units: Mod Maker world_root)
+            {
+                bool world = false, seen = false;
+                svrWalkKeys(bk, data0 + e.second, segEnd(e.second), [&](uint32_t, size_t p, size_t sz) {
+                    size_t q = p;
+                    const size_t recEnd = p + sz;
+                    if (seen || (sz && (bk[q] & 0x80u) && (q += 1u + (bk[q] & 0x7Fu)) >= recEnd) || q >= recEnd) return;
+                    const uint8_t op = bk[q];
+                    float r[3] = {};
+                    if ((op == 0x7d || op == 0x7f) && q + 14 <= recEnd) std::memcpy(r, &bk[q + 2], 12), seen = true;
+                    else if (((op == 0x7c || op == 0x7e || op == 0x7a) && q + 8 <= recEnd) || (op >= 0x50 && op <= 0x6f && q + 7 <= recEnd))
+                    {
+                        int16_t s[3]; std::memcpy(s, &bk[q + (op >= 0x50 && op <= 0x6f ? 1u : 2u)], 6);
+                        r[0] = s[0], r[1] = s[1], r[2] = s[2], seen = true;
+                    }
+                    world = seen && std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]) > 1500.f;
+                });
+                if (!world)
+                    continue;
+            }
+            done.insert(e.second);
+            std::vector<float> own;
+            std::vector<float> &tab = obj == 0u ? dAt[(e.first >> 8) & 0xFFu] : own;
+            bool first = true, onStage = true;
+            float last = 0.f;
+            svrWalkKeys(bk, data0 + e.second, segEnd(e.second), [&](uint32_t fr, size_t p, size_t sz) {
+                size_t q = p;
+                const size_t recEnd = p + sz;
+                if (sz && (bk[q] & 0x80u)) q += 1u + (bk[q] & 0x7Fu);
+                auto delta = [&](float zU) {
+                    const float z = zU * 0.01f;
+                    if (first) onStage = z >= 237.f, first = false, floorScenes += onStage ? 0u : 1u;
+                    return (svrPlaneGround(z, onStage) - svrStageGround(z)) / 0.01f;
+                };
+                if (q < recEnd)
+                {
+                    const uint8_t op = bk[q];
+                    size_t fo = 0, so = 0;
+                    if ((op == 0x7d || op == 0x7f) && q + 14 <= recEnd) fo = q + 2;
+                    else if ((op == 0x7c || op == 0x7e || op == 0x7a) && q + 8 <= recEnd) so = q + 2;
+                    else if (op >= 0x50 && op <= 0x6f && q + 7 <= recEnd) so = q + 1;
+                    else if (op < 0x15u && recEnd >= q + 14 && bk[recEnd - 14] == 0x7fu) fo = recEnd - 12;
+                    if (fo)
+                    {
+                        float xyz[3]; std::memcpy(xyz, &bk[fo], 12);
+                        last = delta(xyz[2]); xyz[1] += last;
+                        std::memcpy(&bk[fo], xyz, 12); ++keys;
+                    }
+                    else if (so)
+                    {
+                        int16_t xyz[3]; std::memcpy(xyz, &bk[so], 6);
+                        last = delta(float(xyz[2]));
+                        xyz[1] = static_cast<int16_t>(std::lround(std::clamp(float(xyz[1]) + last, -32768.f, 32767.f)));
+                        std::memcpy(&bk[so], xyz, 6); ++keys;
+                    }
+                }
+                if (tab.size() <= fr) tab.resize(fr + 1u, last);
+                tab[fr] = last;
+            });
+        }
+        std::set<uint32_t> camDone;
+        for (const auto &e : dir)
+        {
+            if (!((e.first >> 16) & 0x4000u) || e.second == 0xFFFFFu || data0 + e.second >= bk.size() || camDone.count(e.second))
+                continue;
+            camDone.insert(e.second);
+            auto it = dAt.find((e.first >> 8) & 0xFFu);
+            if (it == dAt.end() || it->second.empty())
+                continue;
+            const std::vector<float> &tab = it->second;
+            svrWalkKeys(bk, data0 + e.second, segEnd(e.second), [&](uint32_t fr, size_t p, size_t sz) {
+                size_t q = p;
+                if (sz && (bk[q] & 0x80u)) q += 1u + (bk[q] & 0x7Fu);
+                if (p + sz != q + 19u)
+                    return;
+                float y; std::memcpy(&y, &bk[q + 5], 4);
+                y += tab[std::min<size_t>(fr, tab.size() - 1)];
+                std::memcpy(&bk[q + 5], &y, 4); ++camKeys;
+            });
+        }
+        return keys;
+    }
+    bool svr04PlaneCacheAdd(uint16_t ev, uint32_t rawSec, uint32_t rawSz, std::vector<uint8_t> &bk); // after g_svr06Cache
     int svrEntranceRegister(unsigned svrNo, uint8_t tmpl)
     {
         if (std::getenv("HCTP_SVRENT") && std::strcmp(std::getenv("HCTP_SVRENT"), "0") == 0)
@@ -7843,6 +8370,29 @@ namespace
         {
             g_svrEvents[ev] = {static_cast<uint16_t>(svrNo), tmpl, 4, donorEv, svrKindOf(v)};
             g_svrPac["/EVET/" + std::to_string(ev)] = {0, bank->second.first, bank->second.second};
+        }
+        // Nov 15 item 5: v+100 = plane-arena copy (svr04PlaneBank) served from the shared host cache MODS\SVR06\CEVN.PAC.
+        // HCTP_SVR04_PLANE=0 -> raw bank on both numbers (old behaviour).
+        if (!(std::getenv("HCTP_SVR04_PLANE") && std::getenv("HCTP_SVR04_PLANE")[0] == '0'))
+        {
+            std::vector<uint8_t> pb(size_t(bank->second.second) * 0x100u);
+            std::ifstream pf("MODS/SVR04/evtEnt.pac", std::ios::binary);
+            pf.seekg(static_cast<std::streamoff>(bank->second.first) * 0x800);
+            if (pf && pf.read(reinterpret_cast<char *>(pb.data()), static_cast<std::streamsize>(pb.size())))
+            {
+                std::set<uint32_t> cast = {0u}, props;
+                const uint32_t nC = svrU16(row + 2), pC = svrU32(row + 8) + 8u;
+                for (uint32_t c = 0; c < nC; ++c)
+                    if (pC + 28u * c + 8u <= g_svrSevp.size() && g_svrSevp[pC + 28u * c + 4u] == 1u) // type bytes 01 00 00 00 = char
+                        cast.insert(svrU16(pC + 28u * c));
+                    else if (pC + 28u * c + 8u <= g_svrSevp.size() && g_svrSevp[pC + 28u * c + 6u] == 1u) // 00 00 01 00 = prop
+                        props.insert(svrU16(pC + 28u * c));
+                uint32_t camK = 0, floorSc = 0;
+                const uint32_t moved = svr04PlaneBank(pb, cast, props, camK, floorSc);
+                const bool ok = moved != 0u && svr04PlaneCacheAdd(static_cast<uint16_t>(v + 100u), bank->second.first, bank->second.second, pb);
+                std::fprintf(stderr, "[svrent] SvR04 event %u plane %u: %u root keys + %u camera keys moved (%u floor scenes, %zu cast objs)%s%c",
+                             svrNo, unsigned(v + 100u), moved, camK, floorSc, cast.size(), ok ? "" : " -> raw bank", 10);
+            }
         }
         g_svrRegistered[static_cast<uint16_t>(svrNo)] = v;
         if (svrNo == 3077u) // Nov 9-10 CAM saves hold Bret's old number 3850 (+100): keep it playing
@@ -8030,9 +8580,324 @@ namespace
     // TODO) get no scenes; belt 2021 -> HCTP 2019. Effects (BGM/tron) = donor HCTP event's row. Camera 29 B keys
     // [c][f32 pos x3][f32 rot rad x3][f32 fov] -> camAnalyzeSvr. Source: Mod Maker svr06_entrance.py + 4044 dump.
     std::map<uint16_t, std::vector<uint8_t>> g_svr06Script;
+    std::mutex g_svr06AttrCueMx;
+    std::map<uint16_t, std::vector<HctpSvr06AttrCue>> g_svr06AttrCues; // Nov 17: SvR06 op 0x6C cues per SvR06 event (hctp_svr04_cue.h)
     std::vector<uint8_t> g_svr06Cache;                                  // STEP 2: combined patched banks (CEVN.PAC)
     std::map<uint16_t, std::pair<uint32_t, uint32_t>> g_svr06Raw;      // virtual ev -> raw evt.pac (sector, size/0x100)
-    std::map<uint16_t, uint16_t> g_svr06Registered;                    // SvR06 event no -> virtual event
+    std::map<uint16_t, std::pair<uint32_t, uint32_t>> g_svr04PlaneRaw; // Nov 15: SvR04 plane ev -> raw SvR04 evtEnt.pac bank
+    bool g_svr06CacheFlushed = false;
+    // Nov 15 item 5: SvR04 plane banks share the SvR06 host cache (one loose entry slot); registered at boot before
+    // svr06CacheFlush (svrEntranceTableLoad / rosterxScan run first). Late adds (after the flush) are refused -> raw bank.
+    bool svr04PlaneCacheAdd(uint16_t ev, uint32_t rawSec, uint32_t rawSz, std::vector<uint8_t> &bk)
+    {
+        if (g_svr06CacheFlushed || bk.empty())
+            return false;
+        const uint32_t sz100 = static_cast<uint32_t>((bk.size() + 0xFFu) / 0x100u);
+        bk.resize((bk.size() + 0x7FFu) & ~size_t(0x7FFu));
+        const uint32_t sec = static_cast<uint32_t>(g_svr06Cache.size() / 0x800u);
+        g_svr06Cache.insert(g_svr06Cache.end(), bk.begin(), bk.end());
+        if (g_svrPacFiles.size() < 4u)
+            g_svrPacFiles.resize(4u);
+        g_svrPacFiles[3] = {"MODS/SVR06/CEVN.PAC", "MODS\\SVR06\\CEVN.PAC"};
+        g_svrPac["/EVET/" + std::to_string(ev)] = {3, sec, sz100};
+        g_svr04PlaneRaw[ev] = {rawSec, rawSz};
+        return true;
+    }
+    std::map<uint16_t, uint16_t> g_svr06Registered;                   // SvR06 event no -> virtual event
+    // ---- Nov 14 FACES + HANDS on SvR04/SvR06 entrances, every model (notes\FACE_HANDS_SVR_ENTRANCES_20261114.md sec 2/5;
+    // offline proto analysis\face_hands_20261114\rekey.py: SvR04 EMOT bank 1 = 92 face + 167 hand tracks, SvR06 4044 y1-y3
+    // = 12 tracks, 0 desync re-parsed as HCTP ActionLink 0x1cc880). SvR face key: SvR04 SetData 0x257eb0 decodes the same
+    // 10/11/11 bits as HCTP 0x1c0f40, builds RotZYX 0x257f74 -> ToRotXYX 0x257f80; ActionLink RotXYX 0x257cd0 (SvR06
+    // 0x2141cc) rebuilds it and stores it STRAIGHT = absolute local K = abEuler(key). HCTP 0x1c0d08: local = R x B.
+    // -> R = Bs^T x K (Bs = SvR rest, bone record +0x20, same on all 32 SvR skeletons); l/r_kuchi (SvR child of d_kuchi):
+    // R = (Blk x Bdk)^T x (Klk x Kdk_cur). Hands: SvR04 0x257dec / SvR06 0x214310 = RotZYX x base = HCTP -> id remap only
+    // (0x78/0x79 masks: SvR base 15/0 = HCTP 48/33, bytes unchanged; singles h -> 33+h). FALLBACK (sec 2b): a track that
+    // does not parse -> dropped whole; a key further than 60 deg (eyes/lids) / 90 deg from rest -> dropped (holds the
+    // last one). HCTP_SVR_FACE=0 = old behaviour (no SvR faces/hands), =neutral = every SvR face row -> HCTP neutral face.
+    namespace fh
+    {
+    constexpr float kC = 9.58738019e-05f; // [0x464D40] = 0x38C90FDB = 2pi/65536 (HCTP SetData 0x1c0f40)
+    void eul(float x, float y, float z, float *m) // = abEuler (row-vector X*Y*Z = HCTP objMatrix::RotZYX)
+    {
+        const float cx = std::cos(x), sx = std::sin(x), cy = std::cos(y), sy = std::sin(y), cz = std::cos(z), sz = std::sin(z);
+        const float X[9] = {1, 0, 0, 0, cx, sx, 0, -sx, cx}, Y[9] = {cy, 0, -sy, 0, 1, 0, sy, 0, cy}, Z[9] = {cz, sz, 0, -sz, cz, 0, 0, 0, 1};
+        float t[9];
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                t[i * 3 + j] = X[i * 3] * Y[j] + X[i * 3 + 1] * Y[3 + j] + X[i * 3 + 2] * Y[6 + j];
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                m[i * 3 + j] = t[i * 3] * Z[j] + t[i * 3 + 1] * Z[3 + j] + t[i * 3 + 2] * Z[6 + j];
+    }
+    void mul(const float *a, const float *b, float *o, bool aT = false) // o = a x b (or a^T x b)
+    {
+        float t[9];
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+            {
+                float s = 0.f;
+                for (int k = 0; k < 3; ++k)
+                    s += (aT ? a[k * 3 + i] : a[i * 3 + k]) * b[k * 3 + j];
+                t[i * 3 + j] = s;
+            }
+        std::memcpy(o, t, sizeof t);
+    }
+    float dec(uint32_t v, int sh) { return static_cast<float>(static_cast<int16_t>(static_cast<uint16_t>(v << sh))) * kC; }
+    void decode(uint32_t w, float *m) { eul(dec(w & 0x3FFu, 6), dec((w >> 10) & 0x7FFu, 5), dec((w >> 21) & 0x7FFu, 5), m); }
+    uint32_t encode(const float *M) // inverse of eul (rekey.py asserts it numerically), quantised like SetData decodes it
+    {
+        const float y = std::asin(std::max(-1.f, std::min(1.f, -M[2]))), x = std::atan2(M[5], M[8]), z = std::atan2(M[1], M[0]);
+        auto q = [](float a, int sh, uint32_t mask) { return static_cast<uint32_t>(static_cast<int32_t>(std::lround(a / kC / float(1 << sh)))) & mask; };
+        return q(x, 6, 0x3FFu) | q(y, 5, 0x7FFu) << 10 | q(z, 5, 0x7FFu) << 21;
+    }
+    float angDeg(const float *R) { return std::acos(std::max(-1.f, std::min(1.f, (R[0] + R[4] + R[8] - 1.f) * 0.5f))) * 57.29578f; }
+    // Nov 17 S15 BROWS: HCTP brow (ids 21/22, one bone) = rotation mean of the SvR 3-bone brow (r/l_mayu_00..02 = ids 39-41 /
+    // 36-38). Mean = normalised sum of the 3 unit quaternions (signs aligned to the first). Neutral reference: SvR06 default face
+    // = CCharSD::MotionPartsInit 0x245318 Set(slot 0, 1000) (= SvR04 row 1000 byte-identical); measured: its mayu_00-02 and
+    // l/r_kuchi keys = the SvR rest within 0.4 deg -> R = Bs^T K already IS the delta from SvR's neutral face (no extra term).
+    void m2q(const float *M, float *q) // q = (w, x, y, z) of M (any fixed convention; q2m is its exact inverse)
+    {
+        const float t = M[0] + M[4] + M[8];
+        if (t > 0.f)
+        {
+            const float s = std::sqrt(t + 1.f) * 2.f;
+            q[0] = 0.25f * s, q[1] = (M[5] - M[7]) / s, q[2] = (M[6] - M[2]) / s, q[3] = (M[1] - M[3]) / s;
+        }
+        else if (M[0] > M[4] && M[0] > M[8])
+        {
+            const float s = std::sqrt(1.f + M[0] - M[4] - M[8]) * 2.f;
+            q[0] = (M[5] - M[7]) / s, q[1] = 0.25f * s, q[2] = (M[1] + M[3]) / s, q[3] = (M[6] + M[2]) / s;
+        }
+        else if (M[4] > M[8])
+        {
+            const float s = std::sqrt(1.f + M[4] - M[0] - M[8]) * 2.f;
+            q[0] = (M[6] - M[2]) / s, q[1] = (M[1] + M[3]) / s, q[2] = 0.25f * s, q[3] = (M[5] + M[7]) / s;
+        }
+        else
+        {
+            const float s = std::sqrt(1.f + M[8] - M[0] - M[4]) * 2.f;
+            q[0] = (M[1] - M[3]) / s, q[1] = (M[6] + M[2]) / s, q[2] = (M[5] + M[7]) / s, q[3] = 0.25f * s;
+        }
+    }
+    void q2m(const float *q, float *M)
+    {
+        const float w = q[0], x = q[1], y = q[2], z = q[3];
+        M[0] = 1.f - 2.f * (y * y + z * z), M[1] = 2.f * (x * y + w * z), M[2] = 2.f * (x * z - w * y);
+        M[3] = 2.f * (x * y - w * z), M[4] = 1.f - 2.f * (x * x + z * z), M[5] = 2.f * (y * z + w * x);
+        M[6] = 2.f * (x * z + w * y), M[7] = 2.f * (y * z - w * x), M[8] = 1.f - 2.f * (x * x + y * y);
+    }
+    void mean3(const float *a, const float *b, const float *c, float *o)
+    {
+        float q[3][4], s[4] = {};
+        m2q(a, q[0]), m2q(b, q[1]), m2q(c, q[2]);
+        for (int i = 0; i < 3; ++i)
+        {
+            const float d = q[i][0] * q[0][0] + q[i][1] * q[0][1] + q[i][2] * q[0][2] + q[i][3] * q[0][3];
+            for (int k = 0; k < 4; ++k)
+                s[k] += d < 0.f ? -q[i][k] : q[i][k];
+        }
+        const float n = std::sqrt(s[0] * s[0] + s[1] * s[1] + s[2] * s[2] + s[3] * s[3]);
+        for (int k = 0; k < 4; ++k)
+            s[k] = n > 0.f ? s[k] / n : (k == 0 ? 1.f : 0.f);
+        q2m(s, o);
+    }
+    // SvR id 30+i -> HCTP face id (face tables SvR04 0x351210 = SvR06 0x337550, HCTP 0x412bb0), -1 = no HCTP bone
+    // (Nov 17 S15: l_mayu_00/01/02 36-38 -> 22 and r_mayu_00/01/02 39-41 -> 21 as one 3-bone mean, see mean3)
+    constexpr int8_t kMap[30] = {32, 31, 24, 23, -1, -1, 22, 22, 22, 21, 21, 21, 27, -1, -1, -1, 28, -1, -1, 26, 25,
+                                 -1, -1, -1, -1, -1, -1, -1, -1, -1};
+    constexpr bool isBrow(int sid) { return sid >= 36 && sid <= 41; }
+    const float *rest(int sid) // SvR rest (deg -> abEuler), notes sec 1 (svr_face_bases.py over 32 SvR skeletons)
+    {
+        static float b[3][9];
+        static const bool init = (eul(-1.5707963f, 1.5707963f, 0.f, b[0]), eul(1.5707963f, 0.9599311f, 3.1415927f, b[1]),
+                                  eul(0.f, 0.f, -0.6108652f, b[2]), true);
+        (void)init;
+        return sid == 46 ? b[1] : (sid == 49 || sid == 50) ? b[2] : b[0];
+    }
+    int faceMode() // 1 translated (default), 2 neutral, 0 off
+    {
+        static const int m = [] {
+            const char *e = std::getenv("HCTP_SVR_FACE");
+            return !e ? 1 : e[0] == '0' ? 0 : (e[0] == 'n' || e[0] == 'N') ? 2 : 1;
+        }();
+        return m;
+    }
+    // HCTP neutral face: one record keying all 12 HCTP face bones (0x4F mask 0xFF = ids 21-32) to R = I (HCTP models:
+    // their rest; foreign models: B x I = their bind via the JAW FRAME).
+    const std::vector<uint8_t> &neutralFace()
+    {
+        static const std::vector<uint8_t> t = [] {
+            std::vector<uint8_t> v = {static_cast<uint8_t>(0x60u + 51u), 0x4Fu, 0x00u, 0xFFu};
+            v.resize(v.size() + 48u, 0u);
+            return v;
+        }();
+        return t;
+    }
+    } // namespace fh
+    // SvR face/hand track (CEKey::GetData 0x168aa0 stream: b < 0x60 skip b frames, 0x60 -> next byte = len, else len =
+    // b - 0x60) -> HCTP face/hand records. Returns 0 = not a face/hand track (lights, cameras, 3000-rows, desync, mixed),
+    // 1 = face, 2 = hand. stripAttr: drop each record's attribute bytes (SvR06 y1-y3: their attrs are not HCTP's to run).
+    int svrFaceTrackToHctp(const uint8_t *s, size_t n, std::vector<uint8_t> &out, bool stripAttr = false, uint32_t *drops = nullptr)
+    {
+        out.clear();
+        bool face = false, hand = false;
+        float kdk[9];
+        std::memcpy(kdk, fh::rest(46), sizeof kdk);
+        float brow[6][9]; // S15: current R of SvR brow bones 36-41 in this track (start = neutral = I)
+        for (auto &b : brow)
+            fh::eul(0.f, 0.f, 0.f, b);
+        auto rekey = [&](int sid, uint32_t w, uint32_t &w2) {
+            float K[9], R[9];
+            fh::decode(w, K);
+            if (sid == 46)
+                std::memcpy(kdk, K, sizeof K);
+            if (sid == 49 || sid == 50)
+            {
+                float Bc[9], Kc[9];
+                fh::mul(fh::rest(sid), fh::rest(46), Bc); // Blk x Bdk
+                fh::mul(K, kdk, Kc);                      // Klk x Kdk_cur
+                fh::mul(Bc, Kc, R, true);
+            }
+            else
+                fh::mul(fh::rest(sid), K, R, true);
+            if (fh::angDeg(R) > (sid <= 33 ? 60.f : 90.f))
+            {
+                if (drops)
+                    ++*drops;
+                return false;
+            }
+            if (fh::isBrow(sid)) // S15: HCTP brow = mean of the side's 3 SvR brow bones (fh::mean3)
+            {
+                std::memcpy(brow[sid - 36], R, sizeof R);
+                const int b0 = sid <= 38 ? 0 : 3;
+                fh::mean3(brow[b0], brow[b0 + 1], brow[b0 + 2], R);
+            }
+            w2 = fh::encode(R);
+            return true;
+        };
+        size_t i = 0;
+        while (i < n)
+        {
+            const uint8_t b = s[i++];
+            if (b < 0x60u)
+            {
+                out.push_back(b);
+                continue;
+            }
+            size_t len = b - 0x60u;
+            if (b == 0x60u)
+            {
+                if (i >= n)
+                    return 0;
+                len = s[i++];
+            }
+            if (i + len > n)
+                return 0;
+            const uint8_t *r = s + i;
+            i += len;
+            std::vector<uint8_t> o;
+            size_t j = 0;
+            if (len != 0u && (r[0] & 0x80u) != 0u)
+            {
+                j = (r[0] & 0x7Fu) + 1u; // attribute bytes (walked with the bank's own size table)
+                if (j > len)
+                    return 0;
+                if (!stripAttr)
+                    o.insert(o.end(), r, r + j);
+            }
+            while (j + 1u < len)
+            {
+                const uint8_t op = r[j];
+                if (op == 0x77u) // SvR face mask [77][fr][u32 mask] ids 30+bit, 4 B keys (SvR04 0x2585a4, SvR06 0x214e40)
+                {
+                    if (j + 6u > len)
+                        return 0;
+                    const uint8_t fr = r[j + 1];
+                    const uint32_t m = r[j + 2] | (r[j + 3] << 8) | (r[j + 4] << 16) | (uint32_t(r[j + 5]) << 24);
+                    j += 6u;
+                    uint32_t key[12] = {}, hm = 0;
+                    for (int bit = 0; bit < 30; ++bit)
+                    {
+                        if (((m >> bit) & 1u) == 0u)
+                            continue;
+                        if (j + 4u > len)
+                            return 0;
+                        const uint32_t w = r[j] | (r[j + 1] << 8) | (r[j + 2] << 16) | (uint32_t(r[j + 3]) << 24);
+                        j += 4u;
+                        uint32_t w2 = 0;
+                        if (fh::kMap[bit] >= 0 && rekey(30 + bit, w, w2))
+                            key[fh::kMap[bit] - 21] = w2, hm |= 1u << (fh::kMap[bit] - 21);
+                    }
+                    if (hm != 0u) // HCTP [0x40|m>>8][fr][m lo] 12 bits ids 21+bit (ActionLink 0x1ccb0c)
+                    {
+                        o.push_back(static_cast<uint8_t>(0x40u | (hm >> 8)));
+                        o.push_back(fr);
+                        o.push_back(static_cast<uint8_t>(hm & 0xFFu));
+                        for (int h = 0; h < 12; ++h)
+                            if ((hm >> h) & 1u)
+                                for (int k = 0; k < 4; ++k)
+                                    o.push_back(static_cast<uint8_t>(key[h] >> (8 * k)));
+                    }
+                    face = true;
+                }
+                else if (op == 0x78u || op == 0x79u) // hand masks: same op, same bits, 3 B keys
+                {
+                    if (j + 4u > len)
+                        return 0;
+                    const uint32_t m = (r[j + 2] | (r[j + 3] << 8)) & 0x7FFFu;
+                    size_t k = 4u;
+                    for (uint32_t t = m; t; t &= t - 1u)
+                        k += 3u;
+                    if (j + k > len)
+                        return 0;
+                    o.insert(o.end(), r + j, r + j + k);
+                    j += k;
+                    hand = true;
+                }
+                else if (op >= 30u && op < 60u) // face single [id][fr][4 B]
+                {
+                    if (j + 6u > len)
+                        return 0;
+                    const uint32_t w = r[j + 2] | (r[j + 3] << 8) | (r[j + 4] << 16) | (uint32_t(r[j + 5]) << 24);
+                    uint32_t w2 = 0;
+                    if (fh::kMap[op - 30u] >= 0 && rekey(op, w, w2))
+                    {
+                        o.push_back(static_cast<uint8_t>(fh::kMap[op - 30u]));
+                        o.push_back(r[j + 1]);
+                        for (int k = 0; k < 4; ++k)
+                            o.push_back(static_cast<uint8_t>(w2 >> (8 * k)));
+                    }
+                    j += 6u;
+                    face = true;
+                }
+                else if (op < 30u) // hand single [id][fr][3 B] -> HCTP id 33+h (l_yubi00.. 33, r_yubi00.. 48)
+                {
+                    if (j + 5u > len)
+                        return 0;
+                    o.push_back(static_cast<uint8_t>(33u + op));
+                    o.insert(o.end(), r + j + 1, r + j + 5);
+                    j += 5u;
+                    hand = true;
+                }
+                else
+                    return 0; // light keys, anything else: not a face/hand track
+            }
+            if (j != len || o.size() > 0xFFu || (face && hand))
+                return 0;
+            if (o.empty())
+                out.push_back(0x01u); // empty record = one frame (GetData walk: record ++frame, skip byte +b)
+            else if (o.size() <= 0x9Fu)
+                out.push_back(static_cast<uint8_t>(0x60u + o.size()));
+            else
+            {
+                out.push_back(0x60u);
+                out.push_back(static_cast<uint8_t>(o.size()));
+            }
+            out.insert(out.end(), o.begin(), o.end());
+        }
+        return face ? 1 : hand ? 2 : 0;
+    }
+    std::map<uint16_t, std::set<uint16_t>> g_svr06FaceIds; // SvR06 no -> face/hand motion ids 0x3D00 + scene*4 + y in its host bank
     std::map<uint16_t, std::pair<std::vector<uint8_t>, uint8_t>> g_svr06Lights; // SvR06 no -> host light bank + mask
     size_t g_svr06LightMax = 0;
     // Nov 10 STEP 5 nWo GRAYSCALE (Hollywood Hogan 2 = SvR06 4071): SvR06 camera attr op 0x3A = MotionCameraBase::SetAttr
@@ -8108,6 +8973,57 @@ namespace
         uint32_t passSec[2] = {bSec, bSec}, passSz[2] = {bSz, bSz};
         const std::vector<uint8_t> bkRaw = bk;
         const uint32_t bSzRaw = bSz;
+        // Nov 17 HHH 4002 WATER: the SvR06 spit is NOT a GMEV gimmick (Jordan's 01:17 log: 0 FireWorks gimmicks); it is attr op
+        // 0x6C = AttrFunc_CMD_Particle2 (beta 0x238fa0; attr table 16-B rows, B4 row 0x337430, 0x6C row 0x336fb0) ->
+        // StartParticleFromAtr(attr, list, no, part) 0x23c000. Attr blocks = record byte0 & 0x80, ops sized by the bank's own
+        // table bk[op] (as HCTP AnalyzeAttribute 0x164b90 walks them). 4002 = obj 0 sc15 f1433 [1,2,4] f1615 [1,2,FF] f1741
+        // [1,3,4] f1770 [1,3,FF]; bottle obj 17 sc15 f720 [1,0,0] f763 [1,0,FF] f799 [1,1,0] f835 [1,1,FF]
+        // (tools\entport_dumps\svr06_particle_cues_1117.py). Driven by the native SvR06 ctx (hctp_svr06_ctx.cpp cueStep).
+        if (bk.size() > 0x104u)
+        {
+            std::vector<HctpSvr06AttrCue> cues;
+            std::set<std::array<int, 6>> seenCue;
+            uint32_t nd = 0;
+            std::memcpy(&nd, &bk[0x100], 4);
+            const size_t d0 = 0x104u + 16u * size_t(nd);
+            std::vector<uint32_t> offs;
+            for (uint32_t i = 0; i < nd && d0 <= bk.size(); ++i)
+            {
+                uint32_t off;
+                std::memcpy(&off, &bk[0x104u + 16u * i + 4u], 4);
+                if (off != 0xFFFFFu && d0 + off < bk.size()) offs.push_back(off);
+            }
+            std::sort(offs.begin(), offs.end());
+            for (uint32_t i = 0; i < nd && d0 <= bk.size(); ++i)
+            {
+                uint32_t key, off;
+                std::memcpy(&key, &bk[0x104u + 16u * i], 4);
+                std::memcpy(&off, &bk[0x104u + 16u * i + 4u], 4);
+                if (off == 0xFFFFFu || d0 + off >= bk.size()) continue;
+                const auto nx = std::upper_bound(offs.begin(), offs.end(), off);
+                const size_t pe = nx != offs.end() ? d0 + *nx : bk.size();
+                svrWalkKeys(bk, d0 + off, pe, [&](uint32_t fr, size_t p, size_t sz) {
+                    if (!sz || !(bk[p] & 0x80u)) return;
+                    size_t q = p + 1u;
+                    const size_t b1 = std::min(q + (bk[p] & 0x7Fu), p + sz);
+                    while (q < b1)
+                    {
+                        const uint8_t op = bk[q], ln = bk[op];
+                        if (ln == 0u || q + ln > b1) break;
+                        if (op == 0x6Cu && ln >= 4u)
+                        {
+                            const std::array<int, 6> c = {int((key >> 16) & 0x3FFFu), int((key >> 8) & 0xFFu), int(fr), bk[q + 1], bk[q + 2], bk[q + 3]};
+                            if (seenCue.insert(c).second) cues.push_back({c[0], c[1], c[2], c[3], c[4], c[5]});
+                        }
+                        q += ln;
+                    }
+                });
+            }
+            if (!cues.empty())
+                std::fprintf(stderr, "[svr06ent] event %u: %zu attr particle cues (SvR06 op 0x6C CMD_Particle2)%c", no, cues.size(), 10);
+            std::lock_guard<std::mutex> lk(g_svr06AttrCueMx);
+            g_svr06AttrCues[static_cast<uint16_t>(no)] = std::move(cues);
+        }
         for (int pass = 0; pass < 2; ++pass)
         if (f && bk.size() > 0x104u && !(std::getenv("HCTP_SVR06_GROUND") && std::getenv("HCTP_SVR06_GROUND")[0] == '0'))
         {
@@ -8116,9 +9032,19 @@ namespace
             uint32_t n = 0;
             std::memcpy(&n, &bk[0x100], 4);
             const size_t data0 = 0x104u + 16u * size_t(n);
-            auto shift = [pass](float zUnits) {
+            // Nov 15 item 5: pass 1 was "no shift" = floor level everywhere (also UNDER the raised stage). HCTP plane arenas
+            // keep the stage (svrPlaneGround, from HCTP's own N/N+200 banks): per track the first root key decides, a scene
+            // starting on the stage (z >= 237) keeps stage height over the ramp range, one starting below = arena floor.
+            bool planeFirst = true, planeOnStage = true;
+            uint32_t planeFloorScenes = 0;
+            auto shift = [pass, &planeFirst, &planeOnStage, &planeFloorScenes](float zUnits) {
                 if (pass == 1)
-                    return 0.f; // plane arena: SvR06 floor-level stage = HCTP floor
+                {
+                    const float zp = zUnits * 0.01f;
+                    if (planeFirst)
+                        planeOnStage = zp >= 237.f, planeFirst = false, planeFloorScenes += planeOnStage ? 0u : 1u;
+                    return (11.8f - svrPlaneGround(zp, planeOnStage)) / 0.01f;
+                }
                 const float z = zUnits * 0.01f, F = 11.8f, top = 237.f, foot = 87.f;
                 const float g = z >= top ? 0.f : (z <= foot ? F : F * (top - z) / (top - foot));
                 return (F - g) / 0.01f;
@@ -8131,7 +9057,7 @@ namespace
             // HCTP_SVR06_RESAMPLE=0 / HCTP_SVR06_CAMSHIFT=0 turn (c) / (b) off.
             static const uint8_t kWide[21] = {7, 7, 7, 6, 23, 6, 7, 3, 6, 6, 7, 3, 6, 7, 2, 6, 2, 7, 2, 6, 2};
             auto boneSz = [](uint8_t t) -> size_t { return t == 2 || t == 4 ? 2u : (t == 3 || t == 6 ? 4u : 6u); };
-            const bool resample = !(std::getenv("HCTP_SVR06_RESAMPLE") && std::getenv("HCTP_SVR06_RESAMPLE")[0] == '0');
+            const bool resample = std::getenv("HCTP_SVR06_RESAMPLE") && std::getenv("HCTP_SVR06_RESAMPLE")[0] == '1'; // Nov 16 S12: OFF by default (SvR06 raw keys already match HCTP SetKey 0x1b6480 even-tick timing, SESSION 10)
             const bool camShift = !(std::getenv("HCTP_SVR06_CAMSHIFT") && std::getenv("HCTP_SVR06_CAMSHIFT")[0] == '0');
             struct Ent { uint32_t key, off; };
             std::vector<Ent> dir(n);
@@ -8166,7 +9092,7 @@ namespace
             // 49/51 = the same /SFX/LIST cheer SEs as HCTP's bank-6 lists 0x3C-0x3E). HCTP SetAttr 0x1b3120 has no C1 handler
             // (ops >= 0xC0 other than C0 fall to the size-a0 tail), so SvR06 entrances played with no crowd swells. HCTP's
             // own cue is C0 <se> (2 B), and its handler (0x1b34f0) queues the SE and RETURNS -> it must be the block's last
-            // event. In place, same block size: [other events in order] + C0 <first crowd se> + pad (never read).
+            // event. In place, same block size: [other events in order] + C0 <crowd se> 23 (S9: no pad - see below).
             if (!(std::getenv("HCTP_SVR06_CROWD") && std::getenv("HCTP_SVR06_CROWD")[0] == '0'))
             {
                 uint32_t cues = 0;
@@ -8175,8 +9101,16 @@ namespace
                         if (!sz || !(bk[p] & 0x80u))
                             return;
                         const size_t b0 = p + 1u, b1 = std::min(b0 + (bk[p] & 0x7Fu), p + sz);
+                        // Nov 16 S9 HANG FIX (HHH3 4002 / Taker2 4003 / Benoit3 4009 ...): the old "C0 se + pad" left one 0x00
+                        // byte. CEventMotionCamera::AnalyzeAttribute 0x164b90 walks a camera attr block as s0 = T[op]
+                        // (0x164c1c lbu s0,0(T+op)), s1 += s0, s2 -= s0, loop while s2 != 0 (0x165130..0x165138): T[0] = 0
+                        // in every SvR06 bank -> s0 = 0 -> endless loop on the first camera (obj 0x0A) block with a crowd cue
+                        // (24 of 73 SvR06 banks; 4002/4003 scene 0 f0, 4009 scene 0 f50). SetAttr 0x1b3120 stops on size 0
+                        // (blez s6 0x1b31a8), so entrant tracks never hung. -> C0 is 3 B here (T[0xC0] = 3, below): C0 se 23
+                        // replaces C1 se 23 byte for byte, still last; C0 handlers read only byte 1 (camera 0x164d24, SetAttr
+                        // 0x1b46f8). No pad byte exists. Blocks with 2+ crowd cues (none in the 73 banks) stay untouched.
                         std::vector<uint8_t> keep;
-                        int se = -1;
+                        int se = -1, nCue = 0;
                         for (size_t q = b0; q < b1;)
                         {
                             const uint8_t op = bk[q], len = bk[op];
@@ -8185,19 +9119,21 @@ namespace
                             if (op == 0xC1u && len == 3u && bk[q + 2] == 0x23u && bk[q + 1] >= 47u && bk[q + 1] <= 51u)
                             {
                                 if (se < 0) se = bk[q + 1];
+                                ++nCue;
                             }
                             else
                                 keep.insert(keep.end(), bk.begin() + q, bk.begin() + q + len);
                             q += len;
                         }
-                        if (se < 0)
+                        if (se < 0 || nCue != 1)
                             return;
-                        keep.push_back(0xC0u), keep.push_back(static_cast<uint8_t>(se));
-                        keep.resize(b1 - b0, 0u);
+                        keep.push_back(0xC0u), keep.push_back(static_cast<uint8_t>(se)), keep.push_back(0x23u);
+                        if (keep.size() != b1 - b0)
+                            return;
                         std::copy(keep.begin(), keep.end(), bk.begin() + b0);
                         ++cues;
                     });
-                bk[0xC0] = 2u; // op C0 size in this bank's table (SvR06 banks: 0)
+                bk[0xC0] = 3u; // op C0 size in this bank's table (SvR06 banks: 0); 3 = C0 se 23 (S9 hang fix above)
                 if (pass == 0)
                     std::fprintf(stderr, "[svr06ent] event %u: %u crowd cues C1 -> C0%c", static_cast<unsigned>(no), cues, 10);
             }
@@ -8209,28 +9145,110 @@ namespace
                 std::vector<uint8_t> lrows, ldata;
                 uint32_t lcnt = 0;
                 g_svr06LightMask = 0;
-                for (uint32_t y = 1; y <= 8; ++y)
+                // Nov 15 OPEN LIST item 6 (Kane lights missing): SvR06 EVTS 4007 has slot 0 OFF (scene 0 never plays) and its
+                // light obj 0xB tracks only in scenes 5 + 20 -> the old scene-0-only match found none. Take the FIRST scene
+                // byte that has light tracks (4044 etc.: still scene 0). Per-scene switching (Kane's scene 20) = not done yet.
+                // Nov 16 S11 (Jordan item 1, HHH 4002 too dark): PER-SCENE lights. SvR06 CEventScene::StartScene_Light (event.bin
+                // 0x553e10, called at scene start 0x561414) loops slots 0-7: CEKey::ChkData(obj, scene, y = slot+1) -> only the slots
+                // the NEW scene has a track for get CMotionLight::Set(slot, obj, scene, y, 2) (0x553ea4); the others keep playing.
+                // 4002 has light scenes 0,5,15,20 (scene 0 = dark intro) and only scene 0 was ever played. -> every light scene
+                // byte < 32 gets rows 0x3F00 + scene*8 + slot (scene 0 = the old 0x3F00+slot ids); svr06LightsSceneSwitch Sets them.
+                uint32_t lightScene = 0xFFu;
+                std::set<uint32_t> lightScenes;
+                for (uint32_t i = 0; i < n; ++i)
+                {
+                    const uint32_t k = dir[i].key & 0x3FFFFFFFu;
+                    if ((k >> 16) == 0xBu && (k & 0xFFu) >= 1u && (k & 0xFFu) <= 8u && dir[i].off != 0xFFFFFu)
+                    {
+                        lightScene = std::min(lightScene, (k >> 8) & 0xFFu);
+                        if (((k >> 8) & 0xFFu) < 32u)
+                            lightScenes.insert((k >> 8) & 0xFFu);
+                    }
+                }
+                if (lightScene != 0u && lightScene != 0xFFu)
+                    std::fprintf(stderr, "[svr06light] event %u: light tracks from scene byte %u (no scene-0 lights)%c", no, lightScene, 10);
+                lightScene &= 0xFFu;
+                std::map<uint8_t, uint8_t> &sceneMasks = g_svr06LightSceneMasks[static_cast<uint16_t>(no)];
+                sceneMasks.clear();
+                for (uint32_t sb : lightScenes)
+                    for (uint32_t y = 1; y <= 8; ++y)
+                        for (uint32_t i = 0; i < n; ++i)
+                        {
+                            if ((dir[i].key & 0x3FFFFFFFu) != (0x000B0000u | (sb << 8) | y) || dir[i].off == 0xFFFFFu ||
+                                data0 + dir[i].off >= bk.size())
+                                continue;
+                            uint32_t r[4];
+                            std::memcpy(r, &bk[0x104u + 16u * i], 16);
+                            r[0] = (r[0] & 0xC0000000u) | ((0x3F00u + sb * 8u + y - 1u) << 16);
+                            r[1] = static_cast<uint32_t>(ldata.size());
+                            ldata.insert(ldata.end(), bk.begin() + data0 + dir[i].off, bk.begin() + data0 + segEnd(dir[i].off));
+                            lrows.insert(lrows.end(), reinterpret_cast<uint8_t *>(r), reinterpret_cast<uint8_t *>(r) + 16);
+                            sceneMasks[static_cast<uint8_t>(sb)] |= static_cast<uint8_t>(1u << (y - 1u));
+                            if (sb == lightScene)
+                                g_svr06LightMask |= static_cast<uint8_t>(1u << (y - 1u));
+                            ++lcnt;
+                            break;
+                        }
+                if (sceneMasks.size() > 1u)
+                    std::fprintf(stderr, "[svr06light] event %u: %zu light scenes (per-scene switch)%c", no, sceneMasks.size(), 10);
+                // Nov 14 FACES + HANDS (notes\FACE_HANDS_SVR_ENTRANCES_20261114.md sec 3): SvR06 entrant faces/hands live only
+                // in the bank (obj 0, y1 = face 0x77 + singles 30-59, y2/y3 = hands 0x78/0x79 + singles 0-29; event 4044: no
+                // attr 0x10 face ids, op-size table [0x10] = 0); HCTP plays only y0 (StartScene 0x167c10 -> JumpAct 0x1c02d0).
+                // -> each scene's y1-y3 re-keyed (svrFaceTrackToHctp, attrs stripped) into this host bank as motion id
+                // 0x3D00 + scene byte*4 + y (rows sorted: CEKey::Search 0x168960 binary-searches id<<16|scene<<8|y, these
+                // sort before the 0x3F00 lights); startSceneSvr Sets them on the entrant's CCharMotionPts slots 0-2.
+                std::vector<uint8_t> frows, fdata, fbuf;
+                uint32_t fcnt = 0, fdrop = 0, fbad = 0;
+                std::set<uint16_t> &fids = g_svr06FaceIds[static_cast<uint16_t>(no)];
+                fids.clear();
+                if (fh::faceMode() != 0)
                     for (uint32_t i = 0; i < n; ++i)
                     {
-                        if ((dir[i].key & 0x3FFFFFFFu) != (0x000B0000u | y) || dir[i].off == 0xFFFFFu || data0 + dir[i].off >= bk.size())
+                        const uint32_t key = dir[i].key & 0x3FFFFFFFu, y = key & 0xFFu, scb = (key >> 8) & 0xFFu;
+                        if ((key >> 16) != 0u || y < 1u || y > 3u || scb >= 0x80u || dir[i].off == 0xFFFFFu || data0 + dir[i].off >= bk.size())
                             continue;
+                        const uint32_t e = i + 1 < n && dir[i + 1].off != 0xFFFFFu ? dir[i + 1].off : segEnd(dir[i].off);
+                        if (e <= dir[i].off || data0 + e > bk.size())
+                            continue; // empty track (scene 0 y1-y3 of 4044 share the next row's offset)
+                        const int kind = svrFaceTrackToHctp(&bk[data0 + dir[i].off], e - dir[i].off, fbuf, true, &fdrop);
+                        if (kind != (y == 1u ? 1 : 2))
+                        {
+                            if (fbad++ < 8)
+                                std::fprintf(stderr, "[svrface] drop SvR06 %u scene byte %u y%u (kind %d)%c", static_cast<unsigned>(no), scb, y, kind, 10);
+                            if (y != 1u)
+                                continue; // hands: keep the last hand pose
+                            fbuf = fh::neutralFace(); // fallback: HCTP neutral face
+                        }
+                        else if (y == 1u && fh::faceMode() == 2)
+                            fbuf = fh::neutralFace();
+                        const uint16_t mid = static_cast<uint16_t>(0x3D00u + scb * 4u + y);
                         uint32_t r[4];
                         std::memcpy(r, &bk[0x104u + 16u * i], 16);
-                        r[0] = (r[0] & 0xC0000000u) | ((0x3F00u + y - 1u) << 16);
-                        r[1] = static_cast<uint32_t>(ldata.size());
-                        ldata.insert(ldata.end(), bk.begin() + data0 + dir[i].off, bk.begin() + data0 + segEnd(dir[i].off));
-                        lrows.insert(lrows.end(), reinterpret_cast<uint8_t *>(r), reinterpret_cast<uint8_t *>(r) + 16);
-                        g_svr06LightMask |= static_cast<uint8_t>(1u << (y - 1u));
-                        ++lcnt;
-                        break;
+                        r[0] = (r[0] & 0xC0000000u) | (uint32_t(mid) << 16);
+                        r[1] = static_cast<uint32_t>(fdata.size());
+                        fdata.insert(fdata.end(), fbuf.begin(), fbuf.end());
+                        frows.insert(frows.end(), reinterpret_cast<uint8_t *>(r), reinterpret_cast<uint8_t *>(r) + 16);
+                        fids.insert(mid);
+                        ++fcnt;
                     }
+                for (size_t q = 0; q + 16u <= lrows.size(); q += 16u) // light rows after the face rows (sorted ids)
+                {
+                    uint32_t o;
+                    std::memcpy(&o, &lrows[q + 4u], 4);
+                    o += static_cast<uint32_t>(fdata.size());
+                    std::memcpy(&lrows[q + 4u], &o, 4);
+                }
+                const uint32_t allCnt = fcnt + lcnt;
                 g_svr06LightHost.assign(bk.begin(), bk.begin() + 0x100);
-                g_svr06LightHost.insert(g_svr06LightHost.end(), reinterpret_cast<uint8_t *>(&lcnt), reinterpret_cast<uint8_t *>(&lcnt) + 4);
+                g_svr06LightHost.insert(g_svr06LightHost.end(), reinterpret_cast<const uint8_t *>(&allCnt), reinterpret_cast<const uint8_t *>(&allCnt) + 4);
+                g_svr06LightHost.insert(g_svr06LightHost.end(), frows.begin(), frows.end());
                 g_svr06LightHost.insert(g_svr06LightHost.end(), lrows.begin(), lrows.end());
+                g_svr06LightHost.insert(g_svr06LightHost.end(), fdata.begin(), fdata.end());
                 g_svr06LightHost.insert(g_svr06LightHost.end(), ldata.begin(), ldata.end());
                 g_svr06LightHost.resize(g_svr06LightHost.size() + 32u, 0);
-                if (lcnt == 0) g_svr06LightHost.clear();
-                std::fprintf(stderr, "[svr06light] %u light tracks (mask %02x, bank %zu B)%c", lcnt, g_svr06LightMask, g_svr06LightHost.size(), 10);
+                if (allCnt == 0) g_svr06LightHost.clear();
+                std::fprintf(stderr, "[svr06light] %u light tracks (mask %02x) + %u face/hand tracks (%u keys dropped), bank %zu B%c", lcnt,
+                             g_svr06LightMask, fcnt, fdrop, g_svr06LightHost.size(), 10);
                 g_svr06Lights[static_cast<uint16_t>(no)] = {g_svr06LightHost, g_svr06LightMask}; // STEP 2: per event
                 g_svr06LightMax = std::max(g_svr06LightMax, g_svr06LightHost.size());
                 // STEP 5: grayscale window from the camera track (obj 0x0A, take y0) attr blocks: 3A <type> <frames>
@@ -8273,7 +9291,7 @@ namespace
             uint32_t keys = 0, tracks = 0, camKeys = 0;
             // STEP 4: every cast object (char with a slot on: singles obj 0, tags obj 0 + partner obj 4) gets the stage
             // shift + per-frame resample; the camera follows the entrant (obj 0) only.
-            std::set<uint32_t> castObjs = {0u};
+            std::set<uint32_t> castObjs = {0u}, worldProps;
             if (auto sit = g_svr06Script.find(static_cast<uint16_t>(no)); sit != g_svr06Script.end())
             {
                 const std::vector<uint8_t> &d = sit->second;
@@ -8288,21 +9306,104 @@ namespace
                         anyOn |= bp + 212u * 5u * k + 3u <= d.size() && d[bp + 212u * 5u * k + 2u] != 0u;
                     if (d[q + 4] == 1u && d[q + 9] != 1u && anyOn)
                         castObjs.insert(c);
+                    else if (d[q + 6] == 1u && anyOn)
+                        worldProps.insert(c); // Nov 15 item 6: candidate world prop (track tested by worldRootTrack)
                 }
             }
+            // Nov 15 OPEN LIST item 6 (Eddie 4056 low rider not seen): SvR06 EVTS 4056 obj 12 = model 2501, type 00 00 01 (prop),
+            // all 5 slots on -> EnsureRow KEEPS it as SOBJ 2601. Its bank track roots (op 0x7a s16) sit at y +12.0, z 265..275
+            // = on SvR06's floor-level stage, but only cast objs got the stage shift -> in HCTP the car stayed 11.8 under the
+            // raised stage. World-positioned props (track's first root > 15 units from the origin = Mod Maker hctp_entrance.py
+            // world_root; attached props like the belt carry small local roots) now get the same shift() per key.
+            // Not entrant: no camera table, not resampled (propOffs, not entrantOffs).
+            // Nov 17 PROPS (Jordan: "SVR06 props are still not correct ... anyone that has a prop"): SvR06 prop (weapon) records
+            // are SUB-OP LISTS, read by CSD3MotionWeapon::SetData (SvR06 beta 0x2226d0): op < 0x20 = bone rotation (8 B,
+            // SetRot 0x222a48); 0x7e / 0x7d = root translation (8 B, GetTransDataWeapon 0x222580 -> GetTransShort at +2);
+            // 0x7a = root translation + 24-bit bone mask at +8 (11 B + 6 per set bit, SetRot loop 0x222860); 0x7b (9 B) /
+            // 0x76 (7 B) = part translations (+ part base +0x160, 0x2228f8, local); any other op ends the record (0x2229e8).
+            // Most free-prop keys are "00 <rot> 7e <trans>" (Carlito apple 4018: 1467 root keys, only 160 lead a record) but
+            // the stage shift below patched only a LEADING root -> those keys stayed at SvR06 stage height while the holder
+            // was moved to HCTP's stage (11.8 units) and B4 hosei (hand - dummy tip) cannot pull that back. HHH's bottle
+            // looked right because it is attached (op BC = RTE): ActionLink 0x2238cc zeroes an attached weapon's own keys.
+            // propRoots: every root translation sub of one record (offset of its s16 xyz). Checked offline over every SvR06
+            // prop track: 100% of records parse to the byte (tools\entport_dumps\svr06_prop_root_z_1117.py).
+            auto propRoots = [&](size_t q, size_t recEnd, const std::function<void(size_t)> &fn) {
+                while (q + 1u < recEnd)
+                {
+                    const uint8_t op = bk[q];
+                    size_t len = 8u;
+                    if (op == 0x7a)
+                    {
+                        if (q + 11u > recEnd) return;
+                        const uint32_t m = bk[q + 8] | (uint32_t(bk[q + 9]) << 8) | (uint32_t(bk[q + 10]) << 16);
+                        len = 11u + 6u * static_cast<size_t>(std::bitset<24>(m).count());
+                    }
+                    else if (op == 0x7b) len = 9u;
+                    else if (op == 0x76) len = 7u;
+                    else if (op != 0x7e && op != 0x7d && op >= 0x20) return;
+                    if ((op == 0x7e || op == 0x7d || op == 0x7a) && q + 8u <= recEnd)
+                        fn(q + 2u);
+                    q += len;
+                }
+            };
+            auto propWorldRoot = [&](size_t ro) { // s16 root > 15 units from the origin = world-placed (free) prop key
+                int16_t s[3]; std::memcpy(s, &bk[ro], 6);
+                return std::sqrt(float(s[0]) * s[0] + float(s[1]) * s[1] + float(s[2]) * s[2]) > 1500.f;
+            };
+            auto worldRootTrack = [&](uint32_t off) {
+                bool world = false, seen = false;
+                svrWalkKeys(bk, data0 + off, data0 + segEnd(off), [&](uint32_t, size_t p, size_t sz) {
+                    if (seen) return;
+                    size_t q = p;
+                    const size_t recEnd = p + sz;
+                    if (sz && (bk[q] & 0x80u)) q += 1u + (bk[q] & 0x7Fu);
+                    if (q >= recEnd) return;
+                    const uint8_t op = bk[q];
+                    float r[3] = {};
+                    if ((op == 0x7d || op == 0x7f) && q + 14 <= recEnd) std::memcpy(r, &bk[q + 2], 12), seen = true;
+                    else if (((op == 0x7c || op == 0x7e || op == 0x7a) && q + 8 <= recEnd) || (op >= 0x50 && op <= 0x6f && q + 7 <= recEnd))
+                    {
+                        int16_t s[3]; std::memcpy(s, &bk[q + (op >= 0x50 && op <= 0x6f ? 1u : 2u)], 6);
+                        r[0] = s[0], r[1] = s[1], r[2] = s[2], seen = true;
+                    }
+                    world = seen && std::sqrt(r[0] * r[0] + r[1] * r[1] + r[2] * r[2]) > 1500.f;
+                });
+                if (!world) // Nov 17: any world root sub anywhere in the track (not only a leading one)
+                    svrWalkKeys(bk, data0 + off, data0 + segEnd(off), [&](uint32_t, size_t p, size_t sz) {
+                        if (world) return;
+                        size_t q = p;
+                        if (sz && (bk[q] & 0x80u)) q += 1u + (bk[q] & 0x7Fu);
+                        propRoots(q, p + sz, [&](size_t ro) { world = world || propWorldRoot(ro); });
+                    });
+                return world;
+            };
+            std::set<uint32_t> propOffs;
+            uint32_t propTracks = 0, propKeys = 0;
             std::vector<float> partnerTab;
             for (const Ent &e : dir)
             {
                 const uint32_t obj = (e.key >> 16) & 0x3FFFu;
-                if (!castObjs.count(obj) || (e.key & 0xFFu) != 0u || e.off == 0xFFFFFu ||
-                    data0 + e.off >= bk.size() || entrantOffs.count(e.off))
+                const bool isCast = castObjs.count(obj) != 0;
+                if ((!isCast && !worldProps.count(obj)) || (e.key & 0xFFu) != 0u || e.off == 0xFFFFFu ||
+                    data0 + e.off >= bk.size() || entrantOffs.count(e.off) || propOffs.count(e.off))
                     continue;
-                entrantOffs.insert(e.off);
-                ++tracks;
+                if (!isCast)
+                {
+                    if (!worldRootTrack(e.off))
+                        continue;
+                    propOffs.insert(e.off);
+                    ++propTracks;
+                }
+                else
+                {
+                    entrantOffs.insert(e.off);
+                    ++tracks;
+                }
                 partnerTab.clear();
                 std::vector<float> &tab = obj == 0u ? shiftAt[(e.key >> 8) & 0xFFu] : partnerTab;
                 std::vector<uint8_t> setAt;
                 float lastShift = 0.f;
+                planeFirst = true; // pass 1: this track's first root decides stage vs floor
                 walk(data0 + e.off, data0 + segEnd(e.off), [&](uint32_t fr, size_t p, size_t sz) {
                     size_t q = p;
                     if (sz && (bk[q] & 0x80u)) q += 1u + (bk[q] & 0x7Fu);
@@ -8313,7 +9414,21 @@ namespace
                         xyz[1] -= lastShift;
                         std::memcpy(&bk[ro], xyz, 12); ++keys;
                     };
-                    if (q < recEnd)
+                    if (q < recEnd && !isCast)
+                    {
+                        // Nov 17: prop (weapon) record -> every world root sub (s16 at +2), SvR06 SetData sizes (propRoots).
+                        // Local roots (<= 15 units: attached keys, zeroed by ActionLink) stay untouched, so pass 1's
+                        // planeFirst still decides on the first WORLD root.
+                        propRoots(q, recEnd, [&](size_t ro) {
+                            if (!propWorldRoot(ro)) return;
+                            int16_t xyz[3]; std::memcpy(xyz, &bk[ro], 6);
+                            lastShift = shift(float(xyz[2]));
+                            const float y = float(xyz[1]) - lastShift;
+                            xyz[1] = static_cast<int16_t>(std::lround(std::clamp(y, -32768.f, 32767.f)));
+                            std::memcpy(&bk[ro], xyz, 6); ++keys; ++propKeys;
+                        });
+                    }
+                    else if (q < recEnd)
                     {
                         const uint8_t op = bk[q];
                         if (op == 0x7d || op == 0x7f) { if (q + 14 <= recEnd) patchF(q + 2); }
@@ -8335,8 +9450,19 @@ namespace
                     if (tab.size() <= fr) tab.resize(fr + 1u, 0.f), setAt.resize(fr + 1u, 0);
                     tab[fr] = lastShift; setAt[fr] = 1;
                 });
-                for (size_t k = 1; k < tab.size(); ++k) // frames without a record hold the previous shift
-                    if (!setAt[k]) tab[k] = tab[k - 1];
+                // Nov 17 (Jordan: Kane 4007 jitter on the ramp): entrant keys come every 2nd frame, camera keys every frame;
+                // HCTP DataAnalysis 0x1b7220 blends the root LINEARLY between keys, so the camera's shift must too (holding the
+                // previous key's shift = camera y lags the body on odd frames = 30 Hz zigzag while shift(z) changes on the ramp).
+                for (size_t k = 1; k < tab.size(); ++k)
+                {
+                    if (setAt[k]) continue;
+                    size_t n = k;
+                    while (n < tab.size() && !setAt[n]) ++n;
+                    if (n >= tab.size()) { for (; k < tab.size(); ++k) tab[k] = tab[k - 1]; break; }
+                    const float a = tab[k - 1], b = tab[n];
+                    const size_t k0 = k - 1;
+                    for (; k < n; ++k) tab[k] = a + (b - a) * float(k - k0) / float(n - k0);
+                }
             }
             if (camShift)
             {
@@ -8366,7 +9492,7 @@ namespace
             for (const Ent &e : dir)
                 if ((e.key >> 16) == 0x400Au && e.off != 0xFFFFFu && data0 + e.off < bk.size()) camTrackOffs.insert(e.off);
             uint32_t added = 0, camAdded = 0, camCnt[3] = {};
-            if (resample && !offs.empty())
+            if ((resample || camResample) && !offs.empty()) // Nov 17: camera split must survive resample OFF (camAnalyzeSvr lerps count-0 keys only)
             {
                 std::vector<uint8_t> nd;
                 std::map<uint32_t, uint32_t> remap;
@@ -8428,7 +9554,7 @@ namespace
                         nd.insert(nd.end(), out.begin(), out.end());
                         continue;
                     }
-                    if (!entrantOffs.count(o)) { nd.insert(nd.end(), bk.begin() + ps, bk.begin() + pe); continue; }
+                    if (!resample || !entrantOffs.count(o)) { nd.insert(nd.end(), bk.begin() + ps, bk.begin() + pe); continue; } // entrant raw unless HCTP_SVR06_RESAMPLE=1
                     std::vector<uint8_t> out;
                     int16_t prev[21][3] = {}; bool has[21] = {}; float prevRoot[3] = {}; bool hasRoot = false;
                     auto putRec = [&](const std::vector<uint8_t> &r) {
@@ -8550,8 +9676,8 @@ namespace
             passSz[pass] = bSz;
             g_svr06Cache.insert(g_svr06Cache.end(), bk.begin(), bk.end());
             fileIdx = 3;
-            std::fprintf(stderr, "[svr06ent] %s: %u entrant tracks, %u root keys moved (cache sector %u)%c",
-                         pass == 0 ? "stage height" : "plane (no shift)", tracks, keys, passSec[pass], 10);
+            std::fprintf(stderr, "[svr06ent] %s: %u entrant tracks + %u world prop tracks (%u prop root keys), %u root keys moved, %u floor scenes (cache sector %u)%c",
+                         pass == 0 ? "stage height" : "plane (HCTP plane ground)", tracks, propTracks, propKeys, keys, planeFloorScenes, passSec[pass], 10);
         }
         if (g_svrPacFiles.size() < 4u)
             g_svrPacFiles.resize(4u);
@@ -8601,13 +9727,18 @@ namespace
     // STEP 2: write the combined host cache once; on failure every SvR06 event falls back to its raw evt.pac bank.
     void svr06CacheFlush()
     {
+        g_svr06CacheFlushed = true;
         if (g_svr06Cache.empty())
             return;
         std::ofstream o("MODS/SVR06/CEVN.PAC", std::ios::binary | std::ios::trunc);
         const bool ok = static_cast<bool>(o.write(reinterpret_cast<const char *>(g_svr06Cache.data()), static_cast<std::streamsize>(g_svr06Cache.size())));
         if (!ok)
+        {
             for (const auto &kv : g_svr06Raw)
                 g_svrPac["/EVET/" + std::to_string(kv.first)] = {2, kv.second.first, kv.second.second};
+            for (const auto &kv : g_svr04PlaneRaw) // Nov 15: SvR04 plane copies -> raw SvR04 bank
+                g_svrPac["/EVET/" + std::to_string(kv.first)] = {0, kv.second.first, kv.second.second};
+        }
         std::fprintf(stderr, "[svr06ent] CEVN.PAC cache %zu B for %zu events: %s%c", g_svr06Cache.size(), g_svr06Registered.size(),
                      ok ? "ok" : "WRITE FAILED, raw banks (no stage shift)", 10);
         std::vector<uint8_t>().swap(g_svr06Cache);
@@ -8627,6 +9758,7 @@ namespace
             unsigned light = 0;
             if (const size_t lp = line.find("light="); lp != std::string::npos)
                 light = static_cast<unsigned>(std::strtoul(line.c_str() + lp + 6, nullptr, 10));
+            const bool recolorYB = line.find("recolor=yellow2blue") != std::string::npos; // Nov 14 Mr. America
             // Nov 10 Mr. America: a 2nd row of an already registered SvR06 event = alias (same bank/row/props/pyro), own
             // number; light=<HCTP light motion> replaces the SvR06 lights on that number (svr06LightsStart)
             if (auto base = g_svr06Registered.find(static_cast<uint16_t>(no)); base != g_svr06Registered.end() && base->second != ev)
@@ -8641,6 +9773,8 @@ namespace
                             g_svrPac["/EVET/" + std::to_string(ae)] = bp->second;
                         if (light != 0u)
                             g_svrLightOverride[ae] = static_cast<uint16_t>(light);
+                        if (recolorYB)
+                            g_svrLightYellow2Blue.insert(ae);
                     }
                 std::fprintf(stderr, "[svr06ent] alias %u/%u = SvR06 %u (event %u), light override %u%c", ev, ev + 100u, no,
                              unsigned(base->second), light, 10);
@@ -8652,6 +9786,8 @@ namespace
             if (got > 0 && light != 0u)
                 g_svrLightOverride[static_cast<uint16_t>(got)] = g_svrLightOverride[static_cast<uint16_t>(got + 100)] =
                     static_cast<uint16_t>(light);
+            if (got > 0 && recolorYB)
+                g_svrLightYellow2Blue.insert(static_cast<uint16_t>(got)), g_svrLightYellow2Blue.insert(static_cast<uint16_t>(got + 100));
         }
         if (!g_svr06Registered.count(4044u)) // no table: keep the Nov 9 Brock proof row (CAM 3944 sentinel)
             svr06Register(4044u, 0xFFu, 0, 3044);
@@ -8854,6 +9990,173 @@ namespace
             }
         }
         return true;
+    }
+    // ---- Nov 17 S15 SYM FACES (notes\ENTRANCES_OPEN_LIST_20261115.md "SESSION 15"/"SESSION 15 BUILD"): SYM entrance attr 0x10
+    // face/hand ids are served by HCTP's parts bank (CEKey [0x526E88]/[0x526E90] = /MOT/GAME sub 6, GameLoad_Motion::LoadEnd
+    // 0x1fd200); 218 SYM rows are not in it -> CEKey::GetData 0x168aa0 returns 0 -> ActionLink 0x1cc930 skips -> frozen
+    // face/eyes. SYM's own rows = SYM m.pac /MOT/PTS (MODS\SYM\m.pac): same 256 B op table, same records, only the frame
+    // tag differs (SYM: b & 0x80 = key of (b & 0x7F)*2 bytes, word pad kept: ActionLink 0x1ccc10 walks while j < size-1;
+    // b < 0x80 = hold b frames. HCTP GetData 0x168b30: b < 0x60 hold, 0x60 [u8 size], else size b-0x60). The whole PTS
+    // library is re-tagged into one host bank (T[256], n @0x100, 16 B rows {key, off, frames, 0}, data @0x104+16n; sorted
+    // keys as CEKey::Search 0x168960 binary-searches) at guest 0x05F00000 and put in the HIGHEST empty slot of both CEKeys
+    // while a SYM event plays (startSceneSvr), removed at End/Release. Search walks slots 0..7 and takes the first hit, so
+    // every id HCTP has keeps HCTP's row; only the SYM-only ids reach this bank. HCTP_SYMFACE=0 = off.
+    constexpr uint32_t kSymFaceWin = 0x05F00000u, kSymFaceWinEnd = 0x06000000u;
+    std::vector<uint8_t> g_symFaceHost; // built once (empty + g_symFaceTried = no file)
+    bool g_symFaceTried = false;
+    uint32_t g_symFaceKey[2] = {}, g_symFaceSlot[2] = {};
+    bool symFaceLoad()
+    {
+        if (g_symFaceTried)
+            return !g_symFaceHost.empty();
+        g_symFaceTried = true;
+        if (std::getenv("HCTP_SYMFACE") && std::getenv("HCTP_SYMFACE")[0] == '0')
+            return false;
+        SymDirEnt pe{0, 0};
+        if (!symDpacDir("MODS/SYM/m.pac", [&](const std::string &tag, const std::string &name, SymDirEnt e) {
+                if (tag == "MOT" && name == "PTS")
+                    pe = e;
+            }) || pe.sz == 0u)
+        {
+            std::fprintf(stderr, "[symface] MODS\\SYM\\m.pac /MOT/PTS missing: SYM-only face rows off%c", 10);
+            return false;
+        }
+        std::ifstream f("MODS/SYM/m.pac", std::ios::binary);
+        std::vector<uint8_t> b(size_t(pe.sz) * 0x100u);
+        if (!f.seekg(std::streamoff(pe.sec) * 0x800) || !f.read(reinterpret_cast<char *>(b.data()), std::streamsize(b.size())))
+            return false;
+        uint32_t n = 0;
+        std::memcpy(&n, &b[0x100], 4);
+        const size_t d0 = 0x104u + 16u * size_t(n);
+        if (n == 0u || n > 40000u || d0 > b.size())
+            return false;
+        std::vector<uint32_t> offs;
+        for (uint32_t i = 0; i < n; ++i)
+        {
+            uint32_t o;
+            std::memcpy(&o, &b[0x104u + 16u * i + 4u], 4);
+            if (o != 0xFFFFFu && d0 + o < b.size())
+                offs.push_back(o);
+        }
+        std::sort(offs.begin(), offs.end());
+        offs.erase(std::unique(offs.begin(), offs.end()), offs.end());
+        std::map<uint32_t, uint32_t> remap;
+        std::vector<uint8_t> data;
+        uint32_t keys = 0;
+        for (size_t s = 0; s < offs.size(); ++s)
+        {
+            remap[offs[s]] = static_cast<uint32_t>(data.size());
+            size_t p = d0 + offs[s];
+            const size_t e = s + 1u < offs.size() ? d0 + offs[s + 1u] : b.size();
+            while (p < e)
+            {
+                uint8_t t = b[p++];
+                if ((t & 0x80u) == 0u) // hold t frames -> HCTP holds < 0x60
+                {
+                    for (; t >= 0x60u; t = static_cast<uint8_t>(t - 0x5Fu))
+                        data.push_back(0x5Fu);
+                    data.push_back(t);
+                    continue;
+                }
+                const size_t sz = std::min<size_t>(size_t(t & 0x7Fu) * 2u, e - p);
+                if (sz == 0u || sz > 0x9Fu)
+                    data.push_back(0x60u), data.push_back(static_cast<uint8_t>(sz));
+                else
+                    data.push_back(static_cast<uint8_t>(0x60u + sz));
+                data.insert(data.end(), b.begin() + p, b.begin() + p + sz);
+                p += sz;
+                ++keys;
+            }
+        }
+        std::vector<uint8_t> &h = g_symFaceHost;
+        h.assign(b.begin(), b.begin() + d0); // op table + count + rows (keys already sorted in SYM's file)
+        for (uint32_t i = 0; i < n; ++i)
+        {
+            uint32_t o;
+            std::memcpy(&o, &h[0x104u + 16u * i + 4u], 4);
+            const auto it = remap.find(o);
+            o = it != remap.end() ? it->second : 0xFFFFFu;
+            std::memcpy(&h[0x104u + 16u * i + 4u], &o, 4);
+        }
+        h.insert(h.end(), data.begin(), data.end());
+        h.resize((h.size() + 15u) & ~size_t(15u), 0u);
+        if (h.size() > kSymFaceWinEnd - kSymFaceWin)
+        {
+            std::fprintf(stderr, "[symface] PTS bank %zu B > window%c", h.size(), 10);
+            h.clear();
+            return false;
+        }
+        std::fprintf(stderr, "[symface] SYM /MOT/PTS: %u rows, %u keys re-tagged, %zu B host bank%c", n, keys, h.size(), 10);
+        return true;
+    }
+    bool symFaceBankHas(uint8_t *rdram, uint32_t bank, uint32_t key) // CEKey::Search 0x168960 on one bank
+    {
+        uint32_t n = gU32(rdram, bank + 0x100u), lo = 0, hi = n;
+        if (n > 40000u)
+            return false;
+        while (lo < hi)
+        {
+            const uint32_t mid = (lo + hi) / 2u, k = gU32(rdram, bank + 0x104u + 16u * mid) & 0x3FFFFFFFu;
+            if (k == key)
+                return true;
+            if (k < key)
+                lo = mid + 1u;
+            else
+                hi = mid;
+        }
+        return false;
+    }
+    void symFaceSwapIn(uint8_t *rdram)
+    {
+        if ((g_symFaceKey[0] != 0u || g_symFaceKey[1] != 0u) || !symFaceLoad())
+            return;
+        std::memcpy(rdram + kSymFaceWin, g_symFaceHost.data(), g_symFaceHost.size());
+        for (int k = 0; k < 2; ++k)
+        {
+            const uint32_t key = gU32(rdram, 0x526e88u + 8u * k) & PS2_RAM_COMMITTED_MASK;
+            if (key == 0u || (k == 1 && key == g_symFaceKey[0]))
+                continue;
+            int slot = -1;
+            for (int s = 7; s >= 0 && slot < 0; --s)
+                if (gU32(rdram, key + 4u * s) == 0u)
+                    slot = s;
+            if (slot < 0)
+            {
+                std::fprintf(stderr, "[symface] CEKey %d %08x: no empty slot - SYM-only face rows not served%c", k, key, 10);
+                continue;
+            }
+            uint32_t only = 0, n = 0;
+            std::memcpy(&n, &g_symFaceHost[0x100], 4);
+            for (uint32_t i = 0; i < n; ++i)
+            {
+                const uint32_t rk = gU32(rdram, kSymFaceWin + 0x104u + 16u * i) & 0x3FFFFFFFu;
+                bool found = false;
+                for (int s = 0; s < 8 && !found; ++s)
+                {
+                    const uint32_t bk = gU32(rdram, key + 4u * s) & PS2_RAM_COMMITTED_MASK;
+                    found = bk != 0u && symFaceBankHas(rdram, bk, rk);
+                }
+                only += found ? 0u : 1u;
+            }
+            const uint32_t win = kSymFaceWin;
+            gPut(rdram, key + 4u * slot, &win, 4);
+            g_symFaceKey[k] = key, g_symFaceSlot[k] = static_cast<uint32_t>(slot);
+            std::fprintf(stderr, "[symface] CEKey %d %08x slot %d = SYM PTS bank (%u rows, %u SYM-only served here)%c", k, key, slot, n,
+                         only, 10);
+        }
+    }
+    void symFaceRestore(uint8_t *rdram)
+    {
+        for (int k = 0; k < 2; ++k)
+        {
+            if (g_symFaceKey[k] != 0u && gU32(rdram, g_symFaceKey[k] + 4u * g_symFaceSlot[k]) == kSymFaceWin)
+            {
+                const uint32_t zero = 0u;
+                gPut(rdram, g_symFaceKey[k] + 4u * g_symFaceSlot[k], &zero, 4);
+                std::fprintf(stderr, "[symface] CEKey %d %08x slot %u cleared%c", k, g_symFaceKey[k], g_symFaceSlot[k], 10);
+            }
+            g_symFaceKey[k] = 0u;
+        }
     }
     // SYDT: u16 n; per entrance {u16 no, u16 0, u16 nObj; per obj {u16 idx, u16 model, u8 type[4], u16 nSlot; nSlot x 37 B}};
     // then u16 n; per entrance {u16 no, u16 nEff; per eff {u16 type, scene, frame, rate, len, nPar; nPar x (u8 tag + value:
@@ -9142,11 +10445,36 @@ namespace
             const uint32_t bankSec = static_cast<uint32_t>(cache.size() / 0x800u), bankSz = static_cast<uint32_t>(bank.size() / 0x100u);
             cache.insert(cache.end(), bank.begin(), bank.end());
             // (1) objects + scenes (SYDT slot 37 B -> SEVP scene 40 B; obj 28 B)
-            std::vector<uint8_t> chars;
-            std::string props;
+            // Nov 16 SYM PLANE (flat-arena) copy, from SYM's own code: CEventSystem::Init 0x194148 moves the cast by SLOT y only
+            // (IsArena 0x14ab90 -> every active obj slot +0x14 -= 12.0; roots stay slot-relative, Action 0x1959b8 pos = slot
+            // +0x10..+0x18). SYM has no flat variant (EventInit 0x2187dc: every arena row of 0x3a0fb0 is IsArena). So the HCTP
+            // plane-arena copy (v+100) is a second SEVP row (svrNo + 5000) whose slot y is moved the same way: per scene slot the
+            // ENTRANT's slot decides (Mod Maker sym_entrance.py ground_shift: slot z > 80 = out on SYM's stage/ramp, slot y = ground
+            // under it) and HCTP's own N/N+200 rule decides stage vs floor (session 4 svrPlaneGround: z >= 237 keeps the stage, a
+            // scene starting below = arena floor 11.8). Chars use their own slot, camera (type byte0 1 / tid 0x40000000) + props the entrant's
+            // shift of the same scene, ropes untouched. Bank (CEVN.PAC) shared. HCTP_SYM_PLANE=0 = old (v+100 = stage row).
+            const bool symPlaneOn = !(std::getenv("HCTP_SYM_PLANE") && std::getenv("HCTP_SYM_PLANE")[0] == '0');
+            auto slotF = [](const std::array<uint8_t, 37> &s, int k) { float f; std::memcpy(&f, s.data() + 15 + 4 * k, 4); return f; };
+            auto slotNo = [](const std::array<uint8_t, 37> &s) { uint16_t k; std::memcpy(&k, s.data(), 2); return k; };
+            auto isCharObj = [](const SymObj &o) { return o.t4[0] == 0u && o.t4[1] == 0u && o.t4[2] == 0u && o.t4[3] == 0u; };
+            auto planeDy = [&](const std::array<uint8_t, 37> &s) {
+                const float z = slotF(s, 2);
+                return z > 80.f && z < 237.f ? 11.8f - slotF(s, 1) : 0.f;
+            };
+            std::map<uint16_t, float> entDy; // scene slot no -> entrant's plane shift
+            for (const SymObj &o : oe->second)
+                if (isCharObj(o))
+                {
+                    for (const auto &s : o.slots)
+                        entDy[slotNo(s)] = planeDy(s);
+                    break;
+                }
+            std::vector<uint8_t> chars, charsFlat;
+            std::string props, planeLog;
+            uint32_t planeMoved = 0;
             for (const SymObj &o : oe->second)
             {
-                std::vector<uint8_t> scenes;
+                std::vector<uint8_t> scenes, scenesFlat;
                 for (const auto &s : o.slots)
                 {
                     uint8_t sc[40] = {};
@@ -9154,8 +10482,30 @@ namespace
                     std::memcpy(sc + 4, s.data() + 3, 32);     // tid, tx, ty, f32 x5
                     std::memcpy(sc + 36, s.data() + 35, 2);    // parent
                     scenes.insert(scenes.end(), sc, sc + 40);
+                    uint32_t tid;
+                    std::memcpy(&tid, s.data() + 3, 4);
+                    const auto ed = entDy.find(slotNo(s));
+                    const float dy = !symPlaneOn || o.t4[2] == 1u ? 0.f
+                                     : isCharObj(o)                ? planeDy(s)
+                                     : (o.t4[0] == 1u || o.t4[1] == 1u || (tid & 0x40000000u) != 0u) && ed != entDy.end() ? ed->second
+                                                                                                        : 0.f;
+                    if (dy != 0.f)
+                    {
+                        const float y = slotF(s, 1) + dy;
+                        std::memcpy(sc + 20, &y, 4);
+                        ++planeMoved;
+                        if (isCharObj(o) && planeLog.size() < 200u)
+                        {
+                            char b[64];
+                            std::snprintf(b, sizeof(b), " obj%u sc%u z%.0f y%.1f->%.1f", unsigned(o.idx), unsigned(slotNo(s)), slotF(s, 2),
+                                          slotF(s, 1), y);
+                            planeLog += b;
+                        }
+                    }
+                    scenesFlat.insert(scenesFlat.end(), sc, sc + 40);
                 }
                 const uint32_t ps = scenes.empty() ? 0u : put(scenes.data(), scenes.size());
+                const uint32_t psFlat = scenesFlat.empty() ? 0u : put(scenesFlat.data(), scenesFlat.size());
                 uint8_t ch[28] = {};
                 uint16_t model = o.model;
                 if (o.t4[1] == 1u) // prop
@@ -9184,6 +10534,8 @@ namespace
                 std::memcpy(ch + 0x14, &ns, 2);
                 std::memcpy(ch + 0x18, &ps, 4);
                 chars.insert(chars.end(), ch, ch + 28);
+                std::memcpy(ch + 0x18, &psFlat, 4);
+                charsFlat.insert(charsFlat.end(), ch, ch + 28);
             }
             const uint32_t pChar = put(chars.data(), chars.size());
             const uint16_t svrNo = static_cast<uint16_t>(noBase + no), nObj = static_cast<uint16_t>(oe->second.size());
@@ -9192,6 +10544,17 @@ namespace
             std::memcpy(row + 2, &nObj, 2);
             std::memcpy(row + 8, &pChar, 4);
             newRows.insert(newRows.end(), row, row + 12);
+            const bool hasFlat = planeMoved != 0u;
+            const uint16_t svrNoFlat = hasFlat ? static_cast<uint16_t>(noBase + 5000u + no) : svrNo;
+            if (hasFlat)
+            {
+                const uint32_t pCharFlat = put(charsFlat.data(), charsFlat.size());
+                std::memcpy(row, &svrNoFlat, 2);
+                std::memcpy(row + 8, &pCharFlat, 4);
+                newRows.insert(newRows.end(), row, row + 12);
+            }
+            std::fprintf(stderr, "[syment] SYM %u plane copy %u (row %u): %u slots moved%s%c", no, unsigned(v + 100u), unsigned(svrNoFlat),
+                         planeMoved, planeLog.empty() ? " (all ring/stage: same row)" : planeLog.c_str(), 10);
             // effects
             std::vector<uint8_t> ents;
             uint16_t nEnt = 0;
@@ -9238,9 +10601,14 @@ namespace
             std::memcpy(erow + 2, &nEnt, 2);
             std::memcpy(erow + 4, &pEnt, 4);
             newEffRows.insert(newEffRows.end(), erow, erow + 8);
+            if (hasFlat)
+            {
+                std::memcpy(erow, &svrNoFlat, 2);
+                newEffRows.insert(newEffRows.end(), erow, erow + 8);
+            }
             for (uint16_t ev : {static_cast<uint16_t>(v), static_cast<uint16_t>(v + 100u)})
             {
-                g_svrEvents[ev] = {svrNo, 0x2Du, 7, static_cast<int16_t>(donor), svrKindOf(static_cast<uint16_t>(v))};
+                g_svrEvents[ev] = {ev == v ? svrNo : svrNoFlat, 0x2Du, 7, static_cast<int16_t>(donor), svrKindOf(static_cast<uint16_t>(v))};
                 g_svrPac["/EVET/" + std::to_string(ev)] = {static_cast<int>(pacBase), bankSec, bankSz};
                 if (auto gm = symGmev.find(std::to_string(no)); gm != symGmev.end())
                     g_svrPac["/GMEV/" + std::to_string(ev)] = {static_cast<int>(pacBase + 2u), gm->second.sec, gm->second.sz};
@@ -9325,6 +10693,67 @@ namespace
         }
         g_origSetCast(rdram, ctx, runtime);
     }
+    // Nov 15 OPEN LIST item 4 (SvR06 Austin 3 4001 -> 7401: ropes flex on the climb and never spring back). SvR06's own
+    // CEventRopeAction (retail event.bin: ctor 0x5a9ca0 sets +0x84 = 1; RopeAttribute 0x5aa340: op 0xA0 -> +0x84 = 1,
+    // op 0xA1 -> +0x84 = 0; Action 0x5a9df0 calls CRope::SetCorner/SetYure only while +0x84 != 0 (0x5a9fe0 beqz -> skip)),
+    // so after A1 the rope is no longer driven and CRope::CalcRopeSub/CalcCorner damp it back in 120 frames (timer 0x78).
+    // HCTP's CEventRopeAction::Action 0x226e20 has no A0/A1 case (attr loop 0x226f40 knows 0x01/0x5A/0xC0 only, rest skipped
+    // by the size table) -> it calls SetYure 0x218d20 / SetCorner 0x218ed0 EVERY frame with the last key value until the key
+    // ends = rope held bent. SvR06 4001 data: ropes 12-16 (isRope ch[7]) + corners 17-20 (isCorner ch[8]) carry `81 A1` blocks.
+    // FIX (ported events only): CEKey::GetData 0x168aa0 called from 0x226ebc (ra 0x226ec4) -> scan the returned attr block
+    // with HCTP's own size table (*t2) like 0x226f40 does and keep SvR06's +0x84 flag per action (s0 = this) on the host;
+    // SetCorner (ra 0x2271c0) / SetYure (ra 0x227214) from that Action are skipped while the flag is 0. Ctor 0x226d00 -> on.
+    PS2Runtime::RecompiledFunction g_origRopeGetData = nullptr, g_origRopeSetCorner = nullptr, g_origRopeSetYure = nullptr,
+                                   g_origRopeCtor = nullptr;
+    std::map<uint32_t, bool> g_ropeDriveOff;      // CEventRopeAction* -> SvR06 +0x84 == 0
+    void ropeCtorHook(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        g_ropeDriveOff.erase(regU(ctx, 4) & PS2_RAM_COMMITTED_MASK);
+        g_origRopeCtor(rdram, ctx, runtime);
+    }
+    void ropeGetDataHook(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t ra = regU(ctx, 31), self = regU(ctx, 16) & PS2_RAM_COMMITTED_MASK, tblOut = regU(ctx, 10) & PS2_RAM_COMMITTED_MASK;
+        g_origRopeGetData(rdram, ctx, runtime);
+        if (ra != 0x226ec4u || ctx->pc != ra || !g_svrEventActive)
+            return;
+        const uint32_t v0 = regU(ctx, 2);
+        if (v0 == 0u || v0 == 0xFFFFFFFFu)
+            return;
+        const uint32_t p0 = v0 & PS2_RAM_COMMITTED_MASK;
+        if ((rdram[p0] & 0x80u) == 0u)
+            return;
+        uint32_t tbl; std::memcpy(&tbl, rdram + tblOut, 4); tbl &= PS2_RAM_COMMITTED_MASK;
+        int left = rdram[p0] & 0x7F;           // 0x226f18: t1 = b0 & 0x7f, ops from p0 + 1
+        uint32_t q = p0 + 1u;
+        while (left > 0)
+        {
+            const uint8_t op = rdram[q], sz = rdram[tbl + op];
+            if (op == 0xA0u || op == 0xA1u)
+            {
+                const bool off = op == 0xA1u;
+                auto it = g_ropeDriveOff.find(self);
+                if ((it != g_ropeDriveOff.end() && it->second) != off)
+                    std::fprintf(stderr, "[svrrope] action %08x op %02X -> rope drive %s%c", self, op, off ? "OFF" : "on", 10);
+                g_ropeDriveOff[self] = off;
+            }
+            if (sz == 0u)
+                break;
+            q += sz;
+            left -= sz;
+        }
+    }
+    template <PS2Runtime::RecompiledFunction *Orig, uint32_t Ra>
+    void ropeSetHook(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (regU(ctx, 31) == Ra && g_svrEventActive)
+            if (auto it = g_ropeDriveOff.find(regU(ctx, 16) & PS2_RAM_COMMITTED_MASK); it != g_ropeDriveOff.end() && it->second)
+            {
+                ctx->pc = regU(ctx, 31);       // SvR06 Action 0x5a9fe4: no SetCorner/SetYure while +0x84 == 0
+                return;
+            }
+        (*Orig)(rdram, ctx, runtime);
+    }
     void evsSetEventSvr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t self = regU(ctx, 4) & PS2_RAM_COMMITTED_MASK;
@@ -9339,11 +10768,19 @@ namespace
         // STEP 2: per-event SvR06 light bank + pyro armed by the SvR06 event id (any PCEN/GMEV pack), previews and matches
         static const bool pyroOn = !(std::getenv("HCTP_SVR06_PYRO") && std::getenv("HCTP_SVR06_PYRO")[0] == '0');
         g_pyro04Active = false;
+        g_svr04CtxOn = false;
+        if (!(g_svrEventActive && it->second.game == 4))
+            hctpSvr04CtxArm(0u); // Nov 14: any other event ends the native SvR04 pyro (re-arm on the next SvR04 event)
+        g_svr06CtxOn = false;
+        if (!g_svr06Active)
+            hctpSvr06CtxArm(0u); // Nov 14: same for the native SvR06 context
         if (g_svrEventActive && it->second.game == 4 && pyroOn) // Nov 11: SvR04 pyro = same engine, SvR04 PCEN/<ev> + gm '0001'/<ev>
         {
             const std::string id = std::to_string(it->second.svrNo);
             hctpPyroSetSource(4);
-            g_pyro04Active = hctpPyroHas(id.c_str());
+            // Nov 14: HCTP_SVR04_CTX=1 -> SvR04's own particle engine (hctp_svr04_ctx.cpp) owns this pyro; host sim off
+            g_svr04CtxOn = hctpSvr04CtxArm(it->second.svrNo);
+            g_pyro04Active = !g_svr04CtxOn && hctpPyroHas(id.c_str());
             if (g_pyro04Active)
                 hctpPyroArm(runtime, id.c_str(), 0u);
             else
@@ -9357,8 +10794,15 @@ namespace
             auto lt = g_svr06Lights.find(it->second.svrNo);
             g_svr06LightHost = lt != g_svr06Lights.end() ? lt->second.first : std::vector<uint8_t>();
             g_svr06LightMask = lt != g_svr06Lights.end() ? lt->second.second : uint8_t(0);
+            {
+                auto ls = g_svr06LightSceneMasks.find(it->second.svrNo); // S11 per-scene lights
+                g_svr06CurLightScenes = ls != g_svr06LightSceneMasks.end() ? ls->second : std::map<uint8_t, uint8_t>();
+                g_svr06LightApplied = -1;
+            }
             const std::string id = std::to_string(it->second.svrNo);
-            if (pyroOn && hctpPyroHas(id.c_str()))
+            // Nov 14: HCTP_SVR06_CTX=1 -> SvR06's own particle engine (hctp_svr06_ctx.cpp) owns this pyro + its SE; host sim off
+            g_svr06CtxOn = pyroOn && hctpSvr06CtxArm(it->second.svrNo);
+            if (!g_svr06CtxOn && pyroOn && hctpPyroHas(id.c_str()))
                 hctpPyroArm(runtime, id.c_str(), 0u);
             else
                 hctpPyroDisarm();
@@ -9458,6 +10902,19 @@ namespace
         }
         return out.size() == unpacked;
     }
+    // Nov 14 SvR04 ENTRANCE FACE (Taker 7003 eye roll; notes\ANY_MODEL_ANY_ENTRANCE_PLAN_20261111.md sec 5):
+    // Entrance face motion = event attr op 0x10 [0x10][slot][s16 id] (HCTP SetAttr 0x1b40d0-0x1b4148, SvR04 SetAttr
+    // 0x1a57e0/0x1a65a4-0x1a6670, same op) -> CCharMotionPts::Set 0x1cc810 -> ActionLink 0x1cc880 reads the id from CEKey
+    // [0x526E88] (SvR04: gp-0x6c58, built from motion PAC item 6 in GameLoad_Motion::LoadEnd 0x2f42d0). Taker's EVET 3003
+    // asks face ids 1004/1012/1014/1581/1800-1802: they live in SvR04 ENTR/EMOT bank 1 (rows 1000-1999) but the Nov 9 light
+    // filter kept only 4000-5999 -> HCTP's own bank answered (HCTP faces, no eye roll). And the SvR face records are SvR
+    // op 0x77 [77][frames][u32 mask, ids 30+bit] (SvR04 ActionLink 0x2585a4-0x258680), which HCTP's ActionLink does not
+    // know (only <0x40 single, 0x40-0x4F 12-bit mask ids 21+bit at 0x1ccb0c, 0x78/0x79 hands) -> SetData 0x1c0f40 returns
+    // 0 for unknown ids -> desync. Translate each SvR face track to HCTP records: same 4-byte key (SvR SetData 0x257eb0 =
+    // HCTP SetData 0x1c0f40: 10/11/11 angles, RotZYX; both multiply by the model's own bone base), ids by name from the
+    // face tables (SvR04 0x351210, HCTP 0x412bb0). Track stream = CEKey::GetData 0x168aa0 format (b < 0x60 skip b frames,
+    // 0x60 -> next byte = len, else len = b - 0x60). Returns false when the track is not a pure face track (hands, lights).
+    // (Nov 14: translator moved up to svrFaceTrackToHctp before svr06Register = faces + hands re-keyed, sec 2.)
     bool svrEmotLoad(PS2Runtime *runtime)
     {
         if (g_svrEmotState != 0)
@@ -9494,8 +10951,13 @@ namespace
             const size_t data0 = 0x104u + 16u * size_t(n0);
             if (data0 > bank.size())
                 return false;
-            std::vector<uint8_t> rows, data;
-            uint32_t kept = 0;
+            std::vector<uint8_t> rows, data, faceBuf;
+            uint32_t kept = 0, faces = 0, hands = 0, fallback = 0, keyDrops = 0;
+            // Nov 14 FACES + HANDS (notes\FACE_HANDS_SVR_ENTRANCES_20261114.md): ON by default. Rows < 1000 = hands, 1000-1999 =
+            // faces (event attr op 0x10 [slot][s16 id] -> CCharMotionPts::Set 0x1cc810), re-keyed by svrFaceTrackToHctp.
+            // FALLBACK: a face/hand row (< 2000) that does not translate still gets a row here, so HCTP's own bank never
+            // answers an SvR id: face -> HCTP neutral face, hand -> empty hand record (hand holds its pose).
+            const int faceMode = fh::faceMode();
             for (uint32_t k = 0; k < n0; ++k)
             {
                 uint32_t r[4], nextOff = static_cast<uint32_t>(bank.size() - data0);
@@ -9508,7 +10970,36 @@ namespace
                 }
                 const uint32_t id = (r[0] >> 16) & 0x3FFFu;
                 if (id < 4000u || id >= 6000u)
+                {
+                    if (faceMode == 0 || r[1] == 0xFFFFFu || id >= 2000u)
+                        continue;
+                    const int kind = nextOff < r[1] || data0 + nextOff > bank.size()
+                                         ? 0
+                                         : svrFaceTrackToHctp(&bank[data0 + r[1]], nextOff - r[1], faceBuf, false, &keyDrops);
+                    if (id >= 1000u && (kind != 1 || faceMode == 2))
+                    {
+                        if (kind != 1)
+                        {
+                            ++fallback;
+                            if (fallback <= 16)
+                                std::fprintf(stderr, "[svrface] drop SvR04 face row %u (kind %d) -> HCTP neutral face%c", id, kind, 10);
+                        }
+                        faceBuf = fh::neutralFace();
+                    }
+                    else if (id < 1000u && kind != 2)
+                    {
+                        ++fallback;
+                        if (fallback <= 16)
+                            std::fprintf(stderr, "[svrface] drop SvR04 hand row %u (kind %d) -> empty hand record%c", id, kind, 10);
+                        faceBuf = {0x64u, 0x78u, 0x00u, 0x00u, 0x00u};
+                    }
+                    r[1] = static_cast<uint32_t>(data.size());
+                    data.insert(data.end(), faceBuf.begin(), faceBuf.end());
+                    rows.insert(rows.end(), reinterpret_cast<uint8_t *>(r), reinterpret_cast<uint8_t *>(r) + 16);
+                    ++kept;
+                    ++(id >= 1000u ? faces : hands);
                     continue;
+                }
                 if (r[1] != 0xFFFFFu)
                 {
                     if (nextOff < r[1] || data0 + nextOff > bank.size())
@@ -9525,8 +11016,15 @@ namespace
             small.insert(small.end(), rows.begin(), rows.end());
             small.insert(small.end(), data.begin(), data.end());
             bank.swap(small);
+            std::fprintf(stderr, "[svrface] SvR04 EMOT bank 1: mode %d, %u face + %u hand rows (%u fallback, %u keys dropped), %u rows kept%c",
+                         faceMode, faces, hands, fallback, keyDrops, kept, 10);
         }
-        const uint32_t g = runtime->guestMalloc(static_cast<uint32_t>(bank.size()), 64u);
+        // Nov 14: lights + faces = ~0.3 MB, more than the guest heap gives (Nov 9: 824 KB failed). Host window
+        // 0x04000000.. (committed, unused: ps2_memory.h PS2_RAM_COMMITTED_TOP note) -> no guest heap limit.
+        constexpr uint32_t kSvrEmotWindow = 0x04000000u, kSvrEmotWindowEnd = 0x04400000u;
+        const uint32_t g = bank.size() <= kSvrEmotWindowEnd - kSvrEmotWindow
+                               ? kSvrEmotWindow
+                               : runtime->guestMalloc(static_cast<uint32_t>(bank.size()), 64u);
         if (g == 0u)
         {
             std::fprintf(stderr, "[svrlight] guestMalloc %zu failed%c", bank.size(), 10);
@@ -9540,9 +11038,11 @@ namespace
         g_svrEmotState = 1;
         return true;
     }
-    void svrLightSwapIn(uint8_t *rdram, PS2Runtime *runtime)
+    void svrLightSwapIn(uint8_t *rdram, PS2Runtime *runtime, bool forFaces = false)
     {
-        if (g_svrLightSwapped || !svrLightsEnabled() || !svrEmotLoad(runtime))
+        // Nov 14 FACES: forFaces = early swap at the SvR04 event's scene start (startSceneSvr), so the event's face/hand
+        // attr ops (0x10) find the SvR rows, whether or not SvR lights are on (light ops keep their own gates).
+        if (g_svrLightSwapped || (!forFaces && !svrLightsEnabled()) || !svrEmotLoad(runtime))
             return;
         for (int k = 0; k < 2; ++k)
         {
@@ -9599,22 +11099,34 @@ namespace
     }
     void evsEndSvr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        // Nov 14 s6: the event ended -> stop the native SvR04 pyro (it kept re-sending its VRAM 0x2e00..0x3000 textures over
+        // HCTP's CAM menu textures 0x2de0..0x3400 and drawing over NOW LOADING; only a NEW event disarmed it, :9582).
+        hctpSvr04CtxArm(0u);
+        g_svr04CtxOn = false;
+        hctpSvr06CtxArm(0u); // Nov 14: native SvR06 ctx stops with the event too
+        g_svr06CtxOn = false;
         g_svrEventActive = false;
         g_svr06Active = false;
         g_symActive = false;
         hostse::setGame(0);
         svrLightRestore(rdram);
+        symFaceRestore(rdram); // Nov 17 S15
         const uint32_t ra = regU(ctx, 31);
         g_origEvsEnd(rdram, ctx, runtime);
         svrGrayRestore(rdram, ctx, runtime, ra);
     }
     void evsReleaseSvr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
+        hctpSvr04CtxArm(0u); // Nov 14 s6: see evsEndSvr
+        g_svr04CtxOn = false;
+        hctpSvr06CtxArm(0u);
+        g_svr06CtxOn = false;
         g_svrEventActive = false;
         g_svr06Active = false;
         g_symActive = false;
         hostse::setGame(0);
         svrLightRestore(rdram);
+        symFaceRestore(rdram); // Nov 17 S15
         const uint32_t ra = regU(ctx, 31);
         g_origEvsRelease(rdram, ctx, runtime);
         svrGrayRestore(rdram, ctx, runtime, ra);
@@ -9633,8 +11145,18 @@ namespace
     {
         float from[3], to[3], step;
         int n, k;
+        float zfrom = 0.f, zto = 0.f; // Nov 17: SvR06 per-key zoom (+0x1C4/+0x1C8), lerped with the position
+        bool zl = false;
     };
     std::map<uint32_t, SvrCamLerp> g_svrCamLerp;
+    // Nov 17 HCTP_SVR06_CAMPROBE=1: per-tick camera vs entrant root log ([camprobe], up to 8000 lines). Root = last drawn
+    // model with >= 60 bones (CSkinModel+0xD0 bone 0 row 3, via the HCTP_BONE_JITTER DrawChar hook, turned on by this switch).
+    bool camProbeOn()
+    {
+        static const bool on = [] { const char *e = std::getenv("HCTP_SVR06_CAMPROBE"); return e && e[0] == '1'; }();
+        return on;
+    }
+    char g_camProbeDecision = '-';
     PS2Runtime::RecompiledFunction g_origCamFrameActive = nullptr;
     int svrCamLerpMode()
     {
@@ -9669,9 +11191,48 @@ namespace
                     const float w = l.from[i] + (l.to[i] - l.from[i]) * t;
                     std::memcpy(rdram + self + 0xA0u + 4u * i, &w, 4);
                 }
+                // Nov 17 ZOOM JITTER: the zoom (fov) of an SvR06 key steps with the key (every 2nd tick) unless it is lerped
+                // like the position; FrameActive's ease 0x1647bc snaps +0x1C4 to +0x1C8 when rate +0x1CC == 0.
+                if (l.zl)
+                {
+                    const float z = l.zfrom + (l.zto - l.zfrom) * t;
+                    std::memcpy(rdram + self + 0x1C4u, &z, 4);
+                    std::memcpy(rdram + self + 0x1C8u, &z, 4);
+                }
             }
         }
+        const uint32_t probeSelf = regU(ctx, 4) & PS2_RAM_COMMITTED_MASK;
         g_origCamFrameActive(rdram, ctx, runtime);
+        if (camProbeOn() && g_svrEventActive)
+        {
+            static int lines = 0;
+            static float lastRel[2][3]{};
+            static uint32_t lastSelf = 0;
+            uint32_t tick = 0;
+            std::memcpy(&tick, rdram + probeSelf + 0x1C0u, 4);
+            float p[3], z = 0.f, z40 = 0.f;
+            std::memcpy(p, rdram + probeSelf + 0xA0u, 12);
+            std::memcpy(&z, rdram + probeSelf + 0x1C4u, 4);
+            std::memcpy(&z40, rdram + probeSelf + 0x40u, 4);
+            float rel[3], d2 = 0.f;
+            for (int i = 0; i < 3; ++i)
+            {
+                rel[i] = p[i] - g_camProbeRoot[i];
+                const float s = rel[i] - 2.f * lastRel[0][i] + lastRel[1][i];
+                d2 += s * s;
+            }
+            d2 = std::sqrt(d2);
+            if (lines++ < 8000)
+                std::fprintf(stderr, "[camprobe] ev %u obj %08x tick %u %c pos %.3f %.3f %.3f zoom %.4f z40 %.4f rot %u/%u root(%08x) %.3f %.3f %.3f d2 %.3f%s%c",
+                             g_svrCurEv, probeSelf, tick, g_camProbeDecision, p[0], p[1], p[2], z, z40,
+                             rdram[probeSelf + 0x80u + 0x61u], rdram[probeSelf + 0x80u + 0x60u], g_camProbeModel,
+                             g_camProbeRoot[0], g_camProbeRoot[1], g_camProbeRoot[2], d2,
+                             (probeSelf == lastSelf && d2 > 0.25f) ? " SPIKE" : "", 10);
+            std::memcpy(lastRel[1], lastRel[0], 12);
+            std::memcpy(lastRel[0], rel, 12);
+            lastSelf = probeSelf;
+            g_camProbeDecision = '-';
+        }
     }
     // CEventMotionCamera::AnalyzeAttribute(this, rec, opSizeTable, len): rec = [0x80|n attr bytes][key]. SvR keys are
     // 19 B [count][f32 x y z][s16 rot x3] (f32 in the same 1/100 units as HCTP's s16) -> hand HCTP a 13 B copy and set
@@ -9746,21 +11307,51 @@ namespace
         }
         SET_GPR_U32(ctx, 5, g_svrCamScratch);
         SET_GPR_U32(ctx, 7, attr + 13u);
-        float cur[3];
+        float cur[3], zoomCur = 0.f, zoomNew = 0.f;
+        bool zoomSet = false;
         std::memcpy(cur, rdram + self + 0xA0u, 12);
+        std::memcpy(&zoomCur, rdram + self + 0x1C4u, 4);
         g_origCamAnalyze(rdram, ctx, runtime);
+        // Nov 14 SvR06 PER-KEY FOV (was dropped). SvR06 MotionCameraBase::AnalysisMotion 0x22df20 mode 1 (29 B keys):
+        // +0x24 = 0.5 * |tanf(pi/2 - fov/2)| (adda/msub 0x22e280/0x22e310, tanf 0x22e30c, pi/2 = gp-0x7b64), MakeViewMatrix
+        // 0x22eb9c copies +0x24 -> +0x20 (snap), UpdateCamera 0x22f300 ScreenZ = 512 * +0x20. HCTP: same ScreenZ = 512 * zoom
+        // (CCamMot::Action 0x203dd4); event camera zoom = +0x1c4 (eased to +0x1c8 at rate +0x1cc, FrameActive 0x1647bc,
+        // -> camera +0x40 at 0x164a5c). -> set current + target, rate 0 (snap, like SvR06). HCTP_SVR06_FOV=0 off.
+        if (k29)
+        {
+            static const bool fovOn = [] { const char *e = std::getenv("HCTP_SVR06_FOV"); return !(e && e[0] == '0'); }();
+            float fov = 0.f;
+            std::memcpy(&fov, rdram + rec + attr + 25u, 4);
+            if (fovOn && std::isfinite(fov) && fov > 0.01f && fov < 3.1f)
+            {
+                const float zoom = 0.5f * std::fabs(std::tan(1.5707963705062866f - 0.5f * fov));
+                std::memcpy(rdram + self + 0x1C4u, &zoom, 4);
+                std::memcpy(rdram + self + 0x1C8u, &zoom, 4);
+                std::memset(rdram + self + 0x1CCu, 0, 4);
+                zoomSet = true;
+                zoomNew = zoom;
+                static int fl = 0;
+                if (fl++ < 8)
+                    std::fprintf(stderr, "[svr06fov] obj %08x fov %.4f rad -> zoom %.4f (ScreenZ %.1f)%c", self, fov, zoom,
+                                 512.f * zoom, 10);
+            }
+        }
         const float scale = 0.01f;
         float to[3];
         for (int i = 0; i < 3; ++i)
             to[i] = pos[i] * scale;
         // RAMP JITTER fix (see camFrameActiveSvr): 2-tick lerp for count-0 keys after the first key, cuts snap.
         bool lerped = false;
-        if (svrCamLerpOn() && key[0] == 0u)
+        // Nov 17: every key count (SvR06 AnalysisMotionNext 0x22e500 lerps pos+rot from the current key to the next one
+        // whatever its count); count c = (c+1)*2 ticks, as HCTP's rotation CLerpXYX already does. Was count 0 only ->
+        // count >= 1 keys snapped the position while the rotation blended.
+        if (svrCamLerpOn() && key[0] < 0x60u)
         {
+            const int span = 2 * (static_cast<int>(key[0]) + 1);
             uint32_t tick = 0;
             std::memcpy(&tick, rdram + self + 0x1C0u, 4);
             const float dx = to[0] - cur[0], dy = to[1] - cur[1], dz = to[2] - cur[2];
-            const float d = std::sqrt(dx * dx + dy * dy + dz * dz);
+            const float d = std::sqrt(dx * dx + dy * dy + dz * dz) / static_cast<float>(span / 2); // per bank frame
             SvrCamLerp &l = g_svrCamLerp[self];
             const bool first = tick <= 1u;
             const float lim = std::max(1.5f, 6.f * l.step);
@@ -9769,22 +11360,35 @@ namespace
             {
                 std::memcpy(l.from, cur, 12);
                 std::memcpy(l.to, to, 12);
-                l.n = 2;
+                l.n = span;
                 l.k = 1;
                 l.step = d;
                 if (rdram[self + 0x80u + 0x60u] == 1u && rdram[self + 0x80u + 0x61u] == 0u)
                     rdram[self + 0x80u + 0x60u] = 2u;
                 for (int i = 0; i < 3; ++i)
                 {
-                    const float w = cur[i] + (to[i] - cur[i]) * 0.5f;
+                    const float w = cur[i] + (to[i] - cur[i]) / static_cast<float>(span);
                     std::memcpy(rdram + self + 0xA0u + 4u * i, &w, 4);
                 }
+                // Nov 17 ZOOM JITTER: zoom lerps over the same 2 ticks (tick 2f = half way, 2f+1 = key f), like pos/rot.
+                l.zl = zoomSet && std::isfinite(zoomCur) && zoomCur > 0.f;
+                if (l.zl)
+                {
+                    l.zfrom = zoomCur;
+                    l.zto = zoomNew;
+                    const float zm = zoomCur + (zoomNew - zoomCur) / static_cast<float>(span);
+                    std::memcpy(rdram + self + 0x1C4u, &zm, 4);
+                    std::memcpy(rdram + self + 0x1C8u, &zm, 4);
+                }
                 lerped = true;
+                g_camProbeDecision = 'L';
             }
             else
             {
+                g_camProbeDecision = first ? 'F' : 'C';
                 std::memcpy(l.from, to, 12);
                 std::memcpy(l.to, to, 12);
+                l.zl = false;
                 l.n = l.k = 0;
                 l.step = first ? 0.f : l.step;
                 static int cuts = 0;
@@ -9796,6 +11400,8 @@ namespace
                 std::fprintf(stderr, "[svrcamlerp] 2-tick lerp obj %08x tick %u step %.3f rot ticks %u%c", self, tick, d,
                              rdram[self + 0x80u + 0x60u], 10);
         }
+        if (!lerped && g_camProbeDecision == '-')
+            g_camProbeDecision = 'K'; // key snapped (count > 0 or lerp off)
         if (!lerped)
             for (int i = 0; i < 3; ++i)
                 std::memcpy(rdram + self + 0xA0u + 4u * i, &to[i], 4);
@@ -9856,6 +11462,87 @@ namespace
     // 8 light tracks -> CMotionLight::Set(slot, 0x3F00+slot) with the host light bank first in both CEKeys
     // (restored at End/Release by svrLightRestore). HCTP_SVR06_LIGHTS=0 = off.
     PS2Runtime::RecompiledFunction g_origEvsActionSvr = nullptr;
+    // Nov 14 FACES: the SvR06 host bank (8 light tracks 0x3F00+slot + entrant face/hand tracks 0x3D00+scene*4+y) first in
+    // both CEKeys. Shared by the lights (svr06LightsStart) and the faces (startSceneSvr: also on light-override events
+    // like Mr. America 7468, where the lights stay HCTP's - their 0x3F00 rows are then never asked for). Host window
+    // 0x04400000.. (committed, unused: ps2_memory.h; SvR04 EMOT bank = 0x04000000..0x043FFFFF), guest heap fallback.
+    bool svr06BankSwapIn(uint8_t *rdram, PS2Runtime *runtime)
+    {
+        if (g_svrLightSwapped)
+            return g_svr06LightBank != 0u && g_svrLightKey[0] != 0u && gU32(rdram, g_svrLightKey[0]) == g_svr06LightBank;
+        if (g_svr06LightHost.empty())
+            return false;
+        if (g_svr06LightBank == 0u)
+        {
+            constexpr uint32_t kWin = 0x04400000u, kWinEnd = 0x04800000u;
+            const size_t need = std::max(g_svr06LightMax, g_svr06LightHost.size());
+            const uint32_t g = need <= kWinEnd - kWin ? kWin : runtime->guestMalloc(static_cast<uint32_t>(need), 64u);
+            if (g == 0u)
+            {
+                std::fprintf(stderr, "[svr06light] bank alloc %zu failed%c", need, 10);
+                return false;
+            }
+            g_svr06LightBank = g & PS2_RAM_COMMITTED_MASK;
+        }
+        std::memcpy(rdram + g_svr06LightBank, g_svr06LightHost.data(), g_svr06LightHost.size());
+        if (g_svrLightYellow2Blue.count(g_svrCurEv))
+        {
+            // light rows 0x3F00+slot; key = [count][s16 dir x3][u16 R G B] (CMotionLight::Action 0x1ff9d0), 13 B per record.
+            // yellow (G >= 0.6 R and min(R,G) - B > 25% of max) -> (B, B, max(R,G)) = blue at the same brightness over
+            // the same floor; other keys with R the largest -> (R, B, B) = pure red; whites/blues untouched.
+            const std::vector<uint8_t> &h = g_svr06LightHost;
+            uint32_t cnt = 0, yb = 0, rr = 0;
+            std::memcpy(&cnt, &h[0x100], 4);
+            const size_t data0 = 0x104u + 16u * size_t(cnt);
+            for (uint32_t r = 0; r < cnt && data0 <= h.size(); ++r)
+            {
+                uint32_t key, off, end = static_cast<uint32_t>(h.size() - 32u - data0);
+                std::memcpy(&key, &h[0x104u + 16u * r], 4);
+                std::memcpy(&off, &h[0x104u + 16u * r + 4u], 4);
+                if (((key >> 16) & 0x3FFFu) < 0x3F00u || ((key >> 16) & 0x3FFFu) > 0x3FFFu || off == 0xFFFFFu) // S11: all light scenes
+                    continue;
+                if (r + 1u < cnt)
+                    std::memcpy(&end, &h[0x104u + 16u * (r + 1u) + 4u], 4);
+                for (size_t p = data0 + off, pe = std::min(h.size(), data0 + end); p < pe;)
+                {
+                    const uint8_t c = h[p];
+                    if (c < 0x60u) { ++p; continue; }
+                    if (c == 0x60u && p + 1u >= pe) break;
+                    const size_t sz = c == 0x60u ? h[p + 1] : size_t(c - 0x60u);
+                    p += c == 0x60u ? 2u : 1u;
+                    const size_t j = sz && (h[p] & 0x80u) ? (h[p] & 0x7Fu) + 1u : 0u;
+                    if (sz >= j + 13u && p + sz <= pe)
+                    {
+                        uint16_t rgb[3];
+                        std::memcpy(rgb, &h[p + j + 7u], 6);
+                        const uint16_t R = rgb[0], G = rgb[1], B = rgb[2], mx = std::max(R, G), mn = std::min(R, G);
+                        if (G * 10 >= R * 6 && mn > B && (mn - B) * 4 > mx)
+                            rgb[0] = B, rgb[1] = B, rgb[2] = mx, ++yb;
+                        else if (R > G && R > B)
+                            rgb[1] = B, ++rr;
+                        std::memcpy(rdram + g_svr06LightBank + (p + j + 7u), rgb, 6);
+                    }
+                    p += sz;
+                }
+            }
+            std::fprintf(stderr, "[svr06light] event %u recolor yellow2blue: %u yellow keys -> blue, %u red keys -> pure red%c",
+                         g_svrCurEv, yb, rr, 10);
+        }
+        for (int k = 0; k < 2; ++k)
+        {
+            const uint32_t key = gU32(rdram, 0x526e88u + 8u * k) & PS2_RAM_COMMITTED_MASK;
+            g_svrLightKey[k] = (key != 0u && (k == 0 || key != g_svrLightKey[0])) ? key : 0u;
+            if (g_svrLightKey[k] == 0u)
+                continue;
+            for (uint32_t i = 0; i < 8; ++i)
+                g_svrLightSaved[k][i] = gU32(rdram, key + 4u * i);
+            gPut(rdram, key, &g_svr06LightBank, 4);
+            for (uint32_t i = 0; i < 7; ++i)
+                gPut(rdram, key + 4u * (i + 1u), &g_svrLightSaved[k][i], 4);
+        }
+        g_svrLightSwapped = true;
+        return true;
+    }
     void svr06LightsStart(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         if (g_svr06LightsSet)
@@ -9888,46 +11575,25 @@ namespace
             return;
         }
         static const bool on = !(std::getenv("HCTP_SVR06_LIGHTS") && std::getenv("HCTP_SVR06_LIGHTS")[0] == '0');
-        if (!on || g_svr06LightHost.empty() || g_motionLightThis == 0u || g_origMotionLightSet == nullptr || g_svrLightSwapped)
+        if (!on || g_svr06LightMask == 0u || g_motionLightThis == 0u || g_origMotionLightSet == nullptr || !svr06BankSwapIn(rdram, runtime))
         {
             std::fprintf(stderr, "[svr06light] skipped (on %d, bank %zu B, CMotionLight %08x, swapped %d)%c", on ? 1 : 0,
                          g_svr06LightHost.size(), g_motionLightThis, g_svrLightSwapped ? 1 : 0, 10);
             return;
         }
-        if (g_svr06LightBank == 0u)
-        {
-            const uint32_t g = runtime->guestMalloc(static_cast<uint32_t>(std::max(g_svr06LightMax, g_svr06LightHost.size())), 64u);
-            if (g == 0u)
-            {
-                std::fprintf(stderr, "[svr06light] guestMalloc failed%c", 10);
-                return;
-            }
-            g_svr06LightBank = g & PS2_RAM_COMMITTED_MASK;
-        }
-        std::memcpy(rdram + g_svr06LightBank, g_svr06LightHost.data(), g_svr06LightHost.size());
-        for (int k = 0; k < 2; ++k)
-        {
-            const uint32_t key = gU32(rdram, 0x526e88u + 8u * k) & PS2_RAM_COMMITTED_MASK;
-            g_svrLightKey[k] = (key != 0u && (k == 0 || key != g_svrLightKey[0])) ? key : 0u;
-            if (g_svrLightKey[k] == 0u)
-                continue;
-            for (uint32_t i = 0; i < 8; ++i)
-                g_svrLightSaved[k][i] = gU32(rdram, key + 4u * i);
-            gPut(rdram, key, &g_svr06LightBank, 4);
-            for (uint32_t i = 0; i < 7; ++i)
-                gPut(rdram, key + 4u * (i + 1u), &g_svrLightSaved[k][i], 4);
-        }
-        g_svrLightSwapped = true;
+        // (Nov 14: bank copy + CEKey swap moved to svr06BankSwapIn, shared with the faces)
         const __m128i a0 = ctx->r[4], a1 = ctx->r[5], a2 = ctx->r[6], a3 = ctx->r[7];
         const uint32_t pc = ctx->pc;
         int set = 0;
+        const uint32_t first = g_svr06CurLightScenes.empty() ? 0u : g_svr06CurLightScenes.begin()->first; // S11: rows 0x3F00+scene*8+slot
+        g_svr06LightApplied = static_cast<int>(first);
         for (uint32_t slot = 0; slot < 8; ++slot)
         {
             if (!(g_svr06LightMask & (1u << slot)))
                 continue;
             SET_GPR_U32(ctx, 4, g_motionLightThis);
             SET_GPR_U32(ctx, 5, slot);
-            SET_GPR_U32(ctx, 6, 0x3F00u + slot);
+            SET_GPR_U32(ctx, 6, 0x3F00u + first * 8u + slot);
             SET_GPR_U32(ctx, 7, 0u);
             g_origMotionLightSet(rdram, ctx, runtime); // leaf (no calls)
             ++set;
@@ -9952,10 +11618,237 @@ namespace
         std::memcpy(&raw, rdram + arr + 2u * cam, 2);
         return raw == 0xFFFFu ? play : raw;
     }
+    // ---- Nov 14 FACES + HANDS: CEventSystem::StartScene 0x167c10 (a0 = CEventSystem), after the original returned.
+    // SvR04 event: SvR EMOT bank first in the CEKeys now (svrLightSwapIn forFaces), before the scene's attr 0x10 face/hand
+    // ops run. SvR06 event: host bank first (svr06BankSwapIn), then the entrant's face/hand tracks of this scene ->
+    // CCharMotionPts slots 0 (y1 face), 1/2 (y2/y3 hands), same writes as CCharMotionPts::Set 0x1cc810: +0x24+4s = id,
+    // +0x34/+0x44/+0x54 +4s = 0, +0x64+4s = -1, +0x20 = SearchLink([pts+0x1C]+0x1B4, '3MFA')->+0x10 (face object).
+    // Entrant = the event object whose scene entry ([obj+0x18] + scene*0x28, obj stride 0x1C at [[es+0x24]+8], count u16
+    // [[es+0x24]+2], scenes u16 obj+0x14) plays bank obj 0 y0 (entry +4 obj, +8 scene byte, +0xC y = CEKey::GetFrameCnt
+    // 0x168db0 args); char = [0x526EA0 + 4*obj+0xC] (StartScene 0x167d10-0x167d88, 0xDDxx = not a char); pts =
+    // SearchLink(char+0x1B4, 'POMC')->+0x10 (CChar::ExAction 0x1bf850). Scene = GetCurrentCameraScene (pyroCamScene).
+    // Nov 16 S11 per-scene SvR06 lights = SvR06 CEventScene::StartScene_Light (event.bin 0x553e10): at each scene start, the
+    // slots this scene byte has light tracks for -> CMotionLight::Set(slot, 0x3F00 + scene*8 + slot); other slots untouched.
+    // Scene byte = scene entry +8 of the first event object that has this scene (same read as the faces / ctx serial clock).
+    // Runs only after svr06LightsStart (first light scene already Set). HCTP_SVR06_LIGHTS=0 or a light= override -> skipped.
+    void svr06LightsSceneSwitch(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t es)
+    {
+        static const bool on = !(std::getenv("HCTP_SVR06_LIGHTS") && std::getenv("HCTP_SVR06_LIGHTS")[0] == '0');
+        if (!on || !g_svr06LightsSet || g_svr06CurLightScenes.size() < 2u || g_motionLightThis == 0u || g_origMotionLightSet == nullptr ||
+            g_svrLightOverride.count(g_svrCurEv) != 0u)
+            return;
+        const uint16_t sc = pyroCamScene(rdram, es);
+        const uint32_t scr = gU32(rdram, es + 0x24u) & PS2_RAM_COMMITTED_MASK;
+        if (scr == 0u || scr >= 0x1FFFF00u)
+            return;
+        uint16_t nObj = 0;
+        std::memcpy(&nObj, rdram + scr + 2u, 2);
+        const uint32_t objs = gU32(rdram, scr + 8u) & PS2_RAM_COMMITTED_MASK;
+        uint32_t scb = 0xFFFFFFFFu;
+        for (uint32_t k = 0; objs != 0u && k < nObj && k < 64u; ++k)
+        {
+            const uint32_t ob = objs + k * 0x1Cu;
+            uint16_t nsc = 0;
+            std::memcpy(&nsc, rdram + ob + 0x14u, 2);
+            const uint32_t sa = gU32(rdram, ob + 0x18u) & PS2_RAM_COMMITTED_MASK;
+            if (sc >= nsc || sa == 0u)
+                continue;
+            const uint32_t b = gU32(rdram, sa + sc * 0x28u + 8u);
+            if (b < 0x80u)
+            {
+                scb = b;
+                break;
+            }
+        }
+        const auto m = g_svr06CurLightScenes.find(static_cast<uint8_t>(scb & 0xFFu));
+        if (scb >= 32u || static_cast<int>(scb) == g_svr06LightApplied || m == g_svr06CurLightScenes.end() || !svr06BankSwapIn(rdram, runtime))
+            return;
+        g_svr06LightApplied = static_cast<int>(scb);
+        const __m128i a0 = ctx->r[4], a1 = ctx->r[5], a2 = ctx->r[6], a3 = ctx->r[7];
+        const uint32_t pc = ctx->pc;
+        for (uint32_t slot = 0; slot < 8; ++slot)
+        {
+            if (!(m->second & (1u << slot)))
+                continue;
+            SET_GPR_U32(ctx, 4, g_motionLightThis);
+            SET_GPR_U32(ctx, 5, slot);
+            SET_GPR_U32(ctx, 6, 0x3F00u + scb * 8u + slot);
+            SET_GPR_U32(ctx, 7, 0u);
+            g_origMotionLightSet(rdram, ctx, runtime); // leaf (no calls)
+        }
+        ctx->r[4] = a0, ctx->r[5] = a1, ctx->r[6] = a2, ctx->r[7] = a3;
+        ctx->pc = pc;
+        std::fprintf(stderr, "[svr06light] event %u scene %u (byte %u): light slots %02x Set%c", g_svrCurEv, sc, scb, m->second, 10);
+    }
+    PS2Runtime::RecompiledFunction g_origStartScene = nullptr;
+    uint32_t hostSearchLink(uint8_t *rdram, uint32_t a0, uint32_t tag) // CLink::SearchLink 0x13c640
+    {
+        if (a0 == 0u)
+            return 0u;
+        uint32_t v = a0;
+        for (int g = 0; g < 4096; ++g)
+        {
+            v = gU32(rdram, (v & PS2_RAM_COMMITTED_MASK) + 0xCu) & PS2_RAM_COMMITTED_MASK;
+            if (v == 0u)
+                break;
+            if (gU32(rdram, v) == tag)
+                return v;
+        }
+        for (uint32_t a = a0 & PS2_RAM_COMMITTED_MASK, g = 0; a != 0u && g < 4096u; a = gU32(rdram, a + 8u) & PS2_RAM_COMMITTED_MASK, ++g)
+            if (gU32(rdram, a) == tag)
+                return a;
+        return 0u;
+    }
+    int32_t findBoneNative(uint8_t *rdram, uint32_t model, const char *name16);
+    // Nov 16 GROUND proof line: every event scene start (HCTP stock, SvR04, SvR06, SYM), the root bone world position of the
+    // cast CChars *(0x526EA0 + 4*i) (skin = CChar+0x34, rows *(skin+0xD0)) = where the previous scene left them. Compare
+    // the same entrance on a stage arena and a plane arena (arena byte 0x4922C0, IsStagePlane 0x2af240 list).
+    void groundLog(uint8_t *rdram, uint32_t es)
+    {
+        static int lines = 0;
+        if (lines >= 400 || es == 0u)
+            return;
+        const int8_t arena = static_cast<int8_t>(rdram[0x4922C0u]);
+        static const int8_t kPlane[] = {0xA, 0xB, 0xE, 0xF, 0x12, 0x13, 0x30, 0x31, 0x34, 0x35};
+        const bool plane = std::find(std::begin(kPlane), std::end(kPlane), arena) != std::end(kPlane);
+        char buf[512];
+        int n = std::snprintf(buf, sizeof(buf), "[ground] ev %u %s arena 0x%X %s scene %u:", unsigned(g_svrCurEv),
+                              !g_svrEventActive ? "HCTP" : g_symActive ? "SYM" : g_svr06Active ? "SvR06" : "SvR04",
+                              unsigned(uint8_t(arena)), plane ? "PLANE" : "stage", unsigned(pyroCamScene(rdram, es)));
+        static const char kRoot[16] = "root";
+        for (uint32_t i = 0; i < 4u && n > 0 && n < 440; ++i)
+        {
+            const uint32_t ch = gU32(rdram, 0x526EA0u + 4u * i) & PS2_RAM_COMMITTED_MASK;
+            const uint32_t skin = ch && ch < PS2_RAM_COMMITTED_TOP - 0x40u ? gU32(rdram, ch + 0x34u) & PS2_RAM_COMMITTED_MASK : 0u;
+            if (skin == 0u || skin >= PS2_RAM_COMMITTED_TOP - 0x100u)
+                continue;
+            const int32_t b = findBoneNative(rdram, skin, kRoot);
+            const uint32_t cnt = gU32(rdram, skin + 0xECu), mats = gU32(rdram, skin + 0xD0u) & PS2_RAM_COMMITTED_MASK;
+            if (b < 0 || static_cast<uint32_t>(b) >= cnt || cnt > 256u || mats == 0u || mats + 64u * cnt > PS2_RAM_COMMITTED_TOP)
+                continue;
+            float t[3];
+            std::memcpy(t, rdram + mats + 64u * static_cast<uint32_t>(b) + 48u, 12);
+            n += std::snprintf(buf + n, sizeof(buf) - n, " cast%u code %u root %.1f %.1f %.1f;", i, gU32(rdram, ch + 0x30u), t[0], t[1], t[2]);
+        }
+        ++lines;
+        std::fprintf(stderr, "%s%c", buf, 10);
+    }
+    void startSceneSvr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t es = regU(ctx, 4) & PS2_RAM_COMMITTED_MASK, ra = regU(ctx, 31);
+        g_origStartScene(rdram, ctx, runtime);
+        if (ctx->pc == ra)
+            groundLog(rdram, es);
+        if (ctx->pc == ra && g_svrEventActive && g_svr06Active && !g_symActive && es != 0u)
+            svr06LightsSceneSwitch(rdram, ctx, runtime, es); // S11 per-scene SvR06 lights
+        if (ctx->pc == ra && g_svrEventActive && g_symActive && es != 0u)
+            symFaceSwapIn(rdram); // Nov 17 S15: SYM-only face/hand rows (once per SYM event; End/Release clear it)
+        if (ctx->pc != ra || !g_svrEventActive || g_symActive || fh::faceMode() == 0 || es == 0u)
+            return;
+        if (!g_svr06Active)
+        {
+            if (!g_svrLightSwapped)
+                svrLightSwapIn(rdram, runtime, true);
+            return;
+        }
+        const auto ev = g_svrEvents.find(g_svrCurEv);
+        if (ev == g_svrEvents.end())
+            return;
+        const auto fi = g_svr06FaceIds.find(static_cast<uint16_t>(ev->second.svrNo));
+        if (fi == g_svr06FaceIds.end() || fi->second.empty())
+            return;
+        static int logged = 0;
+        if (!svr06BankSwapIn(rdram, runtime))
+        {
+            if (logged++ < 16)
+                std::fprintf(stderr, "[svrface] SvR06 %u: host bank not in the CEKeys (another bank swapped) - faces skipped%c",
+                             static_cast<unsigned>(ev->second.svrNo), 10);
+            return;
+        }
+        const uint16_t sc = pyroCamScene(rdram, es);
+        const uint32_t scr = gU32(rdram, es + 0x24u) & PS2_RAM_COMMITTED_MASK;
+        if (scr == 0u)
+            return;
+        uint16_t nObj = 0;
+        std::memcpy(&nObj, rdram + scr + 2u, 2);
+        const uint32_t objs = gU32(rdram, scr + 8u) & PS2_RAM_COMMITTED_MASK;
+        for (uint32_t k = 0; objs != 0u && k < nObj && k < 64u; ++k)
+        {
+            const uint32_t ob = objs + k * 0x1Cu;
+            uint16_t nsc = 0;
+            std::memcpy(&nsc, rdram + ob + 0x14u, 2);
+            const uint32_t sa = gU32(rdram, ob + 0x18u) & PS2_RAM_COMMITTED_MASK;
+            if (sc >= nsc || sa == 0u)
+                continue;
+            const uint32_t se = sa + sc * 0x28u;
+            if (gU32(rdram, se + 4u) != 0u || gU32(rdram, se + 0xCu) != 0u)
+                continue;
+            const uint32_t scb = gU32(rdram, se + 8u), ci = gU32(rdram, ob + 0xCu);
+            const uint32_t ch = ((ci & 0xFF00u) == 0xDD00u || ci >= 64u) ? 0u : gU32(rdram, 0x526EA0u + 4u * ci) & PS2_RAM_COMMITTED_MASK;
+            const uint32_t ln = ch ? hostSearchLink(rdram, ch + 0x1B4u, 0x434D4F50u) : 0u;
+            const uint32_t pts = ln ? gU32(rdram, ln + 0x10u) & PS2_RAM_COMMITTED_MASK : 0u;
+            if (pts == 0u || scb >= 0x80u)
+            {
+                if (logged++ < 16)
+                    std::fprintf(stderr, "[svrface] SvR06 scene %u: entrant obj %u char %08x pts %08x - faces skipped%c", sc, k, ch, pts, 10);
+                return;
+            }
+            int set = 0;
+            for (uint32_t y = 1; y <= 3; ++y)
+            {
+                const uint32_t id = 0x3D00u + scb * 4u + y, slot = y - 1u;
+                if (!fi->second.count(static_cast<uint16_t>(id)))
+                    continue;
+                const uint32_t zero = 0u, minus1 = 0xFFFFFFFFu;
+                gPut(rdram, pts + 0x24u + 4u * slot, &id, 4);
+                gPut(rdram, pts + 0x34u + 4u * slot, &zero, 4);
+                gPut(rdram, pts + 0x44u + 4u * slot, &zero, 4);
+                gPut(rdram, pts + 0x54u + 4u * slot, &zero, 4);
+                gPut(rdram, pts + 0x64u + 4u * slot, &minus1, 4);
+                ++set;
+            }
+            // Nov 17 S15: y1 face set -> slot 3 (HCTP eyes-only rows) = Set(3, 0, -1) exactly as CChar::ExAction 0x1bf8c8 ->
+            // CCharMotionPts::Set 0x1cc810 (+0x24+4s id, +0x34/+0x44/+0x54 = 0, +0x64 = -1); id 0 = slot idle (ActionLink
+            // 0x1cc880 skips it) -> no second eye writer over the SvR06 y1 eyes.
+            uint32_t old3 = 0xFFFFFFFFu;
+            if (fi->second.count(static_cast<uint16_t>(0x3D00u + scb * 4u + 1u)))
+            {
+                const uint32_t zero = 0u, minus1 = 0xFFFFFFFFu;
+                old3 = gU32(rdram, pts + 0x24u + 12u);
+                gPut(rdram, pts + 0x24u + 12u, &zero, 4);
+                gPut(rdram, pts + 0x34u + 12u, &zero, 4);
+                gPut(rdram, pts + 0x44u + 12u, &zero, 4);
+                gPut(rdram, pts + 0x54u + 12u, &zero, 4);
+                gPut(rdram, pts + 0x64u + 12u, &minus1, 4);
+            }
+            if (set)
+            {
+                const uint32_t own = gU32(rdram, pts + 0x1Cu) & PS2_RAM_COMMITTED_MASK;
+                const uint32_t fl = own ? hostSearchLink(rdram, own + 0x1B4u, 0x334D4641u) : 0u;
+                const uint32_t face = fl ? gU32(rdram, fl + 0x10u) : 0u;
+                gPut(rdram, pts + 0x20u, &face, 4);
+            }
+            if (logged++ < 32)
+                std::fprintf(stderr, "[svrface] SvR06 %u scene %u (byte %u): %d face/hand tracks on pts %08x, slot3 old id %d%c",
+                             static_cast<unsigned>(ev->second.svrNo), sc, scb, set, pts, static_cast<int>(old3), 10);
+            return;
+        }
+    }
     void evsActionSvr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t sys = regU(ctx, 4) & PS2_RAM_COMMITTED_MASK, ra = regU(ctx, 31);
+        if (sys != 0u && sys < 0x1FFFF00u)
+            g_evsSys = sys; // Nov 16 B4 hosei scene clock
         g_origEvsActionSvr(rdram, ctx, runtime);
+        // Nov 14: native SvR04 context cue clock = the same raw camera scene + frame the host pyro used (0x1a9810 rule)
+        if (g_svr04CtxOn && g_svrEventActive && !g_svr06Active && sys != 0u && sys < 0x1FFFF00u && ctx->pc == ra &&
+            rdram[sys + 0x54u] != 0u && gU32(rdram, sys + 0x10u) == 2u)
+        {
+            uint16_t fr4;
+            std::memcpy(&fr4, rdram + sys + 0x1Au, 2);
+            hctpSvr04CtxEventTick(pyroCamScene(rdram, sys), fr4);
+            return;
+        }
         if (g_pyro04Active && g_svrEventActive && !g_svr06Active && sys != 0u && sys < 0x1FFFF00u && ctx->pc == ra &&
             rdram[sys + 0x54u] != 0u && gU32(rdram, sys + 0x10u) == 2u)
         {
@@ -9975,6 +11868,69 @@ namespace
         std::memcpy(&fr, rdram + sys + 0x1Au, 2);
         std::memcpy(&mx, rdram + sys + 0x1Eu, 2);
         svr06LightsStart(rdram, ctx, runtime);
+        if (g_svr06CtxOn)
+        {
+            // Nov 14: native SvR06 ctx clock (raw camera scene, 0x1a9810 rule) + the SE ids SvR06's FireWorks MyAction 0x500460
+            // passed to 0x1ce9d0 (= its CSoundControl 0x1d16e0 id: binary search of the 14-B SFX LIST rows at 0x1d0be0, the
+            // same id space HCTP's PlaySE_FromAttribute 0x3ada80 / GetSfxInfo uses) -> host SE from SvR06's own bank
+            // (MODS/SVR06/SE, hostse::playHost); no SvR06 row there -> HCTP_SVR06_PYROSE (0xCF = stock 3044 pyro) via 0x3ada80.
+            // Nov 16: SvR06 gmParticleEmitter::MyAction (retail 0x4fda80) compares GMEV scene params with the scene object's
+            // vfunc +0x10 = CEventScene::GetSerialSceneNo (+0x10), which CalcNextScene (beta event.bin 0x553420) advances over
+            // DISABLED scenes too -> SvR06 serial = the bank's scene byte (entry +8: 0,5,10,15,20...), not the compacted index
+            // (Nov 15 log: 4045 GMEV 10/750, 4007 5/20 + 20/580; HCTP raw 0,1,2 -> 0 gimmicks STARTED).
+            uint32_t serial = sc;
+            {
+                const uint32_t scr = gU32(rdram, sys + 0x24u) & PS2_RAM_COMMITTED_MASK;
+                uint16_t nObj = 0;
+                if (scr != 0u && scr < 0x1FFFF00u)
+                    std::memcpy(&nObj, rdram + scr + 2u, 2);
+                const uint32_t objs = scr ? gU32(rdram, scr + 8u) & PS2_RAM_COMMITTED_MASK : 0u;
+                for (uint32_t k = 0; objs != 0u && k < nObj && k < 64u; ++k)
+                {
+                    const uint32_t ob = objs + k * 0x1Cu;
+                    uint16_t nsc = 0;
+                    std::memcpy(&nsc, rdram + ob + 0x14u, 2);
+                    const uint32_t sa = gU32(rdram, ob + 0x18u) & PS2_RAM_COMMITTED_MASK;
+                    if (sc >= nsc || sa == 0u)
+                        continue;
+                    const uint32_t scb = gU32(rdram, sa + sc * 0x28u + 8u);
+                    if (scb < 0x80u)
+                    {
+                        serial = scb;
+                        break;
+                    }
+                }
+                static uint32_t lastSc = 0xFFFFFFFFu;
+                if (sc != lastSc)
+                {
+                    lastSc = sc;
+                    static int nl = 0;
+                    if (nl++ < 64)
+                        std::fprintf(stderr, "[svr06ctx] cue clock: event scene %u -> SvR06 serial scene %u%c", sc, serial, 10);
+                }
+            }
+            hctpSvr06CtxEventTick(serial, fr);
+            std::vector<int32_t> ids;
+            hctpSvr06CtxTakeSe(ids);
+            for (int32_t id : ids)
+            {
+                if (hostse::playHost(6, id))
+                    continue;
+                static const uint32_t fb = [] { const char *v = std::getenv("HCTP_SVR06_PYROSE"); return v ? uint32_t(std::strtoul(v, nullptr, 16)) : 0xCFu; }();
+                PS2Runtime::RecompiledFunction playSe = fb != 0u ? runtime->lookupFunction(0x3ada80u) : nullptr;
+                std::fprintf(stderr, "[svr06ctx] SE 0x%x not in MODS/SVR06/SE -> HCTP SE 0x%02X%s%c", static_cast<uint32_t>(id), fb, playSe ? "" : " (off)", 10);
+                if (!playSe)
+                    continue;
+                const __m128i a0 = ctx->r[4], a1 = ctx->r[5], a2 = ctx->r[6], v0 = ctx->r[2], v1 = ctx->r[3];
+                SET_GPR_U32(ctx, 4, 0u);
+                SET_GPR_U32(ctx, 5, fb);
+                SET_GPR_U32(ctx, 6, 0u);
+                playSe(rdram, ctx, runtime);
+                ctx->r[4] = a0, ctx->r[5] = a1, ctx->r[6] = a2, ctx->r[2] = v0, ctx->r[3] = v1;
+                ctx->pc = ra;
+            }
+            return;
+        }
         if (!hctpPyroEventTick(sc, fr, mx))
             return;
         static const uint32_t seId = [] { const char *v = std::getenv("HCTP_SVR06_PYROSE"); return v ? uint32_t(std::strtoul(v, nullptr, 16)) : 0xCFu; }();
@@ -9993,13 +11949,406 @@ namespace
     // Nov 9 log-only probe (HCTP_PROP_PROBE=1): live state of SvR event props (model id >= 2800) after
     // CSD3MotionWeapon::ActionLink 0x1c2790. attr = this+0x24: +0x18 attach code, +0x30 model, +0x34 obj, +0x3c parent.
     PS2Runtime::RecompiledFunction g_origWeaponActionLink = nullptr;
-    void weaponActionLinkProbe(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    int32_t findBoneNative(uint8_t *rdram, uint32_t model, const char *name16);
+    // Nov 14 BELTS (notes\ENTRANCE_PROPS_BELTS_20261114.md): op B6 = attach code 1 -> FindBone(char, "root_d") (0x1c2e78).
+    // HCTP bodies carry root_d = child of root, local pos (-1.85, 0, -1.65) rot (0, PI, 0) (53 of 84 stock ch.pac bodies;
+    // bigger men -1.77..-2.36). SvR04/SvR06/SYM bodies have no root_d (889 installed models) -> the old fallback gave "root"
+    // and the HCTP belt sat in front of the body. For such a body the char's world-matrix array (*(skin+0xD0), count
+    // *(skin+0xEC), row-major, translation row 3 = 0x1c2f90 read) is copied into a scratch block with one extra row =
+    // root_d built from the model's OWN root world matrix (row-vector: W = L x W_root), +0xD0 points at it for this call
+    // only (ActionLink copies the row, 0x1c2fc8, and later touches only the prop's own model), and findBoneFallback
+    // answers root_d with that row. SvR06 props (2400-2699) are authored for SvR06's code 1 = "koshi" (SvR06 ActionLink
+    // string 0x366bf0) -> koshi. SvR04 props (2800-2999): SvR04 code-1 bone not verified -> old behaviour.
+    // HCTP_BELT_ROOTD=0 -> off.
+    struct RootDSynth
     {
-        const uint32_t self = regU(ctx, 4) & PS2_RAM_COMMITTED_MASK;
-        g_origWeaponActionLink(rdram, ctx, runtime);
-        if (!g_svrEventActive)
+        uint32_t model = 0;
+        int32_t index = -1;
+        bool force = false; // Nov 16: answer "root_d" with index even when the body HAS root_d (SvR04/SvR06 props -> koshi)
+    } g_rootD;
+    // Nov 16 belt log: which bone code 1 used for this ActionLink (0 own root_d, 1 synthesized root_d, 2 koshi)
+    struct BeltLog
+    {
+        uint32_t self = 0;
+        int kind = -1;
+        int32_t bone = -1;
+        float depth = 0.f;
+    } g_beltLog;
+    // Nov 16 BELT DEPTH: HCTP root_d = (-1.85, 0, z) under root on EVERY stock body (x/rot fixed, only z = belly depth varies
+    // -1.65..-2.36, ch.pac scan). A body without root_d gets z from the STOCK ch.pac/ch2.pac body with the same model code
+    // (CChar+0x30 decimal code -> BCD DPAC key, exact code first, then attire 0 of that id), else -1.65 (53/84 stock bodies).
+    float stockRootDZ(uint32_t code)
+    {
+        static std::map<uint32_t, float> cache;
+        if (auto it = cache.find(code); it != cache.end())
+            return it->second;
+        float z = -1.65f;
+        bool found = false;
+        auto bcd = [](uint32_t c) { return static_cast<uint16_t>(((c / 1000u) % 10u) << 12 | ((c / 100u) % 10u) << 8 | ((c / 10u) % 10u) << 4 | (c % 10u)); };
+        for (uint32_t want : {code, (code / 100u) * 100u})
+            for (const char *pac : {"pac/ch.pac", "pac/ch2.pac"})
+            {
+                if (found || code >= 10000u)
+                    break;
+                std::ifstream f(pac, std::ios::binary);
+                std::vector<uint8_t> dir(0x4000);
+                if (!f.read(reinterpret_cast<char *>(dir.data()), dir.size()))
+                    continue;
+                uint16_t n;
+                std::memcpy(&n, dir.data() + 0x804, 2);
+                n &= 0x7FFFu;
+                uint64_t cur = 0x4000u;
+                for (uint32_t e = 0; e < n && 0x808u + e * 4u + 4u <= dir.size() && !found; ++e)
+                {
+                    uint16_t k, sec;
+                    std::memcpy(&k, dir.data() + 0x808 + e * 4, 2);
+                    std::memcpy(&sec, dir.data() + 0x80A + e * 4, 2);
+                    const uint64_t sz = uint64_t(sec) * 0x100u;
+                    if (k == bcd(want) && sz > 8u && sz < 0x1000000u)
+                    {
+                        std::vector<uint8_t> p(sz);
+                        f.clear();
+                        f.seekg(static_cast<std::streamoff>(cur));
+                        if (f.read(reinterpret_cast<char *>(p.data()), static_cast<std::streamsize>(sz)) && std::memcmp(p.data(), "PAC ", 4) == 0)
+                        {
+                            uint32_t np;
+                            std::memcpy(&np, p.data() + 4, 4);
+                            for (uint32_t i = 0; i < np && i < 64u && 16u + 8u * i <= sz; ++i)
+                            {
+                                uint16_t id;
+                                std::memcpy(&id, p.data() + 8 + 8 * i, 2);
+                                uint32_t off = 0;
+                                std::memcpy(&off, p.data() + 8 + 8 * i + 2, 3);
+                                const uint64_t y = 8u + 8u * np + off;
+                                if (id != 2u || y + 0x2Cu > sz)
+                                    continue;
+                                uint32_t nb, bt;
+                                std::memcpy(&nb, p.data() + y + 0x1C, 4);
+                                std::memcpy(&bt, p.data() + y + 0x28, 4);
+                                for (uint32_t b = 0; b < nb && b < 512u && y + bt + 8u + 80u * (b + 1u) <= sz; ++b)
+                                {
+                                    const uint8_t *r = p.data() + y + bt + 8u + 80u * b;
+                                    if (std::memcmp(r, "root_d\0", 7) == 0)
+                                    {
+                                        std::memcpy(&z, r + 24, 4);
+                                        found = std::isfinite(z) && z < -0.5f && z > -4.f;
+                                        if (!found)
+                                            z = -1.65f;
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    cur += (sz + 0x7FFu) & ~uint64_t(0x7FFu);
+                }
+            }
+        std::fprintf(stderr, "[belt] model code %u: belly depth root_d z %.2f (%s)%c", code, z,
+                     found ? "stock body of this code" : "default, no stock body", 10);
+        cache[code] = z;
+        return z;
+    }
+    uint32_t g_rootDScratch = 0;
+    // Nov 16 SvR06 op B4 WEAPON HAND HOSEI (notes\ENTRANCES_OPEN_LIST_20261115.md SESSION 7). SvR06 CMD_A_TARGET 0x238df0
+    // stores the byte in CSDEngineObj::m_nWeapnHoseiTarget (0 off, 1 left, 2 right). ObjectMotionHosei::ActionLink (SvR06
+    // retail game.bin 0x4c1e70) per frame: weapon m_nAct changed (last != -1) -> target = 0, value = 0; value 1..2 ->
+    // target = holder bone [code 8 l_te | 0xC r_te] translation - CDmyBone::GetBoneTip(value-1, 1) (0x21a300); value 0 ->
+    // target 0; cur += (target-cur) * (|target-cur| <= 1 ? 0.5 : gp-0x7fc0 0.2); CWeaponSD::Draw 0x4bc0ac adds cur to the
+    // translation of every weapon bone matrix. CDmyBone (SetLocal 0x21aaf0, Update 0x21a780): 14 dummy bones, codes
+    // 0x337a60 (names = GetBoneNo_Name table 0x337770: root koshi mune l_sakotsu l_ninoude*l_ninoude_x l_kote ...), depth
+    // 0x337a50; idx 0 = model matrix, idx 1 = root, depth >= 2 -> translation = standard offset 0x337800[set][i] * scale
+    // 0x3379c0[BipType] -> the holder's own rotations on the SvR06 standard skeleton. BipType = CMotionControl+0x54 = 2
+    // (ctor 0x215a60, JumpAct 0x215b60) -> set 0, scale 1.0. GetBoneTip side 0 -> idx 6 l_kote, 1 -> idx 9 r_kote, tip =
+    // (0x366990[idx] = 2.815, 0, 0, 1) x world[idx]. Port: dummy rotation = the HCTP holder's world rotation of the same
+    // bone (skin +0xD0, row-major, row 3 = translation, as ActionLink 0x1c2f90 reads it); idx 1 position = holder root.
+    // Offset added after HCTP ActionLink's FastUpdate + matrix copy (0x1c3c90..0x1c3cdc): prop skin +0xD0 rows + the copy
+    // at self+0x34. "Action" (m_nAct) = the event camera scene. SvR06 props (2400-2699) only. HCTP_B4_HOSEI=0 -> off.
+    struct B4Hosei
+    {
+        int32_t value = 0;             // m_nWeapnHoseiTarget
+        uint32_t ev = 0;               // event it belongs to (a new event = fresh weapon state)
+        uint32_t valueScene = 0xFFFFu; // scene the value was set in
+        uint32_t lastScene = 0xFFFFu;  // ObjectMotionHosei +0x50
+        float target[3] = {}, cur[3] = {};
+    };
+    std::map<uint32_t, B4Hosei> g_b4Hosei; // key = attribute object (CAttribute+0x24 = CSD3MotionWeapon+0x24)
+    PS2Runtime::RecompiledFunction g_origSetAttr = nullptr;
+    static uint16_t pyroCamScene(uint8_t *rdram, uint32_t sys);
+    static uint32_t b4CurScene(uint8_t *rdram)
+    {
+        return g_evsSys != 0u && g_evsSys < 0x1FFFF00u ? pyroCamScene(rdram, g_evsSys) : 0xFFFFu;
+    }
+    void setAttrB4Hook(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        // CAttribute::SetAttr(this, len, p, sizes) 0x1b3120: op = p[0], size = sizes[op] (0x1b3198..0x1b31a8), loop while
+        // len > 0 (0x1b4ddc). HCTP has no 0xB4 case (skipped by size) -> record it here, then run the original.
+        if (g_svr06Active && g_svrEventActive)
+        {
+            const uint32_t self = regU(ctx, 4) & PS2_RAM_COMMITTED_MASK, tbl = regU(ctx, 7) & PS2_RAM_COMMITTED_MASK;
+            uint32_t p = regU(ctx, 6) & PS2_RAM_COMMITTED_MASK;
+            int32_t len = static_cast<int32_t>(regU(ctx, 5));
+            const uint32_t obj = self && self < PS2_RAM_COMMITTED_TOP - 0x40u ? gU32(rdram, self + 0x24u) & PS2_RAM_COMMITTED_MASK : 0u;
+            for (int guard = 0; obj != 0u && obj < PS2_RAM_COMMITTED_TOP - 0x40u && tbl != 0u && tbl + 256u < PS2_RAM_COMMITTED_TOP &&
+                                len > 0 && guard < 256 && p + 2u < PS2_RAM_COMMITTED_TOP;
+                 ++guard)
+            {
+                const uint8_t op = rdram[p], sz = rdram[tbl + op];
+                if (sz == 0u || sz >= 0x80u) // blez s6 -> 0x1b4dec (not walked further)
+                    break;
+                if (op == 0xB4u)
+                {
+                    B4Hosei &h = g_b4Hosei[obj];
+                    if (h.ev != g_svrCurEv)
+                        h = B4Hosei{}, h.ev = g_svrCurEv;
+                    h.value = rdram[p + 1u];
+                    h.valueScene = b4CurScene(rdram);
+                    static int nl = 0;
+                    if (nl++ < 64)
+                        std::fprintf(stderr, "[b4hosei] SetAttr B4 %d obj %08x prop %u scene %u%c", h.value, obj,
+                                     gU32(rdram, obj + 0x30u), h.valueScene, 10);
+                }
+                p += sz;
+                len -= sz;
+            }
+        }
+        g_origSetAttr(rdram, ctx, runtime);
+    }
+    int32_t findBoneNative(uint8_t *rdram, uint32_t model, const char *name16);
+    static bool b4BoneWorld(uint8_t *rdram, uint32_t skin, const char *name, float m[16])
+    {
+        char n16[16] = {};
+        std::strncpy(n16, name, 15);
+        const int32_t b = findBoneNative(rdram, skin, n16);
+        const uint32_t count = gU32(rdram, skin + 0xECu), mats = gU32(rdram, skin + 0xD0u) & PS2_RAM_COMMITTED_MASK;
+        if (b < 0 || static_cast<uint32_t>(b) >= count || count > 256u || mats == 0u || mats + 64u * count > PS2_RAM_COMMITTED_TOP)
+            return false;
+        std::memcpy(m, rdram + mats + 64u * static_cast<uint32_t>(b), 64);
+        return true;
+    }
+    // GetBoneTip(side, 1) on the dummy chain: root -> koshi(-1.87) -> mune(2.23) -> sakotsu(1.76) -> ninoude_x(2.0) ->
+    // kote(2.815) -> tip(2.815) (0x337800 set 0 / 0x366990 set 0, scale 1.0); each step = (len,0,0) x parent world rotation.
+    static bool b4DummyTip(uint8_t *rdram, uint32_t skin, int side, float out[3])
+    {
+        static const char *kL[] = {"root", "koshi", "mune", "l_sakotsu", "l_ninoude_x", "l_kote"};
+        static const char *kR[] = {"root", "koshi", "mune", "r_sakotsu", "r_ninoude_x", "r_kote"};
+        static const float kOff[] = {-1.87f, 2.23f, 1.76f, 2.0f, 2.815f, 2.815f};
+        const char **names = side == 0 ? kL : kR;
+        float m[16], p[3];
+        if (!b4BoneWorld(rdram, skin, names[0], m))
+            return false;
+        p[0] = m[12], p[1] = m[13], p[2] = m[14];
+        for (int i = 0; i < 6; ++i)
+        {
+            if (!b4BoneWorld(rdram, skin, names[i], m))
+                return false;
+            for (int c = 0; c < 3; ++c)
+                p[c] += kOff[i] * m[c]; // (len, 0, 0) x R = len * row 0
+        }
+        out[0] = p[0], out[1] = p[1], out[2] = p[2];
+        return true;
+    }
+    void b4HoseiAfterActionLink(uint8_t *rdram, uint32_t self, uint32_t attr)
+    {
+        static const bool on = !(std::getenv("HCTP_B4_HOSEI") && std::getenv("HCTP_B4_HOSEI")[0] == '0');
+        if (!on || !g_svr06Active || attr == 0u || attr >= PS2_RAM_COMMITTED_TOP - 0x100u)
             return;
-        const uint32_t attr = gU32(rdram, self + 0x24u) & PS2_RAM_COMMITTED_MASK;
+        const uint32_t propNo = gU32(rdram, attr + 0x30u);
+        auto it = g_b4Hosei.find(attr);
+        if (propNo < 2400u || propNo >= 2700u || it == g_b4Hosei.end() || it->second.ev != g_svrCurEv)
+            return;
+        B4Hosei &h = it->second;
+        const uint32_t sc = b4CurScene(rdram);
+        if (sc != h.lastScene)
+        {
+            if (h.lastScene != 0xFFFFu)
+            {
+                h.target[0] = h.target[1] = h.target[2] = 0.f;
+                if (h.valueScene != sc) // value from an earlier action -> reset (0x4c1ea0..0x4c1eb8)
+                    h.value = 0;
+            }
+            h.lastScene = sc;
+        }
+        const uint32_t holder = gU32(rdram, attr + 0x3Cu) & PS2_RAM_COMMITTED_MASK; // op 0x72 parent (SetAttr 0x1b4764)
+        const uint32_t skin = holder && holder < PS2_RAM_COMMITTED_TOP - 0x40u ? gU32(rdram, holder + 0x34u) & PS2_RAM_COMMITTED_MASK : 0u;
+        if (h.value == 0)
+            h.target[0] = h.target[1] = h.target[2] = 0.f; // 0x4c1f94
+        else if ((h.value == 1 || h.value == 2) && skin != 0u && skin < PS2_RAM_COMMITTED_TOP - 0x100u)
+        {
+            float tip[3], hand[16];
+            if (b4DummyTip(rdram, skin, h.value - 1, tip) && b4BoneWorld(rdram, skin, h.value == 1 ? "l_te" : "r_te", hand))
+                for (int c = 0; c < 3; ++c)
+                    h.target[c] = hand[12 + c] - tip[c];
+        }
+        float d[3], dl = 0.f;
+        for (int c = 0; c < 3; ++c)
+            d[c] = h.target[c] - h.cur[c], dl += d[c] * d[c];
+        const float k = std::sqrt(dl) <= 1.f ? 0.5f : 0.2f;
+        for (int c = 0; c < 3; ++c)
+            h.cur[c] += d[c] * k;
+        if (h.cur[0] == 0.f && h.cur[1] == 0.f && h.cur[2] == 0.f)
+            return;
+        const uint32_t pskin = gU32(rdram, attr + 0x34u) & PS2_RAM_COMMITTED_MASK;
+        const uint32_t count = pskin && pskin < PS2_RAM_COMMITTED_TOP - 0x100u ? gU32(rdram, pskin + 0xECu) : 0u;
+        const uint32_t bufs[2] = {count ? gU32(rdram, pskin + 0xD0u) & PS2_RAM_COMMITTED_MASK : 0u,
+                                  count ? gU32(rdram, self + 0x34u) & PS2_RAM_COMMITTED_MASK : 0u};
+        for (uint32_t b = 0; b < 2; ++b)
+            for (uint32_t i = 0; bufs[b] != 0u && count < 256u && i < count && bufs[b] + 64u * (i + 1u) <= PS2_RAM_COMMITTED_TOP; ++i)
+                for (int c = 0; c < 3; ++c)
+                {
+                    float v;
+                    std::memcpy(&v, rdram + bufs[b] + 64u * i + 48u + 4u * c, 4);
+                    v += h.cur[c];
+                    std::memcpy(rdram + bufs[b] + 64u * i + 48u + 4u * c, &v, 4);
+                }
+        static int nl = 0;
+        static uint32_t lastLogSc = 0xFFFFu;
+        if (sc != lastLogSc && nl++ < 64)
+        {
+            lastLogSc = sc;
+            std::fprintf(stderr, "[b4hosei] prop %u scene %u value %d code %d holder %08x hosei %.2f %.2f %.2f%c", propNo, sc,
+                         h.value, static_cast<int>(gU32(rdram, attr + 0x18u)), holder, h.cur[0], h.cur[1], h.cur[2], 10);
+        }
+    }
+    // Nov 16 S8: HCTP prop model id (attr +0x30) -> its CSD3MotionWeapon (this of ActionLink 0x1c2790), refreshed every frame,
+    // for SvR04 prop-owned op 0x6B cues (hctpSvrPropBoneMatrix).
+    std::mutex g_propS3mwMx;
+    std::map<uint32_t, uint32_t> g_propS3mw;
+    bool propBoneMatrixImpl(const uint8_t *rd, uint32_t svrNo, int obj, int part, float M[16])
+    {
+        if (svrNo == 0u || obj <= 0 || part < 0 || part >= 0x1e)
+            return false; // part >= 0x1e = object matrix in SvR04 (0x2e521c), no cue in the data uses it
+        const uint32_t row = svrFindRow(static_cast<uint16_t>(svrNo));
+        if (row == 0u || static_cast<uint32_t>(obj) >= svrU16(row + 2u))
+            return false;
+        const uint16_t model = svrU16(svrU32(row + 8u) + 8u + 28u * static_cast<uint32_t>(obj) + 2u);
+        uint32_t self = 0;
+        {
+            std::lock_guard<std::mutex> lk(g_propS3mwMx);
+            auto it = g_propS3mw.find(svrPropId(model));
+            if (it == g_propS3mw.end())
+                return false;
+            self = it->second;
+        }
+        auto u32 = [rd](uint32_t a) { uint32_t v = 0; a &= PS2_RAM_COMMITTED_MASK; if (a + 4u <= PS2_RAM_COMMITTED_TOP) std::memcpy(&v, rd + a, 4); return v; };
+        const uint32_t skin = u32(u32(self + 0x24u) + 0x34u) & PS2_RAM_COMMITTED_MASK; // attr -> obj (CWeapon) -> skin
+        const uint32_t mats = u32(self + 0x34u) & PS2_RAM_COMMITTED_MASK;
+        const uint32_t n = skin ? u32(skin + 0xECu) : 0u;
+        if (mats == 0u || (n != 0u && static_cast<uint32_t>(part) >= n) || mats + 64u * (part + 1u) > PS2_RAM_COMMITTED_TOP)
+            return false;
+        std::memcpy(M, rd + mats + 64u * static_cast<uint32_t>(part), 64);
+        return std::isfinite(M[12]) && std::isfinite(M[0]);
+    }
+    void weaponActionLinkHook(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        static const bool on = !(std::getenv("HCTP_BELT_ROOTD") && std::getenv("HCTP_BELT_ROOTD")[0] == '0');
+        static const bool probe = std::getenv("HCTP_PROP_PROBE") && std::getenv("HCTP_PROP_PROBE")[0] != '0';
+        const uint32_t self = regU(ctx, 4) & PS2_RAM_COMMITTED_MASK;
+        uint32_t swapModel = 0, swapOld = 0;
+        const uint32_t attr = self ? gU32(rdram, self + 0x24u) & PS2_RAM_COMMITTED_MASK : 0u;
+        if (on && attr != 0u && attr < PS2_RAM_COMMITTED_TOP - 0x40u && static_cast<int32_t>(gU32(rdram, attr + 0x18u)) == 1)
+        {
+            const uint32_t propNo = gU32(rdram, attr + 0x30u), parent = gU32(rdram, attr + 0x3Cu) & PS2_RAM_COMMITTED_MASK;
+            const uint32_t skin = parent && parent < PS2_RAM_COMMITTED_TOP - 0x40u ? gU32(rdram, parent + 0x34u) & PS2_RAM_COMMITTED_MASK : 0u;
+            static const char kRootD[16] = "root_d", kRoot[16] = "root", kKoshi[16] = "koshi";
+            // Nov 16: SvR06 props (2400-2699; SvR06 ActionLink 0x2234f0 code 1 = string 0x366bf0 koshi) and SvR04 props
+            // (2800-2999; SvR04 ELF has no "root_d" string, its bone-name table 0x26b978 = root, koshi, mune, kubi, atama
+            // -> code 1 = koshi) are authored on koshi -> koshi on EVERY body. HCTP bodies have root_d, which used to win
+            // (Cena's SvR06 spinner 2424 on an HCTP body sat in root_d's turned frame). koshi local = (-1.87..-1.96, 0, 0)
+            // rot (0,0,PI) under root on HCTP AND SvR/SYM bodies (ch.pac + MODS model scan Nov 16) -> same frame.
+            // Engine belts (2019-2027 incl. SvR04 2019, SvR06 2021->2019, SYM 172->2019) keep HCTP's root_d rule.
+            const bool svrProp = (propNo >= 2400u && propNo < 2700u) || (propNo >= 2800u && propNo < 3000u);
+            const bool skinOk = skin != 0u && skin < PS2_RAM_COMMITTED_TOP - 0x100u;
+            const int32_t ownRootD = skinOk ? findBoneNative(rdram, skin, kRootD) : -1;
+            if (skinOk && svrProp)
+            {
+                const int32_t k = findBoneNative(rdram, skin, kKoshi);
+                if (k >= 0)
+                    g_rootD = {skin, k, true};
+                g_beltLog = {self, 2, k, 0.f};
+            }
+            else if (skinOk && ownRootD >= 0)
+                g_beltLog = {self, 0, ownRootD, 0.f};
+            else if (skinOk)
+            {
+                const uint32_t count = gU32(rdram, skin + 0xECu), mats = gU32(rdram, skin + 0xD0u) & PS2_RAM_COMMITTED_MASK;
+                const float depth = stockRootDZ(gU32(rdram, parent + 0x30u));
+                if (const int32_t root = findBoneNative(rdram, skin, kRoot);
+                         root >= 0 && static_cast<uint32_t>(root) < count && count > 0u && count < 256u && mats != 0u &&
+                         mats + 64u * count <= PS2_RAM_COMMITTED_TOP)
+                {
+                    if (g_rootDScratch == 0u)
+                        g_rootDScratch = runtime->guestMalloc(257u * 64u, 64u) & PS2_RAM_COMMITTED_MASK;
+                    if (g_rootDScratch != 0u)
+                    {
+                        std::memcpy(rdram + g_rootDScratch, rdram + mats, 64u * count);
+                        float w[16], o[16] = {};
+                        std::memcpy(w, rdram + mats + 64u * static_cast<uint32_t>(root), 64);
+                        // L = Ry(PI) = diag(-1, 1, -1), t = (-1.85, 0, depth): rows 0-2 = L3 x W3, row 3 = t x W3 + W_t
+                        for (int c = 0; c < 4; ++c)
+                        {
+                            o[0 + c] = -w[0 + c];
+                            o[4 + c] = w[4 + c];
+                            o[8 + c] = -w[8 + c];
+                        }
+                        for (int c = 0; c < 3; ++c)
+                            o[12 + c] = -1.85f * w[0 + c] + 0.f * w[4 + c] + depth * w[8 + c] + w[12 + c];
+                        o[3] = o[7] = o[11] = 0.f;
+                        o[15] = 1.f;
+                        std::memcpy(rdram + g_rootDScratch + 64u * count, o, 64);
+                        swapModel = skin;
+                        swapOld = gU32(rdram, skin + 0xD0u);
+                        std::memcpy(rdram + skin + 0xD0u, &g_rootDScratch, 4);
+                        g_rootD = {skin, static_cast<int32_t>(count), false};
+                        g_beltLog = {self, 1, root, depth};
+                    }
+                }
+            }
+        }
+        const uint32_t raIn = regU(ctx, 31);
+        g_origWeaponActionLink(rdram, ctx, runtime);
+        if (ctx->pc == raIn && attr != 0u)
+        {
+            std::lock_guard<std::mutex> lk(g_propS3mwMx);
+            g_propS3mw[gU32(rdram, attr + 0x30u)] = self;
+        }
+        if (swapModel != 0u)
+            std::memcpy(rdram + swapModel + 0xD0u, &swapOld, 4);
+        // Nov 16 proof line, once per (event, prop, body): prop world position (ActionLink copies the bone row to
+        // *(attr+0x34)+0x10, 0x1c2fc4 -> translation at +0x40) in the body's koshi frame. Same numbers on an HCTP body
+        // (own root_d) and on an SvR/SYM body (synthesized) = belt on the waist the same way.
+        if (g_beltLog.self == self && self != 0u && ctx->pc == raIn && attr != 0u)
+        {
+            static std::set<uint64_t> seen;
+            const uint32_t propNo = gU32(rdram, attr + 0x30u), parent = gU32(rdram, attr + 0x3Cu) & PS2_RAM_COMMITTED_MASK;
+            const uint32_t skin = parent && parent < PS2_RAM_COMMITTED_TOP - 0x40u ? gU32(rdram, parent + 0x34u) & PS2_RAM_COMMITTED_MASK : 0u;
+            const uint32_t obj = gU32(rdram, attr + 0x34u) & PS2_RAM_COMMITTED_MASK;
+            const uint64_t key = (uint64_t(g_svrCurEv) << 48) ^ (uint64_t(propNo) << 32) ^ skin;
+            float kw[16];
+            if (skin != 0u && obj != 0u && obj < PS2_RAM_COMMITTED_TOP - 0x50u && seen.size() < 96u && seen.insert(key).second &&
+                b4BoneWorld(rdram, skin, "koshi", kw))
+            {
+                float p[3], d[3], l[3];
+                std::memcpy(p, rdram + obj + 0x40u, 12);
+                for (int c = 0; c < 3; ++c)
+                    d[c] = p[c] - kw[12 + c];
+                for (int r = 0; r < 3; ++r) // local = d x R^T / |row|^2 (row-vector, rows 0-2 = axes)
+                {
+                    const float n2 = kw[4 * r] * kw[4 * r] + kw[4 * r + 1] * kw[4 * r + 1] + kw[4 * r + 2] * kw[4 * r + 2];
+                    l[r] = n2 > 1e-8f ? (d[0] * kw[4 * r] + d[1] * kw[4 * r + 1] + d[2] * kw[4 * r + 2]) / n2 : 0.f;
+                }
+                static const char *kKind[] = {"own root_d", "synth root_d", "koshi (SvR prop)"};
+                std::fprintf(stderr, "[belt] ev %u prop %u code1 -> %s (bone %d, depth %.2f) body code %u: prop at %.2f %.2f %.2f, "
+                                     "in koshi frame %.2f %.2f %.2f%c",
+                             unsigned(g_svrCurEv), propNo, g_beltLog.kind >= 0 && g_beltLog.kind < 3 ? kKind[g_beltLog.kind] : "?",
+                             g_beltLog.bone, g_beltLog.depth, gU32(rdram, parent + 0x30u), p[0], p[1], p[2], l[0], l[1], l[2], 10);
+            }
+        }
+        g_beltLog = {};
+        g_rootD = {};
+        if (ctx->pc == raIn)
+            b4HoseiAfterActionLink(rdram, self, attr);
+        if (!probe || !g_svrEventActive)
+            return;
         if (attr == 0u || gU32(rdram, attr + 0x30u) < 2800u || gU32(rdram, attr + 0x30u) >= 3000u)
             return;
         static uint32_t last = 0xFFFFFFFFu;
@@ -10041,7 +12390,9 @@ namespace
             name[i] = static_cast<char>(rdram[str + i]);
         int32_t r = findBoneNative(rdram, model, name);
         const size_t len = strnlen(name, 16);
-        if (r < 0 && len > 2 && name[len - 2] == '_' && name[len - 1] == 'd')
+        if ((r < 0 || g_rootD.force) && g_rootD.model == model && g_rootD.index >= 0 && std::strcmp(name, "root_d") == 0)
+            r = g_rootD.index; // Nov 14 BELTS: synthesized root_d row (weaponActionLinkHook); Nov 16: SvR04/SvR06 props -> koshi
+        else if (r < 0 && len > 2 && name[len - 2] == '_' && name[len - 1] == 'd')
         {
             char alt[16] = {};
             std::memcpy(alt, name, len - 2);
@@ -10062,22 +12413,97 @@ namespace
         int16_t bone = 0;
         std::memcpy(&bone, rdram + ((mm + 0x24u + 2u * part) & PS2_RAM_COMMITTED_MASK), 2);
         SET_GPR_S32(ctx, 2, static_cast<int32_t>(bone));
-        if (g_pyro04Active)
+        if (g_pyro04Active || g_svr04CtxOn) // Nov 14 s3: the native SvR04 ctx's attr groups follow the same bones
             hctpPyroNoteMotionModel(mm);
         ctx->pc = regU(ctx, 31);
+    }
+    // Nov 16 OPEN LIST S8 (Eddie 4056 low rider: only hood/windshield/interior/wheels draw; JBL 4024 limo same path).
+    // SvR06 SOBJ 2500-2503 (and 2047/2048) carry a 2nd YOBJ as PAC part 2 (2501 = parts 0,2,4,9,10; part 2 = 178 KB =
+    // doors/fenders/bumper). HCTP MakeWeapon 0x211530 loops PAC ids 0..9: first YOBJ -> CWeapon(model), others ->
+    // weapon+0x218[id] (0x211bbc), so part 2 sits at +0x220, but HCTP CWeapon::Draw 0x20b5b0 draws ONLY +0x34 (=
+    // +0x218[+0x38], Action 0x20b030) and nothing reads +0x220. SvR06 CWeaponSD::Draw (game.bin 0x4bbe50): after DrawObj
+    // of the current model (+0x44) it takes part 2 (+0x1e4[2] = +0x1ec, 0x4bc150/0x4bc190), copies the S3MW link's
+    // bone matrices into it (0x4bc1b8-0x4bc1ec, count = model's matrix count), sets its TEST = CalcTestRegister(6,2,0,2,0)
+    // (= HCTP's 0x5002d, 0x20b8dc) and DrawObj(1.0) 0x4bc21c. No HCTP/SvR04 SOBJ has a part 2 (scan of all 3 bg.pac),
+    // so this is SvR06's own rule for every weapon. Port: run after HCTP Draw returns (pc == ra) when its own DrawObj
+    // path ran (same guards as 0x20b5c0..0x20b8e8). HCTP_PART2_DRAW=0 -> off. Logs "[part2]".
+    PS2Runtime::RecompiledFunction g_origWeaponDraw = nullptr;
+    void weaponDrawPart2(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t w)
+    {
+        w &= PS2_RAM_COMMITTED_MASK;
+        const uint32_t part2 = gU32(rdram, w + 0x220u) & PS2_RAM_COMMITTED_MASK;
+        if (part2 == 0u || gU32(rdram, w + 0x34u) == 0u || gU32(rdram, w + 0x30u) == 0xabu)
+            return;
+        const uint8_t f188 = rdram[w + 0x188u], f18d = rdram[w + 0x18du];
+        if (!(f188 & 1u) || !((f188 >> 4) & 1u) || ((f18d >> 4) & 1u))
+            return;
+        const uint32_t owner = gU32(rdram, w + 0x3cu) & PS2_RAM_COMMITTED_MASK;
+        if (gU32(rdram, 0x527b60u) != 0u && owner != 0u && gU32(rdram, owner + 0x390u) == 0u)
+            return;
+        if (gU32(rdram, w + 0x30u) == 0x87u && gU32(rdram, 0x527b78u) == 0u)
+            return;
+        if (rdram[w + 0x1e8u] != 0x80u || gU32(rdram, w + 0x16cu) != 0x80u)
+            return;
+        // S3MW link (CSD3MotionWeapon) matrices -> part 2 (HCTP layout of 0x20b86c..0x20b898: link+0x10 obj, obj+0x30 src,
+        // model +0xd8 dst, +0xec count)
+        const bool savedNo = t_eeNoCheckpoint;
+        t_eeNoCheckpoint = true;
+        const uint32_t lk = guestCall(rdram, ctx, runtime, 0x13c640u, {w + 0x1b4u, 0x53334d57u}) & PS2_RAM_COMMITTED_MASK;
+        const uint32_t mot = lk ? gU32(rdram, lk + 0x10u) & PS2_RAM_COMMITTED_MASK : 0u;
+        const uint32_t n = gU32(rdram, part2 + 0xecu), dst = gU32(rdram, part2 + 0xd8u) & PS2_RAM_COMMITTED_MASK;
+        if (mot != 0u && dst != 0u && n > 0u && n < 256u)
+        {
+            const uint32_t src = gU32(rdram, mot + 0x30u) & PS2_RAM_COMMITTED_MASK;
+            if (src != 0u)
+                std::memmove(rdram + dst, rdram + src, 64u * n);
+        }
+        const uint64_t test = 0x5002du;
+        std::memcpy(rdram + part2 + 0xc0u, &test, 8);
+        const float f12 = ctx->f[12];
+        ctx->f[12] = 1.0f;
+        guestCall(rdram, ctx, runtime, 0x153370u, {part2}); // CSkinModel::DrawObj(1.0)
+        ctx->f[12] = f12;
+        t_eeNoCheckpoint = savedNo;
+        static int logged = 0;
+        if (logged++ < 6)
+            std::fprintf(stderr, "[part2] weapon %08x: SvR06 part 2 model %08x drawn (%u bones, motion %08x)%c", w, part2, n, mot, 10);
+    }
+    void weaponDrawHook(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t self = regU(ctx, 4), raIn = regU(ctx, 31);
+        g_origWeaponDraw(rdram, ctx, runtime);
+        if (ctx->pc == raIn && self != 0u)
+            weaponDrawPart2(rdram, ctx, runtime, self);
+    }
+    void weaponDrawThunkHook(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        // _424_Draw 0x212310: j 0x20b5b0 with a0 -= 0x1a8 (direct C++ call in the runner -> skips the table hook)
+        ctx->r[4] = _mm_set_epi64x(0, static_cast<int64_t>(static_cast<int32_t>(regU(ctx, 4) - 0x1a8u)));
+        weaponDrawHook(rdram, ctx, runtime);
     }
     void svrEntranceInstall(PS2Runtime &runtime)
     {
         if (g_svrEvents.empty())
             return;
+        if (!(std::getenv("HCTP_PART2_DRAW") && std::getenv("HCTP_PART2_DRAW")[0] == '0') &&
+            (g_origWeaponDraw = runtime.lookupFunction(0x20b5b0u)) != nullptr)
+        {
+            runtime.replaceFunction(0x20b5b0u, weaponDrawHook);
+            runtime.replaceFunction(0x212310u, weaponDrawThunkHook);
+        }
         if (!(std::getenv("HCTP_PYRO_ATTR") && std::getenv("HCTP_PYRO_ATTR")[0] == '0'))
             runtime.replaceFunction(0x1b4fe0u, getBoneNoNote);
         if (!(std::getenv("HCTP_FINDBONE_FALLBACK") && std::getenv("HCTP_FINDBONE_FALLBACK")[0] == '0'))
             runtime.replaceFunction(0x150b10u, findBoneFallback);
-        // Nov 9: probe on by default while SvR events exist (log-only, 200 lines max) for Bret's glasses; =0 off.
-        if (const char *pp = std::getenv("HCTP_PROP_PROBE"); (pp != nullptr && pp[0] != '0') && // Nov 11: opt-in
+        // Nov 14: always on = root_d belts (HCTP_BELT_ROOTD=0 off) + opt-in HCTP_PROP_PROBE=1 log; needs the FindBone
+        // fallback above (it answers the synthesized root_d row).
+        if (!(std::getenv("HCTP_FINDBONE_FALLBACK") && std::getenv("HCTP_FINDBONE_FALLBACK")[0] == '0') &&
             (g_origWeaponActionLink = runtime.lookupFunction(0x1c2790u)) != nullptr)
-            runtime.replaceFunction(0x1c2790u, weaponActionLinkProbe);
+            runtime.replaceFunction(0x1c2790u, weaponActionLinkHook);
+        // Nov 16: SvR06 op B4 hand hosei (setAttrB4Hook). HCTP_B4_HOSEI=0 -> off.
+        if (!(std::getenv("HCTP_B4_HOSEI") && std::getenv("HCTP_B4_HOSEI")[0] == '0') &&
+            (g_origSetAttr = runtime.lookupFunction(0x1b3120u)) != nullptr)
+            runtime.replaceFunction(0x1b3120u, setAttrB4Hook);
         auto hookFn = [&runtime](uint32_t addr, PS2Runtime::RecompiledFunction &orig, PS2Runtime::RecompiledFunction fn) {
             if (orig != nullptr || (orig = runtime.lookupFunction(addr)) == nullptr)
                 return false;
@@ -10085,7 +12511,12 @@ namespace
             return true;
         };
         bool ok = hookFn(0x166fe0u, g_origEvsSetEvent, evsSetEventSvr);
+        // Nov 15 item 4: SvR06 rope A0/A1 drive flag (CEventRopeAction 0x226e20 callees, see ropeGetDataHook)
+        if (!hookFn(0x168aa0u, g_origRopeGetData, ropeGetDataHook) || !hookFn(0x218ed0u, g_origRopeSetCorner, ropeSetHook<&g_origRopeSetCorner, 0x2271c0u>) ||
+            !hookFn(0x218d20u, g_origRopeSetYure, ropeSetHook<&g_origRopeSetYure, 0x227214u>) || !hookFn(0x226d00u, g_origRopeCtor, ropeCtorHook))
+            std::fprintf(stderr, "[svrrope] rope A0/A1 hooks FAILED%c", 10);
         hostse::install(runtime); // Nov 11 HOST PYRO SE (PlaySE_FromAttribute 0x3ada80)
+        sfxlist::install(runtime); // Nov 13 native GetSfxInfo 0x1ac6d0, bank map for every bank (SFX_CRASH_SIXMAN note)
         ok = hookFn(0x166fa0u, g_origEvsEnd, evsEndSvr) && ok;
         ok = hookFn(0x166d80u, g_origEvsRelease, evsReleaseSvr) && ok;
         ok = hookFn(0x164b90u, g_origCamAnalyze, camAnalyzeSvr) && ok;
@@ -10093,6 +12524,7 @@ namespace
         ok = hookFn(0x1ff8c0u, g_origMotionLightSet, motionLightSetSvr) && ok;
         ok = hookFn(0x166e00u, g_origEvsActionSvr, evsActionSvr) && ok;
         ok = hookFn(0x167280u, g_origSetCast, setCastSvr) && ok; // STEP 3: SvR cast object order
+        ok = hookFn(0x167c10u, g_origStartScene, startSceneSvr) && ok; // Nov 14 FACES + HANDS
         if (g_origCFileSearch == nullptr)
             ok = hookFn(0x1482f0u, g_origCFileSearch, cfileSearchLoose) && ok;
         std::cerr << "[svrent] SvR entrance reader: " << g_svrEvents.size() / 2 << " SvR04 events" << (ok ? "" : " (a hook FAILED)")
@@ -10143,7 +12575,7 @@ namespace
                     s.id = static_cast<uint16_t>(v);
                 else if (std::sscanf(line.c_str(), "template=%x", &v) == 1 && v < 0x56u)
                     s.tmpl = static_cast<uint8_t>(v);
-                else if (std::sscanf(line.c_str(), "music=%u", &v) == 1 && v < 256u)
+                else if (std::sscanf(line.c_str(), "music=%u", &v) == 1 && v < 65536u) // Nov 16: > 255 = wide id (MEDIA_ROUTES only)
                     s.music = static_cast<int>(v);
                 else if (std::sscanf(line.c_str(), "video=%u", &v) == 1 && v < 256u)
                     s.video = static_cast<int>(v);
@@ -10647,9 +13079,49 @@ namespace
             if (at[i])
                 std::memcpy(rdram + at[i] + 0xAu, &old[i], 2);
     }
+    // Nov 16 MUSIC ID LIFT: the record music byte (+0x15F) is u8 and ids 16-39/56-79/189-255 are all routed (40-55,
+    // 80-188 = stock BGM ids). CEventBGM::Start 0x2b60e0 reads lbu 0x17F(prop) and calls CBGMPlayer::PlayByIndex
+    // 0x1b0d00(bgm, id, 1) (jal 0x2b615c, ra 0x2b6164, v0 = the CCharProp); PlayByIndex hands a1 unchanged to the
+    // music-index hook 0x1b0490 (importedMusicIndex, MEDIA_ROUTES id is u32). So a slot with music=<256..65535> gets its
+    // wide id swapped into a1 at that call. Map = CCharProp -> wide id, rebuilt at every CCharProp ctor (stale props cleared).
+    std::map<uint32_t, uint32_t> g_rxWideMusic;
+    // Nov 17: victory music = CEventBGM::StartDoramock 0x2b6190: lbu s0, 0x17b(v0 = CCharProp) -> PlayByIndex at ra 0x2b61f8
+    std::map<uint32_t, uint32_t> g_rxWideWin;
+    std::map<unsigned, uint32_t> g_camWideMusic; // roster id -> CAM music pick (CAM_WIDE_MUSIC.txt)
+    PS2Runtime::RecompiledFunction g_rxOrigPlayBGM = nullptr;
+    void rosterxPlayBGM(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t bgmRa = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
+        if (bgmRa == 0x2b6164u || bgmRa == 0x2b61f8u)
+        {
+            const auto &map = bgmRa == 0x2b6164u ? g_rxWideMusic : g_rxWideWin;
+            const auto it = map.find(static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[2])) & PS2_RAM_COMMITTED_MASK);
+            if (it != map.end())
+            {
+                SET_GPR_U32(ctx, 5, it->second);
+                static unsigned told = 0;
+                if (told++ < 16)
+                    std::fprintf(stderr, "[rosterx] entrance BGM wide music id %u%c", it->second, 10);
+            }
+        }
+        g_rxOrigPlayBGM(rdram, ctx, runtime);
+    }
+    // Nov 17: wide music for a character code + its record: CAM pick (<= 255 = explicit stock pick -> 0) > slot music= >
+    // MEDIA_DEFAULTS wide (only while the record byte is still stock). 0 = record byte rules.
+    uint32_t camWideMusicFor(const uint8_t *rdram, uint32_t code, uint32_t record)
+    {
+        const auto cam = g_camWideMusic.find(code / 100u);
+        if (cam != g_camWideMusic.end())
+            return cam->second > 255u ? cam->second : 0u;
+        if (hctpIsSlotCode(code))
+            if (const RosterxSlot *s = rosterxFromCodeId(const_cast<uint8_t *>(rdram), code / 100u))
+                return s->music > 255 ? uint32_t(s->music) : 0u;
+        return camDefaultWide(rdram, code, record);
+    }
     void rosterxPropCtor(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t self = rxArg(ctx, 4) & PS2_RAM_COMMITTED_MASK, chara = rxArg(ctx, 5) & PS2_RAM_COMMITTED_MASK;
+        g_rxWideMusic.erase(self);
         if (RosterxSlot *s = rosterxFromChara(rdram, chara))
             if (const uint32_t rec = rosterxRecord(rdram, runtime, *s))
             {
@@ -10667,10 +13139,115 @@ namespace
         if (hctpIsSlotCode(code))
             if (const RosterxSlot *s = rosterxFromCodeId(rdram, code / 100u))
             {
+                if (s->music > 255)
+                    g_rxWideMusic[self] = static_cast<uint32_t>(s->music);
                 const bool ok = (s->music < 0 && s->video < 0) && applyMediaDefaults(rdram, self + 0x20u, rosterxTemplateCode(rdram, *s, code));
                 std::fprintf(stderr, "[rosterx] %s media: template row %s, music %u video %u%c", s->name.c_str(),
                              ok ? "applied" : "none", rdram[self + 0x20u + 0x15fu], rdram[self + 0x20u + 0x15eu], 10);
             }
+        // Nov 17 wide music for every prop: CAM pick > slot music= > MEDIA_DEFAULTS (camWideMusicFor)
+        const uint8_t *rec = rdram + self + 0x20u;
+        const bool winFollows = rec[0x15bu] == rec[0x15fu]; // StartDoramock plays +0x15b; follow only where equal
+        const uint32_t wide = camWideMusicFor(rdram, code, self + 0x20u);
+        g_rxWideMusic.erase(self);
+        g_rxWideWin.erase(self);
+        if (wide)
+        {
+            g_rxWideMusic[self] = wide;
+            if (winFollows)
+                g_rxWideWin[self] = wide;
+            static unsigned told = 0;
+            if (told++ < 24)
+                std::fprintf(stderr, "[hctp] wide music code %u -> %u (victory %s)%c", code, wide, winFollows ? "same" : "own byte", 10);
+        }
+    }
+    // Nov 17 CAM MUSIC ID LIFT (Create-a-Moveset > Entrance > Music). Code read (runner listings):
+    //  CMovesEntrance::InputAction 0x352f40: row = CEntranceListSelect::GetCurrentList 0x354170, lh s0 = LIST row id (u16);
+    //  kind 2 (music) -> sb s0 0x227(this) (record +0x15f) + sb s0 0x223(this) (+0x15b victory), then
+    //  CLink::SearchLink 0x13c640(g_pChar[0]+0x1b4,'CPRO') at ra 0x353098 and sb s0 0x17b(prop). sb truncates ids > 255.
+    //  Draw 0x3534e0: lbu 0x227 -> GetCovertListName 0x244850(reader, kind, id) at ra 0x353790, s0 = 2 for music.
+    //  FromUI_Sub2 0x352e70: lbu 0x227 -> SetPreview 0x353340(this, 2, id) at ra 0x352edc -> 0x351e40 -> BGM by id.
+    //  LIST row count = u16 (CMovesListReader::ReadEndProcess 0x244808 sh +0x70; GetCovertListName lhu +0x70), rows used by
+    //  pointer (CStableMovesSelect ctor 0x17b420) -> no 0xF0 row cap in code (the stagers' assert was our own guard).
+    // Fix: host map roster id -> picked id (CAM_WIDE_MUSIC.txt, survives restarts); for a wide pick the record bytes get the
+    // stock theme (stock record +0x15f; slot/CAW 111 "No Music") so u8 readers outside these hooks (Season 0x254c60) stay valid.
+    // Limitation: the map is written on pick (a later CAM cancel does not undo it).
+    void saveCamWideMusic()
+    {
+        std::ofstream f("CAM_WIDE_MUSIC.txt");
+        f << "# roster id (code/100), music id picked in Create-a-Moveset (> 255 = wide; <= 255 = explicit stock pick)\n";
+        for (const auto &[id, m] : g_camWideMusic)
+            f << id << ' ' << m << '\n';
+    }
+    void loadCamWideMusic()
+    {
+        std::ifstream f("CAM_WIDE_MUSIC.txt");
+        for (std::string l; std::getline(f, l);)
+        {
+            unsigned id = 0, m = 0;
+            if (!l.empty() && l[0] != '#' && std::sscanf(l.c_str(), "%u %u", &id, &m) == 2 && m <= 65535u)
+                g_camWideMusic[id] = m;
+        }
+        std::fprintf(stderr, "[hctp] CAM wide music: %zu picks loaded%c", g_camWideMusic.size(), 10);
+    }
+    uint32_t camCurrentCode(const uint8_t *rdram)
+    {
+        uint32_t chr = 0, code = 0;
+        std::memcpy(&chr, rdram + 0x526ea0u, 4); // g_pChar[0] = the CAM character
+        chr &= PS2_RAM_COMMITTED_MASK;
+        if (!chr || chr > PS2_RAM_COMMITTED_TOP - 0x34u)
+            return ~0u;
+        std::memcpy(&code, rdram + chr + 0x30u, 4);
+        return code;
+    }
+    PS2Runtime::RecompiledFunction g_camOrigSearchLink = nullptr, g_camOrigListName = nullptr, g_camOrigSetPreview = nullptr;
+    void camMusicPickSearchLink(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (rxArg(ctx, 31) == 0x353098u)
+        {
+            const uint32_t self = rxArg(ctx, 19) & PS2_RAM_COMMITTED_MASK, picked = rxArg(ctx, 16) & 0xFFFFu;
+            const uint32_t code = camCurrentCode(rdram);
+            if (code != ~0u && self && self <= PS2_RAM_COMMITTED_TOP - 0x2a4u)
+            {
+                const unsigned rid = code / 100u;
+                if (picked > 255u)
+                {
+                    g_camWideMusic[rid] = picked;
+                    const uint8_t fallback = code < 8600u ? rdram[0x4c0f54u + rid * 0x170u + 0x15fu] : uint8_t(111);
+                    rdram[self + 0x227u] = rdram[self + 0x223u] = fallback;
+                    SET_GPR_U32(ctx, 16, fallback); // the following sb s0, 0x17b(prop)
+                }
+                else if (camDefaultWide(rdram, code, self + 0xc8u) || hctpIsSlotCode(code))
+                    g_camWideMusic[rid] = picked; // explicit stock pick wins over a wide default / slot music=
+                else
+                    g_camWideMusic.erase(rid);
+                saveCamWideMusic();
+                std::fprintf(stderr, "[hctp] CAM music pick code %u -> %u%c", code, picked, 10);
+            }
+        }
+        g_camOrigSearchLink(rdram, ctx, runtime);
+    }
+    void camMusicListName(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (rxArg(ctx, 31) == 0x353790u && rxArg(ctx, 16) == 2u)
+        {
+            const uint32_t self = rxArg(ctx, 19) & PS2_RAM_COMMITTED_MASK, code = camCurrentCode(rdram);
+            if (code != ~0u && self && self <= PS2_RAM_COMMITTED_TOP - 0x2a4u && rxArg(ctx, 6) == rdram[self + 0x227u])
+                if (const uint32_t wide = camWideMusicFor(rdram, code, self + 0xc8u))
+                    SET_GPR_U32(ctx, 6, wide);
+        }
+        g_camOrigListName(rdram, ctx, runtime);
+    }
+    void camMusicSetPreview(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        if (rxArg(ctx, 31) == 0x352edcu && rxArg(ctx, 5) == 2u)
+        {
+            const uint32_t self = rxArg(ctx, 4) & PS2_RAM_COMMITTED_MASK, code = camCurrentCode(rdram);
+            if (code != ~0u && self && self <= PS2_RAM_COMMITTED_TOP - 0x2a4u)
+                if (const uint32_t wide = camWideMusicFor(rdram, code, self + 0xc8u))
+                    SET_GPR_U32(ctx, 6, wide);
+        }
+        g_camOrigSetPreview(rdram, ctx, runtime);
     }
     // Nov 9: Create-a-Moveset picker (CSuperStarListDrawer::SetSuperStarList 0x3934c0, type 0 = wrestler list) walks ids
     // 0..0xA1 only. After it returns, slot ids (0xA2+) are inserted alphabetically (record name +0x116) into the list
@@ -10968,6 +13545,8 @@ namespace
     // Installed LAST in applyHctp so it wraps the cut-roster / Hogan / media hooks on the same functions.
     void installRosterExpansion(PS2Runtime &runtime)
     {
+        hctpSvr04CtxInstall(runtime); // opt-in HCTP_SVR04_CTX=1 (default: nothing installed)
+        hctpSvr06CtxInstall(runtime); // opt-in HCTP_SVR06_CTX=1 (Nov 14, SvR06 pyro + pyro SE)
         if ((g_origMakeFavTable = runtime.lookupFunction(0x245c40u)) != nullptr &&
             runtime.replaceFunction(0x245c40u, makeFavoriteTableBig))
             std::cerr << "[movefav] MakeFavoriteTable > 2000 rows hook on" << std::endl;
@@ -10987,6 +13566,8 @@ namespace
             if (auto b = g_svr06Registered.find(4044u); b != g_svr06Registered.end())
                 g_svr06CamEvent = b->second;
         }
+        else
+            svr06CacheFlush(); // Nov 15: SvR04 plane banks live in the same host cache
         symTableLoad(); // Nov 11 SYM entrance port: MODS\SYM\entrances.txt (7800+ / 8000+ / 8050+), before the hooks install
         symTableLoad("SYMDEMO", 20000u, 8u); // Nov 11 EPW4 demo (Sep 2002) entrance versions: MODS\SYMDEMO\entrances.txt (8200+)
         svrEntranceInstall(runtime); // SvR04 table + slot.txt entrance=svr04:<no> -> SvR entrance reader
@@ -11020,6 +13601,12 @@ namespace
         ok = hook(0x16bca0u, g_rxOrigEditTaunt, rosterxEditUseTaunt) && ok;
         ok = hook(0x16be70u, g_rxOrigDefAnim, rosterxSetDefAnimation) && ok;
         ok = hook(0x1cd1d0u, g_rxOrigPropCtor, rosterxPropCtor) && ok;
+        ok = hook(0x1b0d00u, g_rxOrigPlayBGM, rosterxPlayBGM) && ok; // Nov 16 music id lift
+        // Nov 17 CAM music id lift (camMusicPickSearchLink comment): pick / name / preview
+        loadCamWideMusic();
+        ok = hook(0x13c640u, g_camOrigSearchLink, camMusicPickSearchLink) && ok;
+        ok = hook(0x244850u, g_camOrigListName, camMusicListName) && ok;
+        ok = hook(0x353340u, g_camOrigSetPreview, camMusicSetPreview) && ok;
         ok = hook(0x2313a0u, g_rxOrigCreateACom, rosterxCreateACom) && ok;
         ok = hook(0x39b480u, g_rxOrigWinnerProp, rosterxWinnerProp) && ok;
         ok = hook(0x39d1a0u, g_rxOrigSuccessAct, rosterxSuccessAct) && ok;
@@ -11041,6 +13628,8 @@ namespace
         if (!g_cutEntranceCodes.empty() && g_origGetEntranceCastNo == nullptr &&
             hook(0x2af480u, g_origGetEntranceCastNo, getEntranceCastNoCutRoster))
             std::cerr << "[rosterx] entrance attire hook on (" << g_cutEntranceCodes.size() << " codes)" << std::endl;
+        if (g_origGetEntranceCastNo && !g_origSetSuperStarData)
+            hook(0x2ae4e0u, g_origSetSuperStarData, setSuperStarDataDressGate);
     }
     // ===================== end ROSTER EXPANSION =====================
     uint32_t rosterxCodeIdImpl(const uint8_t *rdram, uint32_t code)
@@ -11082,7 +13671,7 @@ namespace
         std::vector<AnyBoneRule> rules;
         std::vector<AnyBoneFace> faces;
         // Nov 7 JAW FRAME: face bones whose base (bone record +0x20) is not HCTP's near-identity base.
-        struct Jaw { uint16_t bone; float B[9]; float saved[16]; };
+        struct Jaw { uint16_t bone; float B[9]; float saved[16]; int16_t parentJaw = -1; float o[9] = {}; }; // Nov 14: parentJaw = d_kuchi jaw
         std::vector<Jaw> jaws;
     };
     void abEuler(float rx, float ry, float rz, float *m) // row-vector X*Y*Z (tools\retarget_svr_molly.py rot), 3x3
@@ -11314,8 +13903,12 @@ namespace
                         {
                             static const char *kJaw[] = {"u_kuchi", "d_kuchi", "l_kuchi", "r_kuchi", "l_mabuta", "r_mabuta",
                                                          "l_mayu", "r_mayu", "u_ha", "d_ha"};
+                            // Nov 14 FACES (notes\FACE_HANDS_SVR_ENTRANCES_20261114.md sec 2): SvR models' eyes too (rest -90,90,0:
+                            // R x B turned them about the wrong axes). HCTP_JAW_EYES=0 = off.
+                            static const bool s_jawEyes = !(std::getenv("HCTP_JAW_EYES") && std::getenv("HCTP_JAW_EYES")[0] == '0');
                             const std::string n = name(i);
-                            if (std::find_if(std::begin(kJaw), std::end(kJaw), [&](const char *f) { return n == f; }) == std::end(kJaw))
+                            if (std::find_if(std::begin(kJaw), std::end(kJaw), [&](const char *f) { return n == f; }) == std::end(kJaw) &&
+                                !(s_jawEyes && (n == "l_eye" || n == "r_eye")))
                                 continue;
                             float r3[3];
                             std::memcpy(r3, rdram + bones + i * 80u + 0x20u, 12);
@@ -11326,6 +13919,24 @@ namespace
                             abEuler(r3[0], r3[1], r3[2], j.B);
                             m.jaws.push_back(j);
                         }
+                    // Nov 14 KUCHI FRAME: a jaw bone whose model parent (record +0x30) is d_kuchi (SvR l_kuchi/r_kuchi): the key
+                    // is an atama-frame delta R, so local = Blk x Bdk x R x Ldk^T (Ldk = d_kuchi's converted local) = Klk for
+                    // SvR entrance keys (R = (Blk Bdk)^T Klk Kdk). HCTP_KUCHI_FRAME=0 = off.
+                    static const bool s_kuchiFrame = !(std::getenv("HCTP_KUCHI_FRAME") && std::getenv("HCTP_KUCHI_FRAME")[0] == '0');
+                    if (s_kuchiFrame)
+                    {
+                        int16_t dk = -1;
+                        for (size_t q = 0; q < m.jaws.size(); ++q)
+                            if (name(m.jaws[q].bone) == "d_kuchi")
+                                dk = static_cast<int16_t>(q);
+                        for (AnyBoneModel::Jaw &j : m.jaws)
+                        {
+                            int32_t par = -1;
+                            std::memcpy(&par, rdram + bones + j.bone * 80u + 0x30u, 4);
+                            if (dk >= 0 && &j != &m.jaws[dk] && par == static_cast<int32_t>(m.jaws[dk].bone))
+                                j.parentJaw = dk;
+                        }
+                    }
                     if (foreign && std::getenv("HCTP_MATCHUP_PROBE"))
                     {
                         g_recWatch[bones + 80u] = {model, true};
@@ -11420,8 +14031,25 @@ namespace
                     const float C[9] = {c[0], c[1], c[2], c[4], c[5], c[6], c[8], c[9], c[10]};
                     abMul3(C, j.B, t, true); // t = C x B^T = R
                     abMul3(j.B, t, o);       // o = B x R
+                    std::memcpy(j.o, o, sizeof o);
                     c[0] = o[0], c[1] = o[1], c[2] = o[2], c[4] = o[3], c[5] = o[4], c[6] = o[5], c[8] = o[6], c[9] = o[7], c[10] = o[8];
                     std::memcpy(rdram + locals + j.bone * 64u, c, 64);
+                }
+                for (AnyBoneModel::Jaw &j : m.jaws) // Nov 14 KUCHI FRAME (after d_kuchi's own conversion above)
+                {
+                    if (j.parentJaw < 0)
+                        continue;
+                    const AnyBoneModel::Jaw &d = m.jaws[j.parentJaw];
+                    const float *c = j.saved;
+                    const float C[9] = {c[0], c[1], c[2], c[4], c[5], c[6], c[8], c[9], c[10]};
+                    float R[9], BB[9], t[9], o[9], out[16];
+                    abMul3(C, j.B, R, true);    // R = C x Blk^T
+                    abMul3(j.B, d.B, BB);       // Blk x Bdk
+                    abMul3(BB, R, t);           // x R
+                    abMul3(t, d.o, o, true);    // x Ldk^T
+                    std::memcpy(out, j.saved, 64);
+                    out[0] = o[0], out[1] = o[1], out[2] = o[2], out[4] = o[3], out[5] = o[4], out[6] = o[5], out[8] = o[6], out[9] = o[7], out[10] = o[8];
+                    std::memcpy(rdram + locals + j.bone * 64u, out, 64);
                 }
                 if (!m.faces.empty() || !m.jaws.empty())
                     restore = &m, restoreLocals = locals;
@@ -11580,10 +14208,51 @@ namespace
     }
     // Log only: ymallocR 0x141020 returning 0 (was the SvR model page bump enough?).
     PS2Runtime::RecompiledFunction g_origYmalloc = nullptr;
+    // Nov 13 YMEM GUARD (see ymemGuardOn): alloc result outside the current page / inside resident pages 0-1 while page >= 2,
+    // and yfree 0x141160 of a block that is not inside the page named by its ptr-4 byte (stale page after a re-cut / bad header).
+    void ymemGuardAlloc(uint8_t *rdram, const char *fn, uint32_t p, uint32_t size, uint32_t ra)
+    {
+        if (!p || !ymemGuardOn()) return;
+        auto rd = [&](uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & PS2_RAM_COMMITTED_MASK), 4); return v; };
+        const uint32_t pg = rd(0x500F00u) & 15u, st = rd(0x500E00u + pg * 16u), en = rd(0x500E04u + pg * 16u);
+        const uint32_t resLo = rd(0x500E00u), resHi = rd(0x500E14u); // page 0 start .. page 1 end (boot InitHeap)
+        const bool outside = p < st || p + size > en;
+        const bool resident = pg >= 2u && p < resHi && p + size > resLo;
+        static int logged = 0;
+        if ((outside || resident) && logged++ < 64)
+        {
+            std::fprintf(stderr, "[ymemguard] %s %08X size %X ra %08X page %u %08X-%08X%s%s%c", fn, p, size, ra, pg, st, en,
+                         outside ? " OUTSIDE-PAGE" : "", resident ? " IN-RESIDENT" : "", 10);
+            if (logged <= 4) ymemGuardTable(rdram, "bad alloc", ra);
+        }
+    }
+    PS2Runtime::RecompiledFunction g_origYfree = nullptr;
+    void yfreeGuard(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t p = rxArg(ctx, 4), ra = rxArg(ctx, 31);
+        if (p && ymemGuardOn())
+        {
+            auto rd = [&](uint32_t a) { uint32_t v; std::memcpy(&v, rdram + (a & PS2_RAM_COMMITTED_MASK), 4); return v; };
+            const uint32_t pg = rdram[(p - 4u) & PS2_RAM_COMMITTED_MASK], st = pg < 16u ? rd(0x500E00u + pg * 16u) : 0u,
+                           en = pg < 16u ? rd(0x500E04u + pg * 16u) : 0u, blk = p - 0x10u;
+            const uint32_t prevIdx = rd(blk), nextIdx = rd(blk + 4u);
+            const bool bad = pg >= 16u || blk < st || blk >= en || uint64_t(st) + uint64_t(prevIdx) * 16u > en ||
+                             uint64_t(st) + uint64_t(nextIdx) * 16u > en;
+            static int logged = 0;
+            if (bad && logged++ < 64)
+            {
+                std::fprintf(stderr, "[ymemguard] STALE yfree %08X ra %08X page %u %08X-%08X hdr w0 %X w1 %X%c", p, ra, pg, st, en, prevIdx,
+                             nextIdx, 10);
+                if (logged <= 4) ymemGuardTable(rdram, "bad free", ra);
+            }
+        }
+        g_origYfree(rdram, ctx, runtime);
+    }
     void ymallocFailLog(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t size = rxArg(ctx, 4), ra = rxArg(ctx, 31);
         g_origYmalloc(rdram, ctx, runtime);
+        if (ctx->pc == ra) ymemGuardAlloc(rdram, "ymallocR", rxArg(ctx, 2), size, ra);
         static int logged = 0;
         if (ctx->pc == ra && rxArg(ctx, 2) == 0u && logged++ < 64)
         {
@@ -11601,6 +14270,7 @@ namespace
     {
         const uint32_t size = rxArg(ctx, 4), align = rxArg(ctx, 5), ra = rxArg(ctx, 31);
         g_origYmemalign(rdram, ctx, runtime);
+        if (ctx->pc == ra) ymemGuardAlloc(rdram, "ymemalignR", rxArg(ctx, 2), size, ra);
         static int logged = 0;
         if (ctx->pc == ra && rxArg(ctx, 2) == 0u && size != 0u && logged++ < 64)
         {
@@ -11620,6 +14290,8 @@ namespace
             std::cerr << "[svrnative] ymallocR fail log" << std::endl;
         if ((g_origYmemalign = runtime.lookupFunction(0x141110u)) != nullptr && runtime.replaceFunction(0x141110u, ymemalignFailLog))
             std::cerr << "[ymem] ymemalignR fail log" << std::endl;
+        if (ymemGuardOn() && (g_origYfree = runtime.lookupFunction(0x141160u)) != nullptr && runtime.replaceFunction(0x141160u, yfreeGuard))
+            std::cerr << "[ymemguard] yfree/alloc guard on (HCTP_RESWATCH)" << std::endl;
     }
     void installAnyBone(PS2Runtime &runtime)
     {
@@ -11632,6 +14304,15 @@ namespace
         if (!(std::getenv("HCTP_SVR_BLOOD") && std::getenv("HCTP_SVR_BLOOD")[0] == '0') &&
             (g_origCharCtor = runtime.lookupFunction(0x1b9c40u)) != nullptr && runtime.replaceFunction(0x1b9c40u, charCtorClearBlood))
             std::cerr << "[svrblood] CChar ctor clears +0x383 blood flag" << std::endl;
+        if (!(std::getenv("HCTP_MOVE_ADDER") && std::getenv("HCTP_MOVE_ADDER")[0] == '0'))
+        {
+            moveAddLoadBank(runtime.memory().getRDRAM());
+            static constexpr uint32_t kAt[4] = {0x1fd200u, 0x387cf0u, 0x388290u, 0x242d50u};
+            static constexpr PS2Runtime::RecompiledFunction kFn[4] = {moveAddAfterLoad<0>, moveAddAfterLoad<1>, moveAddAfterLoad<2>, moveAddAfterLoad<3>};
+            for (int i = 0; g_moveAddBank && i < 4; ++i)
+                if ((g_origMoveLoadEnd[i] = runtime.lookupFunction(kAt[i])) != nullptr)
+                    runtime.replaceFunction(kAt[i], kFn[i]);
+        }
         if (std::getenv("HCTP_MATCHUP_PROBE"))
         {
             if ((g_origEditYmpFn[0] = runtime.lookupFunction(0x2d49a0u)) != nullptr) runtime.replaceFunction(0x2d49a0u, editYmpProbe<0>);
@@ -11765,7 +14446,7 @@ namespace
 #undef HCTP_VU0_PUT
             std::cerr << "[vu0recomp] " << n << " libvu0 functions back to the recompiled game code" << std::endl;
         }
-        if (std::getenv("HCTP_BONE_JITTER"))
+        if (std::getenv("HCTP_BONE_JITTER") || camProbeOn())
         {
             g_boneJitterOrig = runtime.lookupFunction(0x155dc0u);
             if (!g_boneJitterOrig || !runtime.replaceFunction(0x155dc0u, boneJitterLogged))
@@ -11948,16 +14629,27 @@ namespace
             if (!g_cutEntranceCodes.empty() && (g_origGetEntranceCastNo = runtime.lookupFunction(0x2af480u)) != nullptr &&
                 runtime.replaceFunction(0x2af480u, getEntranceCastNoCutRoster))
                 std::cerr << "[hctp] cut roster entrance attires: " << g_cutEntranceCodes.size() << std::endl;
+            if (g_origGetEntranceCastNo && !g_origSetSuperStarData &&
+                (g_origSetSuperStarData = runtime.lookupFunction(0x2ae4e0u)) != nullptr)
+                runtime.replaceFunction(0x2ae4e0u, setSuperStarDataDressGate);
         }
         if ((g_origInitEventSystem = runtime.lookupFunction(0x2ad340u)) != nullptr &&
             runtime.replaceFunction(0x2ad340u, std::getenv("HCTP_VICTORY_EVTK") ? initEventSystemEvtk : initEventSystemShirtTear))
             std::cerr << "[hctp] Hogan shirt-tear dress routing on" << std::endl;
-        if (std::getenv("HCTP_YMEM_PROBE") && std::getenv("HCTP_YMEM_PROBE")[0] != '0' && // Nov 11: opt-in
+        if (std::getenv("HCTP_SHADOW_PROBE") && std::getenv("HCTP_SHADOW_PROBE")[0] != '0' && // Nov 12: opt-in CAM cycle probe
+            (g_origCharDrawShadow = runtime.lookupFunction(0x1b9c30u)) != nullptr &&
+            runtime.replaceFunction(0x1b9c30u, charDrawShadowProbe))
+            std::cerr << "[shadowprobe] on (CCharDrawShadow::Draw 0x1b9c30 + ClearChar 0x1ff130)" << std::endl;
+        if (((std::getenv("HCTP_YMEM_PROBE") && std::getenv("HCTP_YMEM_PROBE")[0] != '0') || g_origCharDrawShadow) && // Nov 11: opt-in
             (g_origClearChar = runtime.lookupFunction(0x1ff130u)) != nullptr)
             runtime.replaceFunction(0x1ff130u, clearCharProbe);
         if ((g_origReallocatePage = runtime.lookupFunction(0x140c90u)) != nullptr &&
             runtime.replaceFunction(0x140c90u, reallocatePageBigModels))
             std::cerr << "[charmem] native ymem re-cut: GameMem char pages in host RAM 0x02000000+ (" << charPageKb() << " KB each)" << std::endl;
+        if ((g_origNewArrPkt = runtime.lookupFunction(0x1001f0u)) != nullptr && (g_origDelArrPkt = runtime.lookupFunction(0x100210u)) != nullptr &&
+            runtime.replaceFunction(0x1001f0u, crenderPktNew) && runtime.replaceFunction(0x100210u, crenderPktDelete))
+            std::cerr << "[pktbuf] CRender packet buffers in host RAM 0x" << std::hex << kPktArenaBase << std::dec << " (" << (pktBufBytes() >> 10)
+                      << " KB each, stock 768)" << std::endl;
         if (!(std::getenv("HCTP_KAMI_EXTRA") && std::getenv("HCTP_KAMI_EXTRA")[0] == '0') &&
             (g_origKamiMake = runtime.lookupFunction(0x1c5f50u)) != nullptr &&
             (g_origKamiAction = runtime.lookupFunction(0x1c5d70u)) != nullptr &&
@@ -12003,8 +14695,15 @@ namespace
         installAnyBone(runtime);
         hctpMatrixInstall(runtime);
         installRosterExpansion(runtime); // keep LAST: wraps the hooks above on the same functions
+        hctpSceneViewerInstall(runtime); // opt-in; chains over PPV / victory-evtk / roster hooks via lookupFunction
         std::cerr << "[hctp] overrides applied" << std::endl;
     }
+}
+
+// Bridge for hctp_scene_viewer.cpp: guest call helper (ppvCall lives in the anonymous namespace).
+uint32_t hctpSvCall(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime, uint32_t addr, std::initializer_list<uint32_t> args)
+{
+    return ppvCall(rdram, ctx, runtime, addr, args);
 }
 
 // Keep the commentary runtime decoupled from the override's private state,
@@ -12254,4 +14953,49 @@ bool hctpSvrKoteHalf(const uint8_t *rdram, uint32_t hokan) // P4: SvR06 Rotation
     if ((++n % 20000u) == 1u)
         std::fprintf(stderr, "[svrnative] kote_x half twist (%llu so far)%c", (unsigned long long)n, 10);
     return true;
+}
+// Nov 16 S8: see propBoneMatrixImpl (hctp_svr04_cue.h)
+bool hctpSvrPropBoneMatrix(const uint8_t *rd, uint32_t svrNo, int obj, int part, float M[16])
+{
+    return propBoneMatrixImpl(rd, svrNo, obj, part, M);
+}
+// Nov 17: SvR06 op 0x6C cues of SvR06 event svrNo (svr06Register, raw bank).
+bool hctpSvr06AttrCues(uint32_t svrNo, std::vector<HctpSvr06AttrCue> &out)
+{
+    std::lock_guard<std::mutex> lk(g_svr06AttrCueMx);
+    auto it = g_svr06AttrCues.find(static_cast<uint16_t>(svrNo));
+    out = it != g_svr06AttrCues.end() ? it->second : std::vector<HctpSvr06AttrCue>{};
+    return !out.empty();
+}
+// Nov 17: SvR06 EVTS obj -> model (28-B obj rows at u32(0x48)+8, model u16 +2) -> served id svr06PropId -> its HCTP
+// CSD3MotionWeapon (g_propS3mw, weaponActionLinkHook) -> world bone copy +0x34 [part] (= SvR06 StartParticleFromAtr 'WPON'
+// link 0x23c094 + the prop's bone; same read as propBoneMatrixImpl for SvR04).
+bool hctpSvr06PropBoneMatrix(const uint8_t *rd, uint32_t svrNo, int obj, int part, float M[16])
+{
+    if (obj <= 0 || part < 0 || part >= 0x1e) return false;
+    auto sit = g_svr06Script.find(static_cast<uint16_t>(svrNo));
+    if (sit == g_svr06Script.end()) return false;
+    const std::vector<uint8_t> &d = sit->second;
+    uint32_t t = 0;
+    uint16_t nObj = 0, model = 0;
+    if (d.size() < 0x4C) return false;
+    std::memcpy(&t, &d[0x48], 4);
+    std::memcpy(&nObj, &d[0x42], 2);
+    t += 8u;
+    if (static_cast<uint32_t>(obj) >= nObj || t + 28u * static_cast<uint32_t>(obj) + 4u > d.size()) return false;
+    std::memcpy(&model, &d[t + 28u * static_cast<uint32_t>(obj) + 2u], 2);
+    uint32_t self = 0;
+    {
+        std::lock_guard<std::mutex> lk(g_propS3mwMx);
+        auto it = g_propS3mw.find(svr06PropId(model));
+        if (it == g_propS3mw.end()) return false;
+        self = it->second;
+    }
+    auto u32 = [rd](uint32_t a) { uint32_t v = 0; a &= PS2_RAM_COMMITTED_MASK; if (a + 4u <= PS2_RAM_COMMITTED_TOP) std::memcpy(&v, rd + a, 4); return v; };
+    const uint32_t skin = u32(u32(self + 0x24u) + 0x34u) & PS2_RAM_COMMITTED_MASK;
+    const uint32_t mats = u32(self + 0x34u) & PS2_RAM_COMMITTED_MASK;
+    const uint32_t n = skin ? u32(skin + 0xECu) : 0u;
+    if (mats == 0u || (n != 0u && static_cast<uint32_t>(part) >= n) || mats + 64u * (part + 1u) > PS2_RAM_COMMITTED_TOP) return false;
+    std::memcpy(M, rd + mats + 64u * static_cast<uint32_t>(part), 64);
+    return std::isfinite(M[12]) && std::isfinite(M[0]);
 }

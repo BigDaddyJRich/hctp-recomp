@@ -56,20 +56,35 @@ void importedVideoIndex(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
 
 void installImportedMedia(PS2Runtime &runtime)
 {
+    // Nov 17: one bad line (e.g. "M 250 2 250", wrong partition) used to clear EVERY route (all added themes/trons silent).
+    // Now line by line: a bad or unparsable line is skipped and logged; the good routes stay.
     std::ifstream file("MEDIA_ROUTES.txt");
-    char kind;
-    uint32_t id, partition, entry;
-    while (file >> kind >> id >> partition >> entry)
+    std::string line;
+    uint32_t lineNo = 0, skipped = 0;
+    while (std::getline(file, line))
     {
-        if ((kind != 'M' && kind != 'V') || id > 255 || entry > 32767 ||
+        ++lineNo;
+        const size_t first = line.find_first_not_of(" \t\r");
+        if (first == std::string::npos || line[first] == '#')
+            continue;
+        std::istringstream ls(line);
+        char kind = 0;
+        uint32_t id = 0, partition = 0, entry = 0;
+        if (!(ls >> kind >> id >> partition >> entry) ||
+            (kind != 'M' && kind != 'V') || id > 65535 || // Nov 16: ids > 255 = roster slot wide music (rosterxPlayBGM)
+            entry > 32767 ||
             (kind == 'M' && partition != 4) || (kind == 'V' && partition != 7))
         {
-            std::fprintf(stderr, "[hctp] invalid imported media route; import disabled\n");
-            g_mediaRoutes.clear();
-            return;
+            ++skipped;
+            while (!line.empty() && (line.back() == '\r' || line.back() == '\n'))
+                line.pop_back();
+            std::fprintf(stderr, "[hctp] MEDIA_ROUTES.txt line %u invalid, skipped: \"%s\"\n", lineNo, line.c_str());
+            continue;
         }
         g_mediaRoutes[{kind, id}] = {uint16_t(partition), uint16_t(entry)};
     }
+    if (skipped)
+        std::fprintf(stderr, "[hctp] MEDIA_ROUTES.txt: %u bad line(s) skipped, %zu routes kept\n", skipped, g_mediaRoutes.size());
     if (g_mediaRoutes.empty())
         return;
     g_origMediaMusic = runtime.lookupFunction(0x1b0490u);
