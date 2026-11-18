@@ -1,89 +1,41 @@
-# WWE SmackDown! Here Comes the Pain — PC recompilation (test build)
+# WWE SmackDown! Here Comes the Pain — PC recompilation
 
-A static recompilation of **WWE SmackDown! Here Comes the Pain** (PlayStation 2, NTSC-U, **SLUS-20787**) into a native
-Windows program. The game's MIPS code is translated to C++ with [PS2Recomp](https://github.com/ran-j/PS2Recomp) and
-compiled on your PC. The PS2 graphics chip is drawn on the GPU by a native Direct3D 11 renderer, and the IOP
-(sound / disc processor) runs the game's own IRX modules.
+A static recompilation of **WWE SmackDown! Here Comes the Pain** (PlayStation 2, USA, **SLUS-20787**) into a native
+Windows game, built on your PC from your own disc. The game's code is translated to C++ with
+[PS2Recomp](https://github.com/ran-j/PS2Recomp) and drawn by a native Direct3D 11 renderer.
 
-HCTP-specific code and configuration live in the HCTP-named directories in this repository.
+**No game files or game code are in this repository or the download.** Everything made from your disc stays on your PC.
 
 ## Download and play
 
-Get **HCTP-Recompiled-Windows.zip** from the [latest release](https://github.com/BigDaddyJRich/hctp-recomp/releases/latest),
-unzip it to a short path (e.g. `C:\Games\HCTP`) and open **HCTP Recompiled Settings.exe**. It asks for your own USA disc
-(.iso / .chd or its files), builds the game on your PC (30-90 minutes the first time), then gives you PLAY, settings
-and updates. Optional content and commentary packs are shared on Discord.
+1. Get **HCTP-Recompiled-Windows.zip** from the [latest release](https://github.com/BigDaddyJRich/hctp-recomp/releases/latest)
+   and unzip it to a short path, e.g. `C:\Games\HCTP Recompiled` (not Desktop / Downloads / OneDrive).
+2. Open **HCTP Recompiled Settings.exe** (the launcher) and pick your disc image (.iso or .chd).
+3. It builds the game on your PC (30-90 minutes the first time). Then press **PLAY**.
 
-**Restored wrestlers (Content Pack):** Hulk Hogan, Legend Hogan, Ultimate Warrior, Jeff Hardy, William Regal, Billy
-Kidman and the other cut wrestlers appear only with the Content Pack. Update the game first (launcher update or
-rebuild; older builds show none of them with the pack), close it, then unzip the pack into your game folder
-`HCTP Recompiled\files\game` (the one with `SLUS_207.87`), merging folders and replacing files. A newer pack goes
-over an older one the same way. Your own `pac` files stay stock.
+**Only the unmodified USA retail disc (SLUS-20787) works.** Modded, patched or other-region ISOs break the game
+(for example a freeze on the Brock Lesnar screen).
 
-**No game files or game code are in this repository.** You need your own copy of the game; everything generated from
-it (the recompiled C++ in `PS2Recomp/ps2xRuntime/src/runner/` and `generated/`) stays on your PC and is never committed.
+You need Windows 10/11 64-bit, a CPU with AVX2, a DirectX 11 graphics card, 16 GB of RAM and 15 GB of free space.
 
-## Current status (October 2026)
+- **Saves:** `Documents\HCTP`.
+- **Controllers:** Xbox controllers, PlayStation 4 / 5 controllers (USB or Bluetooth, with vibration), and keyboard.
+  Keys and buttons can be changed on the launcher's Controls page. Up to 4 players.
+- **Slow or choppy?** Lower **Scale** in the launcher's Settings (Auto picks 6x on a 4K screen; try 3x or 2x).
+- **Matrix spin + instant replay:** two features cut from the game (L1 during a finisher, L2), behind a switch in the
+  launcher's Settings, off by default.
 
-Working in the native Windows build:
+What's new in each version: [CHANGELOG.md](CHANGELOG.md).
 
-- The recompiled game runs natively on Windows. The game code is recompiled C++, the graphics path is a native
-  Direct3D 11 renderer (1-6x the PS2's resolution), and the audio path runs through the native runtime/IOP integration rather than PCSX2.
-- Native video playback works for the game's Sofdec movies, with the game's ADX audio path available alongside the
-  native music option.
-- Native game audio works across music, commentary, crowd audio, menu sound effects, and in-match sound effects.
-- Gameplay runs at 60 FPS in matches, menus and full-arena entrances on the tested configuration (D3D11 native
-  renderer, RTX 3060).
-- Exhibition and Season work. Season has not been tested yet with the restored cut wrestlers or NPCs.
-- Boot, loading, menus, character selection, Create-a-Moveset, Season mode, cutscenes, locker-room/backstage scenes,
-  entrances, exhibition matches, and attract-mode demonstrations are functional.
-- Commentary is playable in matches, including the HCTP commentary restoration path. The public setup plan supports
-  HCTP, Shut Your Mouth, SmackDown vs. Raw, and the public beta as the core sources, with later games as optional
-  supplements.
-- Memory-card screens and save/load paths work in the native test path. PC builds use a user-data save location rather
-  than requiring a PCSX2 memory-card image.
-- The release zip holds the launcher, this source and a portable Python; the game is built from your disc on your PC.
-  Copyrighted game files and commentary source audio are never redistributed.
-- PPV MODE and ONLINE are on the main menu but do not work yet: ONLINE is only a proof of concept for now, and
-  PPV MODE is in active development and does not function correctly yet.
-- PS2 modders: see [`docs/COMMENTARY_PS2_PORTING.md`](docs/COMMENTARY_PS2_PORTING.md) for the documented pack format,
-  hook addresses, and the remaining ELF code-cave work needed for original-hardware commentary.
+## Bugs and help
 
-Fixed since the first release (Oct 13-14):
-- Garbled in-match HUD / season dialogue text (PSMT4HH/PSMT8H upload sizes)
-- Crowd piled in the ring, missing skin gloss, stray grey slabs (libvu0 stubs)
-- Runaway VU1 programs / garbage polygons (JR/JALR branch fix); all 20 VU1 programs now compiled
-- Exhibition match load softlock (IOP heap), whole-screen shimmy, 5-9 s in-match freezes, in-match hit sounds
-- Frame rate: demo match ~10 fps -> 32-44 (VU1 throughput mode, on by default; `HCTP_VU1_FAST=0` = exact)
-- Optional native music (`developer/runs/run_hctp_native_audio.bat`, `HCTP_NATIVE_ADX=1`): ADX streams decoded on the PC
-- Right-channel audio timing and weak stereo separation
-- Wrestler shadow artifacts / visible triangles
-- Missing skin gloss, stray grey slabs, and crowd geometry regressions
-- Runaway VU1 programs, garbage polygons, and incomplete VU1 program coverage
-- Exhibition loading softlocks, long in-match freezes, and missing in-match hit sounds
+Join the **[HCTP Discord server](https://discord.gg/z39SWwQDq)** and post in the bugs channel, or open a
+[GitHub issue](https://github.com/BigDaddyJRich/hctp-recomp/issues). Please don't send bug reports by direct message.
+Include what you did, your CPU / graphics card / RAM, and the logs `game.log` and `game.log.err` from
+`HCTP Recompiled\files\logs` (`files\game\logs` if you start the game from Steam; `setup.log` if the build failed).
 
-Fixed Oct 26:
-- Wrestler / referee shake (runtime dispatcher dropped the last bones of the skeleton copy after a checkpoint)
-- Entrance frame-rate drops (per-read GPU depth stalls in the flare visibility test)
-- Holes in the entrance nameplate (depth readback overwrote the texture stored in the Z buffer's top byte)
-
-Fixed Oct 26-27:
-- Rope shadows sitting too high
-- Hulk Hogan's modern entrance with his shirt tear (restored content)
-- Pyro slowdowns and wrong spark sprites (HBK, Goldberg, Triple H), HBK's head particles
-- THQ logo hang, CAW forehead band, entrance-load hang
-
-Known limitations:
-- HBK's entrance slows down when he does his pyro in the ring
-- Leaving the attract-mode demo with Start can leave a black screen (title movie does not restart)
-- Random crashes or hangs are possible in parts we haven't tested yet
-- Commentary is mostly tested but not completely
-
-Near-term plan: roster expansion (new wrestler slots) over the following weeks, finished together with Nero's 3X mod;
-a fuller launcher with a mod manager, along the lines of the SvR 2011 recomp's; then PPV mode and online.
-
-Found a bug? Write down exactly what you did and what happened, and send it to jrich102948@gmail.com,
-[Discord](https://discord.gg/z39SWwQDq) or [GitHub Issues](https://github.com/BigDaddyJRich/hctp-recomp/issues).
+Known limits: PPV MODE and ONLINE are on the main menu but don't work yet. Crashes are possible in parts that
+haven't been tested.
 
 ## Layout
 

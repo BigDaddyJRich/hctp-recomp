@@ -107,7 +107,8 @@ SLOW OR CHOPPY?
   which is too much for most graphics cards). Try 3x, then 2x. Playing in a window or at 1080p also helps.
 
 FOUND A BUG?
-  Post it in the bugs channel of the HCTP Discord (launcher > About > Report a bug) or on GitHub:
+  Join the HCTP Discord server, https://discord.gg/z39SWwQDq , and post it in the bugs channel there (please
+  do not send bug reports by direct message). Or open an issue on GitHub:
   https://github.com/BigDaddyJRich/hctp-recomp/issues
   Please include: what you did, your CPU / graphics card / RAM, and the log files game.log and game.log.err
   from files\logs\ (files\game\logs\ if you start the game from Steam); setup.log if the build failed.

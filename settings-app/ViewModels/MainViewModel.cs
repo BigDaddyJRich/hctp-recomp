@@ -11,7 +11,7 @@ namespace HctpSettings.ViewModels;
 
 public partial class MainViewModel : ObservableObject
 {
-    public const string XUrl = "https://discord.com/channels/1138676081910612120/1566932621575852143"; // the bugs channel
+    public const string XUrl = "https://discord.gg/z39SWwQDq"; // the server invite (a channel link only opens for members); bugs go in its bugs channel
     public const string GitHubUrl = "https://discord.gg/z39SWwQDq"; // the Discord server
 
     public GameFolder Folder { get; }
