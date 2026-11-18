@@ -42,60 +42,76 @@ DEPS = {
 # LICENSE / THIRD-PARTY-NOTICES.txt.
 KEEP = ('LICENSE', 'THIRD-PARTY-NOTICES.txt', 'README.md', 'CHANGELOG.md', 'config_hctp/', 'overrides_hctp/',
         'tools/hctp_setup.py', 'tools/setup_game.py', 'tools/hctp_prepare_disc.py', 'tools/prepare_disc.py', 'tools/disc/',
-        'tools/vu1_recomp.py', 'tools/hctp_vu1_ranges.txt', 'tools/sync_generated.py')
+        'tools/vu1_recomp.py', 'tools/hctp_vu1_ranges.txt', 'tools/sync_generated.py',
+        # Nov 18: the runner patches the developers' build applies (tools/regen_runner.py PATCH_SCRIPTS); hctp_setup.py
+        # runs them after sync_generated.py so a player's game = the tested one
+        'tools/patch_rosterx_cawcheck.py', 'tools/patch_rosterx_cawoff.py', 'tools/patch_rosterx_scale.py',
+        'tools/patch_prop_texwindow.py', 'tools/patch_runner_handedits.py', 'tools/patch_rosterx_code32.py',
+        'tools/patch_svr_native_motion.py')
+# Nov 18: the runtime = the active PS2Recomp worktree (F:\hctp-newbase-vulcan, branch codex/new-base-vulkan) at a PINNED
+# commit (tested by Jordan; the worktree's uncommitted edits never go in). Move the pin only to a tested commit.
+RUNTIME_REPO = r'F:\hctp-newbase-vulcan'
+RUNTIME_REF = 'a71bdff'
 # PS2Recomp: its top-level run/build bats and notes, backup copies, and targets the game build never configures
 # (analyzer / studio / test / android / vita sit behind PS2X_BUILD_* options the setup turns off).
 PS2RECOMP_SKIP = ('CLAUDE.md', 'CMakeSettings.json', '.github/', 'overrides_backup/', 'android/', 'vita/',
-                  'ps2xAnalyzer/', 'ps2xStudio/', 'ps2xTest/')
+                  'ps2xAnalyzer/', 'ps2xStudio/', 'ps2xTest/', 'scripts/', 'ps2xRuntime/vita/',
+                  'third_party/ps2-native-gs/')  # dev scripts, Vita port, the parked Vulkan renderer
 
 
 def ps2recomp_skip(name):
     return name.startswith(PS2RECOMP_SKIP) or ('/' not in name and name.lower().endswith(('.bat', '.ps1', '.sh')))
 
 
-README = r"""HCTP Recomp - WWE SmackDown! Here Comes the Pain on PC (work in progress)
-=========================================================================
+README = r"""HCTP Recompiled - WWE SmackDown! Here Comes the Pain on PC
+==========================================================
 
-WWE SmackDown! Here Comes the Pain (PS2, USA, SLUS-20787) as a native Windows program, BUILT ON YOUR PC FROM YOUR
-OWN COPY OF THE GAME. This download has no game files and none of the game's code: the game's code is translated to
-C++ and compiled here, and it never leaves your PC.
+This turns YOUR OWN copy of the PS2 game into a Windows game. The download has no game files: the game is built on
+your PC from your disc.
 
-You need: Windows 10/11 64-bit, a CPU with AVX2, a Direct3D 11 graphics card, ~16 GB of RAM, ~15 GB of free space,
-internet for the first build, and your own HCTP disc (USA) as an .iso or .chd, or its files in a folder.
+WHAT YOU NEED
+  - The USA disc: WWE SmackDown! Here Comes the Pain, SLUS-20787, as an .iso or .chd made from the real disc.
+    ONLY the unmodified USA retail disc works. Modded, patched, trainer or other-region ISOs break the game
+    (for example a freeze on the Brock Lesnar screen). If you get freezes, make a fresh ISO from your disc first.
+  - Windows 10 or 11 (64-bit), a CPU with AVX2, a DirectX 11 graphics card, 16 GB of RAM, 15 GB of free space,
+    and internet for the first build.
 
-To build and play:
-  1. Unzip this folder somewhere with a SHORT path, e.g. C:\Games\HCTP Recompiled (long paths can break the build).
-  2. Open "HCTP Recompiled Settings.exe" (the launcher) and pick your disc image (.iso / .chd) or game folder.
-     It builds the game on your PC. If Microsoft's free C++ build tools aren't installed, they are installed first
-     (allow Windows' prompt once). The first build takes a while (roughly 30-90 minutes, depending on the PC).
-     Close other programs (browser, games) while it builds: it needs the memory.
-  3. When it's done, press PLAY. Settings (display, renderer, controllers, volume) and updates are in the same window.
+INSTALL (step by step)
+  1. Unzip this folder to a short path, for example C:\Games\HCTP Recompiled
+     (not Desktop / Downloads / OneDrive: long paths can break the build).
+  2. Open "HCTP Recompiled Settings.exe". This is the launcher.
+     If Windows says "Windows protected your PC": click "More info", then "Run anyway".
+  3. Pick your disc image (.iso or .chd). The launcher builds the game on your PC.
+     If Microsoft's free C++ build tools are missing, it installs them first (allow the Windows prompt once).
+     The first build takes 30-90 minutes. Close your browser and other games while it builds.
+  4. When it is done, press PLAY.
 
-If Windows says "Windows protected your PC": click "More info", then "Run anyway". Or right-click the zip >
-Properties > tick "Unblock" > OK before unzipping.
+PLAYING
+  - Settings (screen, picture, sound, controllers) are in the launcher. Open it any time to change them.
+  - Saves are kept in Documents\HCTP (back this folder up if you reinstall).
+  - Steam: Games > Add a Non-Steam Game > Browse > files\game\"WWE SmackDown! Here Comes the Pain.exe".
+    It uses the settings you saved in the launcher.
 
-After the build (inside files\):
-  game\           your game's files plus "WWE SmackDown! Here Comes the Pain.exe" (the game) and its DLLs
-  build\, logs\   the build's working files (build\ can be deleted once the game runs, to save space)
+CONTROLLERS
+  - Xbox controllers (and anything that works as an Xbox controller): plug in and play.
+  - PlayStation 4 and 5 controllers: USB or Bluetooth, with vibration. No extra programs needed.
+  - Keyboard: the keys are listed (and can be changed) on the launcher's Controls page. Controller buttons can be
+    changed there too.
+  - Up to 4 players (8 controllers can be connected).
 
-Add it to Steam: Steam > Games > Add a Non-Steam Game to My Library > Browse > files\game\
-"WWE SmackDown! Here Comes the Pain.exe". It starts on its own (no launcher needed) with the settings you saved in
-the launcher. Keep it in files\game: the game needs the files next to it.
+SLOW OR CHOPPY?
+  Open the launcher > Settings > lower "Scale" (Auto picks it from your screen: a 4K screen picks 6x,
+  which is too much for most graphics cards). Try 3x, then 2x. Playing in a window or at 1080p also helps.
 
-Optional packs (shared on the project's Discord, not part of this download):
-  Content Pack     the restored wrestlers (Hulk Hogan, Ultimate Warrior, Jeff Hardy, Regal, Kidman ...), models,
-                   entrances, music, TitanTrons. Without it you get the stock roster.
-  Commentary Pack  extra commentary and Finkel lines.
-  Install: build/update the game first, close it, then unzip the pack INTO files\game\ (the folder with SLUS_207.87),
-  merging folders and replacing files. A newer pack unzips over an older one the same way. Each pack has its own
-  README.txt with the details. The launcher's Play page shows whether each pack is installed.
+FOUND A BUG?
+  Post it in the bugs channel of the HCTP Discord (launcher > About > Report a bug) or on GitHub:
+  https://github.com/BigDaddyJRich/hctp-recomp/issues
+  Please include: what you did, your CPU / graphics card / RAM, and the log files game.log and game.log.err
+  from files\logs\ (files\game\logs\ if you start the game from Steam); setup.log if the build failed.
 
-This is a work in progress: see the project page for what works and the known bugs.
-  https://github.com/BigDaddyJRich/hctp-recomp
-
-Free software under the GNU GPL version 3: files\source\LICENSE; the parts it uses and their licences:
-files\source\THIRD-PARTY-NOTICES.txt. Built on PS2Recomp (ran-j); every part and its authors are listed there.
-WWE SmackDown! Here Comes the Pain is (c) its owners. This download includes none of it.
+Free software under the GNU GPL version 3 (files\source\LICENSE); the parts it uses and their licences are in
+files\source\THIRD-PARTY-NOTICES.txt. Built on PS2Recomp (ran-j). WWE SmackDown! Here Comes the Pain is (c) its
+owners; this download includes none of it.
 """
 
 
@@ -115,7 +131,8 @@ def main():
             with zipfile.ZipFile(pyzip) as py:
                 for n in py.namelist():
                     z.writestr(FILES + 'python/' + n, py.read(n))
-            listed = base.git(['ls-files', '-co', '--exclude-standard', '-z'], REPO).decode().split('\0')
+            # committed files only (Nov 18): untracked dev files (other-disc tomls, scratch tools) never go in
+            listed = base.git(['ls-files', '-c', '-z'], REPO).decode().split('\0')
             n = 0
             for rel in listed:
                 if not rel.startswith(KEEP) or rel.endswith(('.pid', '.log', '.pyc')):
@@ -127,8 +144,8 @@ def main():
                     n += 1
             counts['ours'] = n
             # PS2Recomp as committed (its working copy holds the game's generated runner code: never taken from there)
-            counts['PS2Recomp'] = base.add_archive(z, os.path.join(REPO, 'PS2Recomp'), SRC + 'PS2Recomp/',
-                                                   ps2recomp_skip)
+            counts['PS2Recomp@' + RUNTIME_REF] = base.add_archive(z, RUNTIME_REPO, SRC + 'PS2Recomp/', ps2recomp_skip,
+                                                                  RUNTIME_REF)
             for name, (where, skip) in DEPS.items():
                 folder = os.path.join(REPO, 'PS2Recomp', *where.split('/'))
                 if not os.path.isdir(folder):

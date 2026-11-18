@@ -23,7 +23,7 @@ public partial class SettingsViewModel : ObservableObject
         nameof(ShapeIndex), nameof(RendererIndex), nameof(ScaleIndex), nameof(FilterIndex), nameof(Sharpening),
         nameof(Volume), nameof(Reverb), nameof(Multitap), nameof(Vibration1), nameof(Vibration2), nameof(Vibration3),
         nameof(Vibration4), nameof(HighPoly), nameof(Sharp2D), nameof(KeyboardIndex), nameof(CheckUpdates), nameof(CameraIndex),
-        nameof(UnlockAll),
+        nameof(UnlockAll), nameof(MatrixReplay),
     };
 
     private readonly GameFolder _folder;
@@ -142,6 +142,7 @@ public partial class SettingsViewModel : ObservableObject
     // Controls
     // Gameplay
     [ObservableProperty] private bool _unlockAll;
+    [ObservableProperty] private bool _matrixReplay;
     [ObservableProperty] private bool _multitap;
     [ObservableProperty] private int _keyboardIndex;   // 0-3 = players 1-4, 4 = nobody
     [ObservableProperty] private bool _vibration1;
@@ -366,6 +367,7 @@ public partial class SettingsViewModel : ObservableObject
                             ?? ButtonBinding.PadOptions[b.Index];
             }
             UnlockAll = s.UnlockAll;
+            MatrixReplay = s.MatrixReplay;
             CheckUpdates = s.CheckUpdates;
         }
         finally
@@ -458,6 +460,7 @@ public partial class SettingsViewModel : ObservableObject
         Keys = Bindings.Select(b => b.Keys.Trim()).ToArray(),
         Pads = Bindings.Take(GameSettings.PadButtonBindings).Select(b => b.Pad?.Name ?? "None").ToArray(),
         UnlockAll = UnlockAll,
+        MatrixReplay = MatrixReplay,
         CheckUpdates = CheckUpdates,
     };
 

@@ -5,6 +5,16 @@ run scripts are intentionally kept out of the public repository.
 
 ## 0.3.6
 
+- Memory card: no more "corrupted" message on first boot (the card's directory listing now works like the PS2's).
+- Controllers: PlayStation 4 / 5 controllers over USB and Bluetooth (no extra programs), vibration on every
+  controller, up to 8 controllers for 4 players, no phantom player 2. Keyboard and controller buttons can be changed
+  on the launcher's new Controls page.
+- Interlacing (shaking picture) fix, lens flares no longer show through wrestlers, red particle streaks fixed.
+- New launcher switch (off by default): matrix spin (L1 during a finisher) and instant replay (L2), two features cut
+  from the game.
+- Runner fixes the developer build already had now reach players' builds too (the setup applies them after
+  recompiling).
+- Shorter, step-by-step READ ME FIRST: only the unmodified USA disc (SLUS-20787) works.
 - Launcher Discord button opens the HCTP Discord server (was a profile link).
 - Launcher Scale setting adds 5× and 6× (before, only Auto could pick them).
 

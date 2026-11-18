@@ -59,6 +59,7 @@ public sealed class GameSettings
     public string[] Pads = (string[])PadButtons.Clone();
     // [gameplay]
     public bool UnlockAll;                  // every wrestler, attire, arena and picture, the save unchanged
+    public bool MatrixReplay;               // L1 matrix spin + L2 instant replay (HCTP_MATRIX / HCTP_REPLAY), off by default
     // [updates] (this program and the game)
     public bool CheckUpdates = true;        // ask GitHub for a newer version when this program or the game starts
 
@@ -110,6 +111,7 @@ public sealed class GameSettings
         "[gameplay]\n" +
         "unlock_all = false       # every wrestler, attire, arena and picture for every player, with or without a save.\n" +
         "                         # The save itself is not changed (false = what the save has unlocked)\n" +
+        "matrix_replay = false    # L1 during a finisher = slow-motion matrix spin, L2 = instant replay (cut from HCTP)\n" +
         "\n" +
         "[updates]\n" +
         "check_on_open = true     # check for a new version when the game or the settings program starts\n";
@@ -165,6 +167,7 @@ public sealed class GameSettings
                         s.Pads[pi] = value;
                     break;
                 case "gameplay.unlock_all": s.UnlockAll = Bool(value, s.UnlockAll); break;
+                case "gameplay.matrix_replay": s.MatrixReplay = Bool(value, s.MatrixReplay); break;
                 case "updates.check_on_open": s.CheckUpdates = Bool(value, s.CheckUpdates); break;
             }
         }
@@ -206,6 +209,7 @@ public sealed class GameSettings
             ("controls", "vibration_4", Vibration[3] ? "true" : "false"),
             ("controls", "keyboard", Keyboard.ToString(CultureInfo.InvariantCulture)),
             ("gameplay", "unlock_all", UnlockAll ? "true" : "false"),
+            ("gameplay", "matrix_replay", MatrixReplay ? "true" : "false"),
             ("updates", "check_on_open", CheckUpdates ? "true" : "false"),
         };
         foreach (var (section, key, value) in values)

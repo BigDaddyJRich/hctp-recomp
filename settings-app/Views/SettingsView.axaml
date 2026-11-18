@@ -433,6 +433,17 @@
                                           IsChecked="{Binding UnlockAll}" />
                         </Grid>
                     </Border>
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Classes="label" Text="Matrix spin and instant replay" />
+                                <TextBlock Classes="hint" TextWrapping="Wrap"
+                                           Text="Two features cut from the game, brought back: press L1 during a finisher for a slow-motion camera spin, L2 for an instant replay. Off = the game as it shipped" />
+                            </StackPanel>
+                            <ToggleSwitch Grid.Column="1" OnContent="" OffContent="" VerticalAlignment="Center"
+                                          IsChecked="{Binding MatrixReplay}" />
+                        </Grid>
+                    </Border>
                 </StackPanel>
             </StackPanel>
         </ScrollViewer>

@@ -5,6 +5,7 @@ using MediaDefault = hctp_media_defaults::MediaDefault;
 std::map<std::pair<unsigned,int>,MediaDefault> g_mediaDefaults;
 PS2Runtime::RecompiledFunction g_originalMediaPropCtor=nullptr;
 PS2Runtime::RecompiledFunction g_originalMediaEntranceCtor=nullptr;
+uint32_t g_camEditCode=~0u; // Nov 17: wrestler being edited in CAM > Entrance (id*100), set by the CMovesEntrance ctor
 
 bool applyMediaDefaults(uint8_t *ram, uint32_t record, uint32_t code)
 {
@@ -51,15 +52,13 @@ void mediaDefaultEntranceCtor(uint8_t *ram,R5900Context *ctx,PS2Runtime *runtime
     const uint32_t self=uint32_t(_mm_cvtsi128_si32(ctx->r[4]))&PS2_RAM_COMMITTED_MASK;
     g_originalMediaEntranceCtor(ram,ctx,runtime);
     if (!self || self>PS2_RAM_COMMITTED_TOP-0x2a4u) return;
-    // g_pChar[0] is the selected CAM character. The original entrance constructor
-    // retains it while removing the other preview actors. No save/template edit.
-    uint32_t character=0,code=0;
-    std::memcpy(&character,ram+0x526ea0u,4);
-    if (!character || character>PS2_RAM_COMMITTED_TOP-0x34u) {
-        std::fprintf(stderr,"[hctp] CAM media: no selected character (ptr %08x)%c",character,10);
-        return;
-    }
-    std::memcpy(&code,ram+character+0x30u,4);
+    // Nov 17: edited wrestler id = tagMovesData copy (this+0xb4) +0x10 (MovesSequence ctor 0x341f80: lw 0x24 < 0x56).
+    // g_pChar[0] is the CAM preview stand-in (cast 9200), not the wrestler being edited.
+    uint32_t character=self,code=0,wid=0;
+    std::memcpy(&wid,ram+self+0xc4u,4);
+    if (wid>0xFFFFu) return;
+    code=wid*100u;
+    g_camEditCode=code;
     // CMovesMenuBase copies tagMovesData to this+0xb4. Its character property is
     // at +0x14: Draw reads video at this+0x226 and music at this+0x227.
     const unsigned id=code/100u;

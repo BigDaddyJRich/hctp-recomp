@@ -46,8 +46,8 @@ def add_tree(z, folder, prefix, skip=()):
     return n
 
 
-def add_archive(z, repo, prefix, skip=None):
-    data = git(['archive', '--format=tar', 'HEAD'], repo)
+def add_archive(z, repo, prefix, skip=None, ref='HEAD'):
+    data = git(['archive', '--format=tar', ref], repo)
     n = 0
     with tarfile.open(fileobj=io.BytesIO(data)) as tar:
         for m in tar:

@@ -30,6 +30,12 @@ void hctpSvr06CtxEventTick(uint32_t scene, uint32_t frame); // hctp_svr06_ctx.cp
 void hctpSvr06CtxTakeSe(std::vector<int32_t> &out); // hctp_svr06_ctx.cpp: ids from SvR06's pyro SE call 0x1ce9d0
 void hctpSvr06CtxInstall(PS2Runtime &runtime); // hctp_svr06_ctx.cpp
 bool g_svr06CtxOn = false; // Nov 14: native SvR06 context owns this SvR06 entrance's pyro + pyro SE
+// Nov 17 S21 (ENTRANCES_OPEN_LIST "SESSION 21"): HCTP_SYM_CTX=1 = SYM's own gimmick + particle engine + pyro SE (hctp_sym_ctx.cpp)
+bool hctpSymCtxArm(uint32_t symNo);
+void hctpSymCtxEventTick(uint32_t scene, uint32_t frame);
+void hctpSymCtxTakeSe(std::vector<std::pair<int, int>> &out);
+void hctpSymCtxInstall(PS2Runtime &runtime);
+bool g_symCtxOn = false; // the native SYM context owns this SYM entrance's pyro + pyro SE
 static int g_svr06CamEvent = 0; // Nov 9: HCTP event no of the SvR06 4044 reader event (CAM row 3944), 0 = none
 #include "runtime/ee_scheduler.h"
 #include "game_overrides.h"
@@ -600,6 +606,7 @@ namespace
         g_origMakeReplayV(rdram, ctx, runtime);
     }
     std::map<uint32_t, std::vector<uint32_t>> g_bloodMats;
+    std::map<uint32_t, uint32_t> g_bloodFp; // Nov 17: key -> fingerprint of the model's texture names + mesh table
     std::map<uint32_t, uint16_t> g_bloodQwc; // material addr -> its real REF qwc (read when the model is first seen) // key = skinData ^ (n_mesh << 24); value = material addrs
     std::map<uint32_t, uint32_t> g_mprobeFast; // TEMP diag mprobe2: FastUpdate calls per model
     void recWatchCheck(const uint8_t *rdram, const char *tag, uint32_t ra); // TEMP diag recwatch (below)
@@ -672,9 +679,28 @@ namespace
         auto rd = [&](uint32_t a) { uint32_t v = 0u; if (a <= PS2_RAM_COMMITTED_TOP - 4u) std::memcpy(&v, rdram + a, 4); return v; };
         const uint32_t nMesh = rd(sd + 0x10u), meshes = rd(sd + 0x1Cu) & PS2_RAM_MASK;
         const uint32_t key = sd ^ (nMesh << 24);
+        // Nov 17 BLOOD CACHE FIX (Jordan: Benoit/HHH/Jericho blood + bandage shown with no bleeding): the key is only the
+        // model's address + mesh count, so a model loaded later into the same memory with the same mesh count hit the
+        // OLD entry (often an empty list from a non-SvR model) -> its blood/blood_b/bandage meshes were never hidden.
+        // Tie the entry to this model's own texture-name table (YOBJ +0x18 n_tex, +0x24 names 16 B) + mesh table.
+        uint32_t fp = 2166136261u;
+        {
+            const uint32_t nTexFp = rd(sd + 0x18u), namesFp = rd(sd + 0x24u) & PS2_RAM_MASK;
+            fp = (fp ^ nTexFp) * 16777619u; fp = (fp ^ meshes) * 16777619u;
+            if (nTexFp < 256u && namesFp != 0u && namesFp <= PS2_RAM_COMMITTED_TOP - nTexFp * 16u)
+                for (uint32_t i = 0; i < nTexFp * 16u; ++i)
+                    fp = (fp ^ rdram[namesFp + i]) * 16777619u;
+        }
         auto it = g_bloodMats.find(key);
+        if (it != g_bloodMats.end())
+        {
+            const auto f = g_bloodFp.find(key);
+            if (f == g_bloodFp.end() || f->second != fp)
+                g_bloodMats.erase(it), it = g_bloodMats.end();
+        }
         if (it == g_bloodMats.end())
         {
+            g_bloodFp[key] = fp;
             std::vector<uint32_t> mats;
             const uint32_t nTex = rd(sd + 0x18u), names = rd(sd + 0x24u) & PS2_RAM_MASK;
             std::vector<uint32_t> bloodTex, bandTex, bandMats;
@@ -706,7 +732,7 @@ namespace
             std::fprintf(stderr, "[svrblood] ymp 0x%X: %zu blood tex, %zu material(s) hidden until bleeding%c", sd,
                          bloodTex.size(), mats.size(), 10);
             if (g_bloodMats.size() > 4096u)
-                g_bloodMats.clear();
+                g_bloodMats.clear(), g_bloodFp.clear(), g_bloodFp[key] = fp;
             for (const uint32_t mt : mats) // fresh model data: remember the real REF qwc (Nov 7 flicker fix)
             {
                 uint16_t q = 0u;
@@ -9879,6 +9905,30 @@ namespace
         for (uint32_t i = 0; i < efCount; ++i)
             if (gU16(rdram, efRows + 8u * i) == static_cast<uint16_t>(donor))
                 donorN = gU16(rdram, efRows + 8u * i + 2), donorEnt = gU32(rdram, efRows + 8u * i + 4);
+        // Nov 17 (Jordan: SvR06 Rock 4000 = full-screen Titantron for the whole entrance): donor 3000 carries effect type 9
+        // CEventFullscreenTitantron 0x2df320 {9, on sc0 f30, off sc0 f1000} = HCTP Rock's own intro, timed to HCTP 3000's
+        // scene 0 (SEVP effect rows, header+0x10/+0x14). SvR06 4000 has its own camera/scenes -> the off key never lines up.
+        // The donor row is for BGM + titantron only; drop type 9 from what an SvR06 event inherits.
+        {
+            uint32_t keep = 0;
+            for (uint32_t j = 0; j < donorN; ++j)
+                if (gU16(rdram, donorEnt + 16u * j) != 9u) ++keep;
+            if (keep != donorN)
+            {
+                const uint32_t ents = runtime->guestMalloc(16u * (keep + 1u));
+                uint32_t k = 0;
+                for (uint32_t j = 0; j < donorN; ++j)
+                {
+                    uint8_t e[16];
+                    std::memcpy(e, rdram + ((donorEnt + 16u * j) & PS2_RAM_COMMITTED_MASK), 16);
+                    if ((e[0] | (e[1] << 8)) == 9) continue;
+                    gPut(rdram, ents + 16u * k++, e, 16);
+                }
+                std::fprintf(stderr, "[svr06ent] event %u: donor %d full-screen Titantron (type 9) not inherited%c", ev, int(donor), 10);
+                donorEnt = ents;
+                donorN = keep;
+            }
+        }
         if (auto gw = g_svr06Gray.find(se.svrNo); gw != g_svr06Gray.end())
         {
             // STEP 5: donor entries + HCTP type 6 ColorFilter {type, on sc, on fr, off sc, off fr, npar 1, params}
@@ -10774,6 +10824,15 @@ namespace
         g_svr06CtxOn = false;
         if (!g_svr06Active)
             hctpSvr06CtxArm(0u); // Nov 14: same for the native SvR06 context
+        {
+            // Nov 17 S21: SYM event -> SYM event no (g_symRegistered = SYM no -> virtual event v; the plane variant is v + 100)
+            uint32_t symNo = 0;
+            if (g_symActive)
+                for (const auto &kv : g_symRegistered)
+                    if (kv.second == ev || kv.second + 100u == ev)
+                        symNo = kv.first;
+            g_symCtxOn = hctpSymCtxArm(symNo);
+        }
         if (g_svrEventActive && it->second.game == 4 && pyroOn) // Nov 11: SvR04 pyro = same engine, SvR04 PCEN/<ev> + gm '0001'/<ev>
         {
             const std::string id = std::to_string(it->second.svrNo);
@@ -11105,6 +11164,8 @@ namespace
         g_svr04CtxOn = false;
         hctpSvr06CtxArm(0u); // Nov 14: native SvR06 ctx stops with the event too
         g_svr06CtxOn = false;
+        hctpSymCtxArm(0u); // Nov 17 S21: native SYM ctx too
+        g_symCtxOn = false;
         g_svrEventActive = false;
         g_svr06Active = false;
         g_symActive = false;
@@ -11121,6 +11182,8 @@ namespace
         g_svr04CtxOn = false;
         hctpSvr06CtxArm(0u);
         g_svr06CtxOn = false;
+        hctpSymCtxArm(0u);
+        g_symCtxOn = false;
         g_svrEventActive = false;
         g_svr06Active = false;
         g_symActive = false;
@@ -11857,6 +11920,22 @@ namespace
             std::memcpy(&fr4, rdram + sys + 0x1Au, 2);
             std::memcpy(&mx4, rdram + sys + 0x1Eu, 2);
             hctpPyroEventTick(sc4, fr4, mx4);
+            return;
+        }
+        // Nov 17 S21: native SYM ctx clock = HCTP CEventSystem scene sys+0x18 / frame sys+0x1A (= SYM CEventSystem +0x36 / +0x38,
+        // S20 "Ctx facts"); SE (bank, idx) recorded by the SYM ctx -> host player (BK<bank> SQ idx, MODS/SYM/SE)
+        if (g_symCtxOn && g_symActive && sys != 0u && sys < 0x1FFFF00u && ctx->pc == ra && rdram[sys + 0x54u] != 0u &&
+            gU32(rdram, sys + 0x10u) == 2u)
+        {
+            uint16_t scS, frS;
+            std::memcpy(&scS, rdram + sys + 0x18u, 2);
+            std::memcpy(&frS, rdram + sys + 0x1Au, 2);
+            hctpSymCtxEventTick(scS, frS);
+            std::vector<std::pair<int, int>> ses;
+            hctpSymCtxTakeSe(ses);
+            for (const auto &s : ses)
+                if (!hostse::playSym(s.first, s.second))
+                    std::fprintf(stderr, "[symctx] SE bank %d idx %d not in MODS/SYM/SE/se_sq.txt%c", s.first, s.second, 10);
             return;
         }
         if (!g_svr06Active || sys == 0u || sys >= 0x1FFFF00u || ctx->pc != ra)
@@ -13089,19 +13168,38 @@ namespace
     std::map<uint32_t, uint32_t> g_rxWideWin;
     std::map<unsigned, uint32_t> g_camWideMusic; // roster id -> CAM music pick (CAM_WIDE_MUSIC.txt)
     PS2Runtime::RecompiledFunction g_rxOrigPlayBGM = nullptr;
+    uint32_t camWideMusicFor(const uint8_t *rdram, uint32_t code, uint32_t record);
     void rosterxPlayBGM(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
         const uint32_t bgmRa = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
         if (bgmRa == 0x2b6164u || bgmRa == 0x2b61f8u)
         {
             const auto &map = bgmRa == 0x2b6164u ? g_rxWideMusic : g_rxWideWin;
-            const auto it = map.find(static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[2])) & PS2_RAM_COMMITTED_MASK);
-            if (it != map.end())
+            const uint32_t prop = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[2])) & PS2_RAM_COMMITTED_MASK;
+            const auto it = map.find(prop);
+            uint32_t wide = it != map.end() ? it->second : 0u;
+            // Nov 17: CEventBGM::Start 0x2b611c-0x2b6150 takes the prop from CLink::SearchLink(g_pChar[0]+0x1B4) and plays
+            // lbu 0x17F. That linked prop is not always one our ctor hook mapped (log: 3700 -> 285 mapped, never played).
+            // Resolve from the prop the game passes: code of g_pChar[0]; in CAM g_pChar[0] is an NPC stand-in (>= 8600,
+            // cast 9200) -> the wrestler being edited (CMovesEntrance tagMovesData +0x10).
+            if (!wide && bgmRa == 0x2b6164u && prop && prop <= PS2_RAM_COMMITTED_TOP - 0x190u)
             {
-                SET_GPR_U32(ctx, 5, it->second);
+                uint32_t chr = 0, code = ~0u;
+                std::memcpy(&chr, rdram + 0x526ea0u, 4);
+                chr &= PS2_RAM_COMMITTED_MASK;
+                if (chr && chr <= PS2_RAM_COMMITTED_TOP - 0x34u)
+                    std::memcpy(&code, rdram + chr + 0x30u, 4);
+                if (code >= 8600u && code < 10000u && !hctpIsSlotCode(code) && g_camEditCode != ~0u)
+                    code = g_camEditCode;
+                if (code != ~0u)
+                    wide = camWideMusicFor(rdram, code, prop + 0x20u);
+            }
+            if (wide)
+            {
+                SET_GPR_U32(ctx, 5, wide);
                 static unsigned told = 0;
                 if (told++ < 16)
-                    std::fprintf(stderr, "[rosterx] entrance BGM wide music id %u%c", it->second, 10);
+                    std::fprintf(stderr, "[rosterx] entrance BGM wide music id %u (prop %08x)%c", wide, prop, 10);
             }
         }
         g_rxOrigPlayBGM(rdram, ctx, runtime);
@@ -13190,15 +13288,16 @@ namespace
         }
         std::fprintf(stderr, "[hctp] CAM wide music: %zu picks loaded%c", g_camWideMusic.size(), 10);
     }
-    uint32_t camCurrentCode(const uint8_t *rdram)
+    // Nov 17 fix: the edited wrestler = CMovesEntrance's own tagMovesData copy (this+0xb4) +0x10 = wrestler id (MovesSequence
+    // ctor 0x341f80 copies tagMovesData to this+0x14 and tests lw 0x24 < 0x56). g_pChar[0] (0x526ea0) is the CAM preview
+    // stand-in (cast 9200) -> every pick was keyed to id 92 and followed to every wrestler. Returns id*100 (code form).
+    uint32_t camCurrentCode(const uint8_t *rdram, uint32_t self)
     {
-        uint32_t chr = 0, code = 0;
-        std::memcpy(&chr, rdram + 0x526ea0u, 4); // g_pChar[0] = the CAM character
-        chr &= PS2_RAM_COMMITTED_MASK;
-        if (!chr || chr > PS2_RAM_COMMITTED_TOP - 0x34u)
+        if (!self || self > PS2_RAM_COMMITTED_TOP - 0x2a4u)
             return ~0u;
-        std::memcpy(&code, rdram + chr + 0x30u, 4);
-        return code;
+        uint32_t id = 0;
+        std::memcpy(&id, rdram + self + 0xc4u, 4);
+        return id <= 0xFFFFu ? id * 100u : ~0u;
     }
     PS2Runtime::RecompiledFunction g_camOrigSearchLink = nullptr, g_camOrigListName = nullptr, g_camOrigSetPreview = nullptr;
     void camMusicPickSearchLink(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
@@ -13206,7 +13305,7 @@ namespace
         if (rxArg(ctx, 31) == 0x353098u)
         {
             const uint32_t self = rxArg(ctx, 19) & PS2_RAM_COMMITTED_MASK, picked = rxArg(ctx, 16) & 0xFFFFu;
-            const uint32_t code = camCurrentCode(rdram);
+            const uint32_t code = camCurrentCode(rdram, self);
             if (code != ~0u && self && self <= PS2_RAM_COMMITTED_TOP - 0x2a4u)
             {
                 const unsigned rid = code / 100u;
@@ -13231,7 +13330,7 @@ namespace
     {
         if (rxArg(ctx, 31) == 0x353790u && rxArg(ctx, 16) == 2u)
         {
-            const uint32_t self = rxArg(ctx, 19) & PS2_RAM_COMMITTED_MASK, code = camCurrentCode(rdram);
+            const uint32_t self = rxArg(ctx, 19) & PS2_RAM_COMMITTED_MASK, code = camCurrentCode(rdram, self);
             if (code != ~0u && self && self <= PS2_RAM_COMMITTED_TOP - 0x2a4u && rxArg(ctx, 6) == rdram[self + 0x227u])
                 if (const uint32_t wide = camWideMusicFor(rdram, code, self + 0xc8u))
                     SET_GPR_U32(ctx, 6, wide);
@@ -13242,7 +13341,7 @@ namespace
     {
         if (rxArg(ctx, 31) == 0x352edcu && rxArg(ctx, 5) == 2u)
         {
-            const uint32_t self = rxArg(ctx, 4) & PS2_RAM_COMMITTED_MASK, code = camCurrentCode(rdram);
+            const uint32_t self = rxArg(ctx, 4) & PS2_RAM_COMMITTED_MASK, code = camCurrentCode(rdram, self);
             if (code != ~0u && self && self <= PS2_RAM_COMMITTED_TOP - 0x2a4u)
                 if (const uint32_t wide = camWideMusicFor(rdram, code, self + 0xc8u))
                     SET_GPR_U32(ctx, 6, wide);
@@ -13547,6 +13646,7 @@ namespace
     {
         hctpSvr04CtxInstall(runtime); // opt-in HCTP_SVR04_CTX=1 (default: nothing installed)
         hctpSvr06CtxInstall(runtime); // opt-in HCTP_SVR06_CTX=1 (Nov 14, SvR06 pyro + pyro SE)
+        hctpSymCtxInstall(runtime);   // opt-in HCTP_SYM_CTX=1 (Nov 17 S21, SYM pyro + pyro SE)
         if ((g_origMakeFavTable = runtime.lookupFunction(0x245c40u)) != nullptr &&
             runtime.replaceFunction(0x245c40u, makeFavoriteTableBig))
             std::cerr << "[movefav] MakeFavoriteTable > 2000 rows hook on" << std::endl;

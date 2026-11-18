@@ -4,6 +4,7 @@
 // row 3944 = Brock 3044 + PCEN 4044. Switches: HCTP_PYRO_SIZE (quad half-size per scale unit, 1.0), HCTP_PYRO_START
 // (sim frames from arm to GMEV frame 310, 310), HCTP_PYRO_HZ (30), HCTP_PYRO_EULER=zyx, HCTP_PYRO_LOG=1,
 // HCTP_PYRO_ATEST=0 (drop the SvR06 TEST 0x53201), HCTP_PYRO_ZGUARD=0 (drop the 0xFFFFFF homogeneous-z cull).
+#include "hctp_svr04_cue.h"
 #include "ps2_runtime.h"
 #include "runtime/gs/gs_frontend.h"
 #include "runtime/gs/gs_types.h"
@@ -29,7 +30,7 @@ bool hctpGetCharProj(float out[4][4]); // hctp_native_vu1.cpp (Nov 11 pyro depth
 namespace
 {
 using Bytes = std::vector<uint8_t>;
-struct AttrCue { int scene, frame, file, part; bool fired; }; // PART12 SvR04 op 0x6B particle cue
+struct AttrCue { int scene, frame, file, part; bool fired; int obj = 0; }; // PART12 SvR04 op 0x6B particle cue (obj: S8 props)
 
 bool pyroLog()
 {
@@ -195,7 +196,10 @@ bool svr04Evet(const char *id, Bytes &out)
 }
 // op 0x6B records on type-0 (entrant) tracks: key = type << 16 | scene << 8 | obj; frames: byte < 0x60 = skip, 0x60 + u8 size /
 // 0x61..0x7F = size - 0x60; a record whose first byte has bit 7 = attribute block of (b & 0x7F) bytes (ops sized by bank[op]).
-void scanAttrCues(const Bytes &bk, std::vector<AttrCue> &out)
+// Nov 16 S8: props=true also takes type-0 tracks of other objs (HHH 3002 bottle prop obj 5). SvR04 fires those from the prop's
+// own CAttribute: StartParticleFromAtr 0x2e4dc0 finds the 'WPON' link (0x2e4e94) -> SetParticleMatrixFromObject 0x2e5190 =
+// S3MW motion +0x34 world bone [part] (part < 0x1e) - see hctpSvrPropBoneMatrix (hctp_overrides.cpp).
+void scanAttrCues(const Bytes &bk, std::vector<AttrCue> &out, bool props = false)
 {
     if (bk.size() < 0x104) return;
     const uint32_t n = rd32(&bk[0x100]);
@@ -211,7 +215,10 @@ void scanAttrCues(const Bytes &bk, std::vector<AttrCue> &out)
     for (uint32_t i = 0; i < n; ++i)
     {
         const uint32_t key = rd32(&bk[0x104u + 16u * i]), o = rd32(&bk[0x104u + 16u * i + 4]);
-        if ((key >> 16) != 0u || (key & 0xFFu) != 0u || o == 0xFFFFFu || data0 + o >= bk.size()) continue; // entrant 0 only
+        // Nov 16 S11: track key = obj << 16 | scene << 8 (bank 3002: HHH 0x1000 = obj 0 scene 16, bottle 0x50400 = obj 5 scene 4).
+        // S8 read obj from the low byte and skipped key >> 16 != 0 -> the prop-owned water cues were never queued.
+        if ((key & 0xFFu) != 0u || (!props && (key >> 16) != 0u) || (key >> 24) != 0u || o == 0xFFFFFu || data0 + o >= bk.size())
+            continue; // entrant 0 (+ S8 props)
         auto it = std::upper_bound(offs.begin(), offs.end(), o);
         const size_t pe = data0 + (it == offs.end() ? bk.size() - data0 : *it);
         size_t p = data0 + o;
@@ -232,7 +239,7 @@ void scanAttrCues(const Bytes &bk, std::vector<AttrCue> &out)
                     const uint8_t op = bk[q], len = bk[op];
                     if (len == 0u || q + len > b1) break;
                     if (op == 0x6Bu && len >= 4u && bk[q + 3] < 0x15u)
-                        out.push_back({static_cast<int>((key >> 8) & 0xFFu), fr, bk[q + 1] | (bk[q + 2] << 8), bk[q + 3], false});
+                        out.push_back({static_cast<int>((key >> 8) & 0xFFu), fr, bk[q + 1] | (bk[q + 2] << 8), bk[q + 3], false, static_cast<int>(key >> 16)});
                     q += len;
                 }
             }
@@ -1479,4 +1486,82 @@ bool hctpPyroEventTick(uint32_t scene, uint32_t frame, uint32_t frameMax)
         !g_seFired.exchange(true))
         return true;
     return false;
+}
+
+// Nov 14 (notes ENTRANCES_3GAMES_GOAL_20261114.md): cue rows for the NATIVE SvR04 context (hctp_svr04_ctx.cpp, HCTP_SVR04_CTX=1).
+// kind 0 = GMEV type-1 row = SvR04 gmParticleEmitter (beta TLES_527.81 game.bin overlay): GmObjectBase::__ct 0x458860 keeps
+//   &params[1] at +0x44 (p[1] no, p[2] scene0, p[3] frame0, p[4] scene1, p[5] frame1, p[6] mode); GmInit 0x458f20 builds +0x60 =
+//   objMatrix::RotZYX(+0x20 tag rot) with row 3 = +0x10 tag pos (lq/sq 0x458f3c/44); MyAction 0x458f60 at the start cue calls
+//   StartParticle(0, no) 0x4591e4 + SetWorldMatrix(0, no, this+0x60) 0x4591f4, at the end cue Death (mode 0) / Vanish 0x4590ac/c0.
+// kind 1 = op 0x6B attribute key on the entrant's own motion track (scanAttrCues): PCEN group `no` on bone part `part`.
+bool hctpPyroSvr04Cues(const char *id, std::vector<HctpSvr04Cue> &out)
+{
+    std::lock_guard<std::mutex> lock(g_mx);
+    out.clear();
+    Bytes gm;
+    if (!dpacFind("MODS/SVR04/gm.pac", id, gm)) return false;
+    auto G = parsePac(gm);
+    if (!G.count(0) || !G.count(2) || !G.count(3)) return false;
+    auto T = parsePac(G[3]);
+    std::map<uint32_t, std::pair<std::array<float, 3>, std::array<float, 3>>> tags;
+    if (T.count(10000))
+    {
+        const Bytes &tb = T[10000];
+        for (size_t o = 16; o + 32 <= tb.size(); o += 32)
+            tags[rd32(&tb[o + 12])] = {{rdf(&tb[o]), rdf(&tb[o + 4]), rdf(&tb[o + 8])}, {rdf(&tb[o + 16]), rdf(&tb[o + 20]), rdf(&tb[o + 24])}};
+    }
+    const Bytes &g0 = G[0], &g2 = G[2];
+    int type5 = 0;
+    for (size_t o = 0; o + 8 <= g0.size(); o += 8)
+    {
+        const uint16_t tag = rd16(&g0[o]), type = rd16(&g0[o + 2]), pc = rd16(&g0[o + 4]), po = rd16(&g0[o + 6]);
+        if ((type != 1 && type != 5) || pc < 4 || (po + 4u) * 4u > g2.size() || !tags.count(tag)) continue;
+        HctpSvr04Cue c{0, static_cast<int>(rdf(&g2[(po + 1) * 4])), static_cast<int>(rdf(&g2[(po + 2) * 4])),
+                       static_cast<int>(rdf(&g2[(po + 3) * 4])), -1, 0, 0, -1, {}, {}};
+        if (pc >= 7 && (po + 7u) * 4u <= g2.size())
+        {
+            c.endScene = static_cast<int>(rdf(&g2[(po + 4) * 4]));
+            c.endFrame = static_cast<int>(rdf(&g2[(po + 5) * 4]));
+            c.mode = static_cast<int>(rdf(&g2[(po + 6) * 4]));
+        }
+        for (int k = 0; k < 3; ++k) c.pos[k] = tags[tag].first[k], c.rot[k] = tags[tag].second[k];
+        if (type == 5)
+        {
+            // gmParticleCopy: MyAction 0x45a050 reads p[7] (+0x44 base +0x18) = source group; GmInit 0x459fc0 finds the
+            // gimmick whose +0x38 (SetLocateData 0x456db0: s16 locate+0x0C = tag id) == p[8] and stores
+            // +0xB0 = GetPosition(this) - GetPosition(source) (vsub 0x45a034; GetPosition 0x456ae0 = +0x10 = tag pos).
+            if (pc < 9 || (po + 9u) * 4u > g2.size()) continue;
+            const uint32_t srcTag = static_cast<uint32_t>(static_cast<int>(rdf(&g2[(po + 8) * 4])));
+            if (!tags.count(srcTag)) continue;
+            c.copySrc = static_cast<int>(rdf(&g2[(po + 7) * 4]));
+            for (int k = 0; k < 3; ++k) c.copyOff[k] = tags[tag].first[k] - tags[srcTag].first[k];
+            ++type5;
+        }
+        out.push_back(c);
+    }
+    if (type5) std::fprintf(stderr, "[svr04ctx] GMEV/%s: %d type-5 rows (gmParticleCopy) driven%c", id, type5, 10);
+    Bytes bank;
+    std::vector<AttrCue> ac;
+    if (svr04Evet(id, bank)) scanAttrCues(bank, ac, true);
+    for (const AttrCue &a : ac)
+    {
+        HctpSvr04Cue c{1, a.file, a.scene, a.frame, -1, 0, 0, a.part, {}, {}};
+        c.obj = a.obj;
+        out.push_back(c);
+    }
+    return true;
+}
+// Entrant bone matrix of motion part `part` (same source as stepInstance: last CMotionModel GetBoneNo saw, +0x24 part->bone,
+// skin +0x20, matrices skin+0xD0, 64 B each = HCTP world).
+bool hctpPyroBoneMatrix(const uint8_t *rd, int part, float M[16])
+{
+    auto u32 = [&](uint32_t a) -> uint32_t { uint32_t v = 0; a &= PS2_RAM_COMMITTED_MASK; if (a >= 0x100000u && a + 4 <= PS2_RAM_COMMITTED_TOP) std::memcpy(&v, rd + a, 4); return v & PS2_RAM_COMMITTED_MASK; };
+    const uint32_t mm = g_motionModel.load(std::memory_order_relaxed) & PS2_RAM_COMMITTED_MASK;
+    if (!mm || part < 0 || part > 0x14) return false;
+    const uint32_t skin = u32(mm + 0x20u), mats = skin ? u32(skin + 0xD0u) : 0u;
+    int16_t bone = -1;
+    std::memcpy(&bone, rd + mm + 0x24u + 2u * static_cast<uint32_t>(part), 2);
+    if (!mats || bone < 0 || bone >= 400) return false;
+    std::memcpy(M, rd + mats + 64u * static_cast<uint32_t>(bone), 64);
+    return std::isfinite(M[12]) && std::isfinite(M[0]);
 }

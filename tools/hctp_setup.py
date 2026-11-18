@@ -19,6 +19,9 @@ SRC = base.SRC
 PS2RECOMP = base.PS2RECOMP
 ELF = 'SLUS_207.87'
 base.STEPS[:] = ['Your game', 'Build tools', 'The recompiler', 'Recompiling the game', 'Building the game', 'Finishing']
+RUNNER = os.path.join(PS2RECOMP, 'ps2xRuntime', 'src', 'runner')
+RUNNER_PATCHES = ('patch_rosterx_cawcheck.py', 'patch_rosterx_cawoff.py', 'patch_rosterx_scale.py', 'patch_prop_texwindow.py',
+                  'patch_runner_handedits.py', 'patch_rosterx_code32.py', 'patch_svr_native_motion.py')
 
 
 def step_disc(data, disc):
@@ -75,7 +78,12 @@ def step_recompile(recompiler, data):
          os.path.join(SRC, 'generated', 'vu1_compiled.cpp')], cwd=SRC)
     progress(0.18)
     run([sys.executable, os.path.join(SRC, 'tools', 'sync_generated.py')], cwd=SRC,
-        parse=base.sync_progress(0.18, 1.0))
+        parse=base.sync_progress(0.18, 0.95))
+    # the same runner patches as the developers' build (tools/regen_runner.py PATCH_SCRIPTS, same order); each is
+    # idempotent and fails loudly if the recompiled code is not what it expects
+    say('Applying HCTP fixes to the recompiled code')
+    for script in RUNNER_PATCHES:
+        run([sys.executable, os.path.join(SRC, 'tools', script), RUNNER], cwd=SRC)
     progress(1.0)
 
 

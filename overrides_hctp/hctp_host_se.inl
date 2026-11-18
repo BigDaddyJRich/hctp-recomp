@@ -34,6 +34,7 @@ namespace hostse
     AudioStream g_stream{};
     bool g_streamOpen = false;
     PS2Runtime::RecompiledFunction g_origPlaySe = nullptr;
+    PS2Runtime::RecompiledFunction g_origSetAttr = nullptr;
 
     const char *gameDir(int game) { return game == 4 ? "MODS/SVR04/SE" : game == 6 ? "MODS/SVR06/SE" : game == 7 ? "MODS/SYM/SE" : nullptr; }
 
@@ -168,6 +169,88 @@ namespace hostse
         g_game = game;
     }
 
+    // Nov 14: play source-game SE `id` from MODS/<GAME>/SE without a guest call (native SvR06 ctx pyro SE, hctp_svr06_ctx.cpp)
+    bool playHost(int game, int id)
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        GameBank &g = g_games[game];
+        if (!g.loaded)
+            loadGame(game, g);
+        auto it = g.se.find(id);
+        if (it == g.se.end() || !IsAudioDeviceReady())
+            return false;
+        if (!g_streamOpen)
+        {
+            g_stream = LoadAudioStream(48000, 16, 2);
+            SetAudioStreamCallback(g_stream, fill);
+            PlayAudioStream(g_stream);
+            g_streamOpen = true;
+        }
+        if (g_voices.size() < 24)
+            g_voices.push_back(Voice{&it->second, 0.0});
+        std::fprintf(stderr, "[hostse] play game %d se %x (native ctx)%c", game, id, 10);
+        return true;
+    }
+
+    // Nov 17 S21: SYM SE (bank, SQ idx) from the native SYM ctx (hctp_sym_ctx.cpp: SYM CallSE 0x1d4e60 -> SendQueSE / PlaySE =
+    // BK<bank> key 2 SQ idx played by SYM's IOP sequencer). Rendered offline by tools\stage_sym_se_1117.py into
+    // MODS/SYM/SE/se_sq.txt ("bank idx samples loopStart|-1") + sq/b<bank>_<idx>.pcm (s16 mono 48 kHz, volumes already applied),
+    // loop = [loopStart, end) when loopStart >= 0 (SQ infinite loop, CC 0x63/0x26). Index read once, PCM loaded on first play.
+    struct SymSq { int samples = 0, loopStart = -1; bool tried = false; Sample s; };
+    std::map<std::pair<int, int>, SymSq> g_symSq;
+    bool g_symSqIndexed = false;
+    bool playSym(int bank, int idx)
+    {
+        std::lock_guard<std::mutex> lock(g_m);
+        if (!g_symSqIndexed)
+        {
+            g_symSqIndexed = true;
+            std::ifstream f("MODS/SYM/SE/se_sq.txt");
+            std::string line;
+            while (std::getline(f, line))
+            {
+                int b = 0, i = 0, n = 0, ls = -1;
+                if (line.empty() || line[0] == '#' || std::sscanf(line.c_str(), "%d %d %d %d", &b, &i, &n, &ls) != 4)
+                    continue;
+                SymSq &q = g_symSq[{b, i}];
+                q.samples = n;
+                q.loopStart = ls;
+            }
+            std::fprintf(stderr, "[hostse] SYM se_sq.txt: %zu SQ%c", g_symSq.size(), 10);
+        }
+        auto it = g_symSq.find({bank, idx});
+        if (it == g_symSq.end())
+            return false;
+        SymSq &q = it->second;
+        if (!q.tried)
+        {
+            q.tried = true;
+            char path[64];
+            std::snprintf(path, sizeof(path), "MODS/SYM/SE/sq/b%d_%d.pcm", bank, idx);
+            std::ifstream f(path, std::ios::binary);
+            std::vector<uint8_t> raw((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
+            q.s.pcm.resize(raw.size() / 2);
+            if (!raw.empty()) std::memcpy(q.s.pcm.data(), raw.data(), q.s.pcm.size() * 2);
+            q.s.loops = q.loopStart >= 0 && static_cast<size_t>(q.loopStart) + 1 < q.s.pcm.size();
+            q.s.loopStart = q.s.loops ? static_cast<uint32_t>(q.loopStart) : 0u;
+            q.s.step = 1.0f;
+            q.s.gain = 1.0f;
+        }
+        if (q.s.pcm.size() < 2 || !IsAudioDeviceReady())
+            return false;
+        if (!g_streamOpen)
+        {
+            g_stream = LoadAudioStream(48000, 16, 2);
+            SetAudioStreamCallback(g_stream, fill);
+            PlayAudioStream(g_stream);
+            g_streamOpen = true;
+        }
+        if (g_voices.size() < 24)
+            g_voices.push_back(Voice{&q.s, 0.0});
+        std::fprintf(stderr, "[hostse] play SYM bank %d SQ %d (%zu smp%s)%c", bank, idx, q.s.pcm.size(), q.s.loops ? ", LOOP" : "", 10);
+        return true;
+    }
+
     // PlaySE_FromAttribute(obj, id, a2) 0x3ada80
     void playSeFromAttribute(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
     {
@@ -209,6 +292,33 @@ namespace hostse
         ctx->pc = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[31]));
     }
 
+    // Nov 15 SE STOP (Goldberg 7038: fountain SE d3 = LOOP sample played through the whole entrance). SvR04
+    // CAttribute::SetAttr 0x1a5570: op 0xC2 (0x1a5730 -> 0x1a6c64) = StopSE_FromAttribute 0x219e60(0, u16 id = b1 | b2<<8);
+    // op 0xC1 = PlaySE u16 id (0x1a6ac4..0x1a6adc). HCTP SetAttr 0x1b3120 has NO C2 case (op skipped by the bank's own size
+    // table) -> a looping SvR04 SE never stops. While a ported SvR04 event plays (g_game 4) C2 stops that id's host voices,
+    // then HCTP's SetAttr runs unchanged (it skips the op as before). One op per call: a2 = op bytes (0x1b3148 move s4,a2).
+    void setAttr(uint8_t *rdram, R5900Context *ctx, PS2Runtime *runtime)
+    {
+        const uint32_t p = static_cast<uint32_t>(_mm_cvtsi128_si32(ctx->r[6])) & PS2_RAM_COMMITTED_MASK;
+        if (g_game == 4 && p != 0u && rdram[p] == 0xC2u)
+        {
+            const int id = rdram[p + 1u] | (rdram[p + 2u] << 8);
+            size_t n = 0;
+            {
+                std::lock_guard<std::mutex> lock(g_m);
+                GameBank &g = g_games[4];
+                if (auto it = g.se.find(id); it != g.se.end())
+                {
+                    const size_t before = g_voices.size();
+                    g_voices.erase(std::remove_if(g_voices.begin(), g_voices.end(), [&](const Voice &v) { return v.s == &it->second; }), g_voices.end());
+                    n = before - g_voices.size();
+                }
+            }
+            std::fprintf(stderr, "[hostse] stop game 4 se %x (SvR04 op C2): %zu voice(s)%c", id, n, 10);
+        }
+        g_origSetAttr(rdram, ctx, runtime);
+    }
+
     void install(PS2Runtime &runtime)
     {
         if (std::getenv("HCTP_HOST_SE") && std::getenv("HCTP_HOST_SE")[0] == '0')
@@ -221,5 +331,8 @@ namespace hostse
         // samples keyed on). Same args (obj, id, a2), so hook the wrapper with the same handler.
         if (!runtime.replaceFunction(0x1b0680u, playSeFromAttribute))
             std::fprintf(stderr, "[hostse] GameSE hook FAILED%c", 10);
+        g_origSetAttr = runtime.lookupFunction(0x1b3120u);
+        if (!g_origSetAttr || !runtime.replaceFunction(0x1b3120u, setAttr))
+            std::fprintf(stderr, "[hostse] SetAttr C2 hook FAILED%c", 10);
     }
 }
