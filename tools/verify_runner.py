@@ -5,7 +5,7 @@
 
 The manifest = sha256 of the CR-stripped text of every file regen_runner.py produces (generated .cpp, pinned vu1_compiled.cpp,
 patched files, the 2 generated headers). Headers are looked up in <runner_dir> first, then --include (default <runner_dir>\\..\\..\\include,
-= ps2xRuntime\\include in a live tree). Ignored (not generated): hctp_*.cpp/.inl/.h, svr04_*, sub-folders.
+= ps2xRuntime\\include in a live tree). Ignored (not generated): hctp_*.cpp/.inl/.h, svr04_*, svr06_* (native SvR module, Nov 14), sym_* (native SYM module, Nov 17 S21), sub-folders.
 Exit code: 0 = every manifest file present and identical and no extra generated file; 1 = any missing/extra/mismatch.
 --update rewrites the manifest from <runner_dir> (use regen_runner.py output, never a live runner) and prints what changed.
 """
@@ -14,7 +14,7 @@ import argparse, hashlib, json, os, re, sys, time
 TOOLS = os.path.dirname(os.path.abspath(__file__))
 DEF_MANIFEST = os.path.join(TOOLS, "runner_manifest.json")
 HEADERS = ("ps2_recompiled_functions.h", "ps2_recompiled_stubs.h")
-IGNORE = re.compile(r"^(hctp_.*\.(cpp|inl|h)|svr04_.*)$", re.I)
+IGNORE = re.compile(r"^(hctp_.*\.(cpp|inl|h)|svr0[46]_.*|sym_.*)$", re.I)
 
 
 def sha(path):
