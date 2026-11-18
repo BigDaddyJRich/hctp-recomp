@@ -52,6 +52,9 @@ KEEP = ('LICENSE', 'THIRD-PARTY-NOTICES.txt', 'README.md', 'CHANGELOG.md', 'conf
 # commit (tested by Jordan; the worktree's uncommitted edits never go in). Move the pin only to a tested commit.
 RUNTIME_REPO = r'F:\hctp-newbase-vulcan'
 RUNTIME_REF = 'a71bdff'
+# Nov 18: SvR06/SvR04 entrance pyro needs a GS host-texture path that is not in the pinned runtime and other games' data;
+# hctp_public_stubs.cpp gives its no-pack answers instead
+KIT_SKIP = ('overrides_hctp/hctp_svr06_pyro.cpp',)
 # PS2Recomp: its top-level run/build bats and notes, backup copies, and targets the game build never configures
 # (analyzer / studio / test / android / vita sit behind PS2X_BUILD_* options the setup turns off).
 PS2RECOMP_SKIP = ('CLAUDE.md', 'CMakeSettings.json', '.github/', 'overrides_backup/', 'android/', 'vita/',
@@ -135,7 +138,7 @@ def main():
             listed = base.git(['ls-files', '-c', '-z'], REPO).decode().split('\0')
             n = 0
             for rel in listed:
-                if not rel.startswith(KEEP) or rel.endswith(('.pid', '.log', '.pyc')):
+                if not rel.startswith(KEEP) or rel.endswith(('.pid', '.log', '.pyc')) or rel in KIT_SKIP:
                     continue
                 path = os.path.join(REPO, rel)
                 if os.path.isfile(path):

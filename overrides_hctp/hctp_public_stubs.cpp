@@ -31,3 +31,18 @@ void hctpSymCtxInstall(PS2Runtime &) {}
 #if !__has_include("hctp_scene_viewer.cpp")
 void hctpSceneViewerInstall(PS2Runtime &) {}
 #endif
+
+// SvR06/SvR04 entrance pyro (HCTP_SVR06_PYRO, hctp_svr06_pyro.cpp): it draws through a host-texture GS path that is not
+// in the public runtime, and it only runs when MODS/SVR04 or MODS/SVR06 particle packs exist (other games' data).
+// The player kit leaves that file out; these are its "no pack" answers (Has false, nothing armed or drawn).
+#if !__has_include("hctp_svr06_pyro.cpp")
+#include "hctp_svr04_cue.h"
+void hctpPyroSetSource(int) {}
+void hctpPyroArm(PS2Runtime *, const char *, uint32_t) {}
+bool hctpPyroHas(const char *) { return false; }
+void hctpPyroDisarm() {}
+void hctpPyroNoteMotionModel(uint32_t) {}
+bool hctpPyroEventTick(uint32_t, uint32_t, uint32_t) { return false; }
+bool hctpPyroSvr04Cues(const char *, std::vector<HctpSvr04Cue> &out) { out.clear(); return false; }
+bool hctpPyroBoneMatrix(const uint8_t *, int, float *) { return false; }
+#endif
