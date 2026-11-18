@@ -36,6 +36,13 @@ public partial class SettingsViewModel : ObservableObject
         _folder = folder;
         _readOnly = readOnly;
         _screens = Displays.Find();
+        Bindings = Enumerable.Range(0, GameSettings.BindingNames.Length).Select(i => new ButtonBinding(i)).ToList();
+        foreach (var b in Bindings)
+            b.PropertyChanged += (_, e) =>
+            {
+                if (e.PropertyName is nameof(ButtonBinding.Keys) or nameof(ButtonBinding.Pad))
+                    Save();
+            };
         Load(GameSettings.Load(folder.SettingsPath));
         UpdatePads();
         if (!readOnly)
@@ -64,7 +71,7 @@ public partial class SettingsViewModel : ObservableObject
         bool Keyboard(int player) => KeyboardIndex == player;
         string Pad(int player) =>
             player >= 2 && !Multitap ? "Off (2 players)"
-            : player < count ? (Keyboard(player) ? "Xbox-style controller + the keyboard" : "Xbox-style controller")
+            : player < count ? (Keyboard(player) ? "Controller + the keyboard" : "Controller")
             : Keyboard(player) ? "The keyboard" : "Not plugged in";
         bool In(int player) => (player < 2 || Multitap) && (player < count || Keyboard(player));
         Pad1 = Pad(0);
@@ -274,6 +281,41 @@ public partial class SettingsViewModel : ObservableObject
         }
     }
 
+    /// <summary>The Controls page's button table: one row per PS2 button / stick direction.</summary>
+    public List<ButtonBinding> Bindings { get; }
+
+    /// <summary>The row waiting for a key press (its "Add key" button), or null.</summary>
+    [ObservableProperty] private ButtonBinding? _listening;
+
+    [RelayCommand]
+    private void ListenForKey(ButtonBinding row)
+    {
+        if (Listening != null)
+            Listening.IsListening = false;
+        Listening = row;
+        row.IsListening = true;
+    }
+
+    /// <summary>A key pressed while a row listens (the view's key handler): added to that row; Escape cancels.</summary>
+    public bool KeyPressed(string? name)
+    {
+        if (Listening is not { } row)
+            return false;
+        row.IsListening = false;
+        Listening = null;
+        if (name != null)
+            row.AddKey(name);
+        return true;
+    }
+
+    [RelayCommand]
+    private void ResetButtons()
+    {
+        foreach (var b in Bindings)
+            b.Reset();
+        Status = "Buttons back to the defaults.";
+    }
+
     [RelayCommand]
     private void ResetToDefaults()
     {
@@ -315,6 +357,14 @@ public partial class SettingsViewModel : ObservableObject
             Vibration3 = s.Vibration[2];
             Vibration4 = s.Vibration[3];
             KeyboardIndex = s.Keyboard is >= 1 and <= 4 ? s.Keyboard - 1 : 4;
+            foreach (var b in Bindings)
+            {
+                b.Keys = s.Keys[b.Index];
+                if (b.HasPad)
+                    b.Pad = ButtonBinding.PadOptions.FirstOrDefault(o =>
+                                o.Name.Equals(s.Pads[b.Index], StringComparison.OrdinalIgnoreCase))
+                            ?? ButtonBinding.PadOptions[b.Index];
+            }
             UnlockAll = s.UnlockAll;
             CheckUpdates = s.CheckUpdates;
         }
@@ -405,6 +455,8 @@ public partial class SettingsViewModel : ObservableObject
         Multitap = Multitap,
         Vibration = new[] { Vibration1, Vibration2, Vibration3, Vibration4 },
         Keyboard = KeyboardIndex is >= 0 and <= 3 ? KeyboardIndex + 1 : 0,
+        Keys = Bindings.Select(b => b.Keys.Trim()).ToArray(),
+        Pads = Bindings.Take(GameSettings.PadButtonBindings).Select(b => b.Pad?.Name ?? "None").ToArray(),
         UnlockAll = UnlockAll,
         CheckUpdates = CheckUpdates,
     };

@@ -35,7 +35,28 @@ public sealed class GameSettings
     // [controls]
     public bool Multitap = true;            // up to 4 players (a multitap in port 2)
     public bool[] Vibration = { true, true, true, true }; // per player
-    public int Keyboard = 0;                // the player the keyboard plays as: 1-4, 0 = nobody (the default)
+    public int Keyboard = 1;                // the player the keyboard plays as: 1-4 (player 1 the default), 0 = nobody
+    // [controls] button bindings (the game's ps2_host_settings.h): key_<name> = keyboard keys ("X, Space"),
+    // pad_<name> = the controller button that presses it, named as on a PlayStation pad ("Cross" = Xbox A)
+    public static readonly string[] BindingNames =
+    {
+        "up", "down", "left", "right", "cross", "circle", "square", "triangle", "l1", "r1", "l2", "r2", "l3", "r3",
+        "start", "select", "lstick_up", "lstick_down", "lstick_left", "lstick_right", "rstick_up", "rstick_down",
+        "rstick_left", "rstick_right",
+    };
+    public const int PadButtonBindings = 16;
+    public static readonly string[] DefaultKeys =
+    {
+        "Up", "Down", "Left", "Right", "X, Space", "C, Backspace", "Z", "V", "Q", "E", "1, LShift", "3, RShift", "F",
+        "G", "Enter", "Tab", "W", "S", "A", "D", "I", "K", "J", "L",
+    };
+    public static readonly string[] PadButtons =
+    {
+        "Up", "Down", "Left", "Right", "Cross", "Circle", "Square", "Triangle", "L1", "R1", "L2", "R2", "L3", "R3",
+        "Start", "Select",
+    };
+    public string[] Keys = (string[])DefaultKeys.Clone();
+    public string[] Pads = (string[])PadButtons.Clone();
     // [gameplay]
     public bool UnlockAll;                  // every wrestler, attire, arena and picture, the save unchanged
     // [updates] (this program and the game)
@@ -77,11 +98,14 @@ public sealed class GameSettings
         "\n" +
         "[controls]\n" +
         "multitap = true          # up to 4 players (a multitap in port 2, as on the PS2); false = 2 controllers\n" +
-        "vibration_1 = true       # each player's controller vibrates (Xbox-style / XInput controllers)\n" +
+        "vibration_1 = true       # each player's controller vibrates (Xbox / XInput, PlayStation 4 and 5 controllers)\n" +
         "vibration_2 = true\n" +
         "vibration_3 = true\n" +
         "vibration_4 = true\n" +
-        "keyboard = 0             # which player the keyboard plays as (with their controller): 1-4, 0 = nobody\n" +
+        "keyboard = 1             # which player the keyboard plays as (with their controller): 1-4, 0 = nobody\n" +
+        "# Buttons. key_<button> = the keyboard keys for it (comma separated; names such as A-Z, 0-9, Up, Space, Enter,\n" +
+        "# LShift, RCtrl, Numpad0, F1, Comma). pad_<button> = the controller button that presses it, named as on a\n" +
+        "# PlayStation pad (Cross = Xbox A, Circle = B, Square = X, Triangle = Y; \"None\" = nothing). Missing = default.\n" +
         "\n" +
         "[gameplay]\n" +
         "unlock_all = false       # every wrestler, attire, arena and picture for every player, with or without a save.\n" +
@@ -130,6 +154,16 @@ public sealed class GameSettings
                 case "controls.vibration_3": s.Vibration[2] = Bool(value, s.Vibration[2]); break;
                 case "controls.vibration_4": s.Vibration[3] = Bool(value, s.Vibration[3]); break;
                 case "controls.keyboard": s.Keyboard = Int(value, s.Keyboard, 0, 4); break;
+                case var k when k.StartsWith("controls.key_", StringComparison.Ordinal):
+                    var ki = Array.IndexOf(BindingNames, k["controls.key_".Length..]);
+                    if (ki >= 0)
+                        s.Keys[ki] = value;
+                    break;
+                case var p when p.StartsWith("controls.pad_", StringComparison.Ordinal):
+                    var pi = Array.IndexOf(BindingNames, p["controls.pad_".Length..]);
+                    if (pi is >= 0 and < PadButtonBindings)
+                        s.Pads[pi] = value;
+                    break;
                 case "gameplay.unlock_all": s.UnlockAll = Bool(value, s.UnlockAll); break;
                 case "updates.check_on_open": s.CheckUpdates = Bool(value, s.CheckUpdates); break;
             }
@@ -176,6 +210,10 @@ public sealed class GameSettings
         };
         foreach (var (section, key, value) in values)
             SetLine(lines, section, key, value);
+        for (int i = 0; i < BindingNames.Length; i++)
+            SetLine(lines, "controls", "key_" + BindingNames[i], Quote(Keys[i]));
+        for (int i = 0; i < PadButtonBindings; i++)
+            SetLine(lines, "controls", "pad_" + BindingNames[i], Quote(Pads[i]));
         var text = string.Join("\n", lines) + "\n";
         var temp = path + ".new";
         File.WriteAllText(temp, text, new UTF8Encoding(false));

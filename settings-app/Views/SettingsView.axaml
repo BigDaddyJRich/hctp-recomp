@@ -317,7 +317,7 @@
                         </Grid>
                     </Border>
                     <TextBlock Classes="hint" Margin="0,10,0,0" LineHeight="18"
-                               Text="Controllers are given out in the order Windows lists them. Xbox-style (XInput) ones are shown here. Vibration works with those, and PlayStation controllers work through Steam or DS4Windows. The game's own VIBRATION option (pause menu) still applies." />
+                               Text="Controllers are given out in order: Xbox-style (XInput) ones first (the ones counted here), then PlayStation 4 and 5 controllers (USB or Bluetooth, no extra program needed). Vibration works with both. The game's own VIBRATION option (pause menu) still applies." />
                 </StackPanel>
 
                 <StackPanel>
@@ -342,146 +342,44 @@
                 </StackPanel>
 
                 <StackPanel>
-                    <TextBlock Classes="cap" Text="BUTTONS" />
-                    <Border Classes="capline" />
-                    <Grid ColumnDefinitions="*,28,*">
-                        <StackPanel>
-                            <Grid ColumnDefinitions="1.3*,*,*" ColumnSpacing="10" Margin="0,0,0,0">
-                                <TextBlock Classes="cap" Text="BUTTON" Margin="0,8" />
-                                <TextBlock Grid.Column="1" Classes="cap" Text="CONTROLLER" Margin="0,8" />
-                                <TextBlock Grid.Column="2" Classes="cap" Text="KEYBOARD" Margin="0,8" />
-                            </Grid>
-                            <Border BorderBrush="{StaticResource VRowLine}" BorderThickness="0,1,0,0" Padding="0,5">
-                                <Grid ColumnDefinitions="1.3*,*,*" ColumnSpacing="10">
-                                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                                        <Border Classes="glyph"><TextBlock Text="✕" /></Border>
-                                        <TextBlock Text="Cross" FontSize="13.5" VerticalAlignment="Center" />
-                                        <TextBlock Text="Grapple" Classes="muted" FontSize="12.5" VerticalAlignment="Center" />
-                                    </StackPanel>
-                                    <Border Grid.Column="1" Classes="chip"><TextBlock Text="A" /></Border>
-                                    <Border Grid.Column="2" Classes="chip"><TextBlock Text="X · Space" /></Border>
-                                </Grid>
-                            </Border>
-                            <Border BorderBrush="{StaticResource VRowLine}" BorderThickness="0,1,0,0" Padding="0,5">
-                                <Grid ColumnDefinitions="1.3*,*,*" ColumnSpacing="10">
-                                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                                        <Border Classes="glyph"><TextBlock Text="○" /></Border>
-                                        <TextBlock Text="Circle" FontSize="13.5" VerticalAlignment="Center" />
-                                        <TextBlock Text="Run · climb" Classes="muted" FontSize="12.5" VerticalAlignment="Center" />
-                                    </StackPanel>
-                                    <Border Grid.Column="1" Classes="chip"><TextBlock Text="B" /></Border>
-                                    <Border Grid.Column="2" Classes="chip"><TextBlock Text="C · Esc" /></Border>
-                                </Grid>
-                            </Border>
-                            <Border BorderBrush="{StaticResource VRowLine}" BorderThickness="0,1,0,0" Padding="0,5">
-                                <Grid ColumnDefinitions="1.3*,*,*" ColumnSpacing="10">
-                                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                                        <Border Classes="glyph"><TextBlock Text="□" /></Border>
-                                        <TextBlock Text="Square" FontSize="13.5" VerticalAlignment="Center" />
-                                        <TextBlock Text="Strike" Classes="muted" FontSize="12.5" VerticalAlignment="Center" />
-                                    </StackPanel>
-                                    <Border Grid.Column="1" Classes="chip"><TextBlock Text="X" /></Border>
-                                    <Border Grid.Column="2" Classes="chip"><TextBlock Text="Z · Num 0" /></Border>
-                                </Grid>
-                            </Border>
-                            <Border BorderBrush="{StaticResource VRowLine}" BorderThickness="0,1,0,0" Padding="0,5">
-                                <Grid ColumnDefinitions="1.3*,*,*" ColumnSpacing="10">
-                                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                                        <Border Classes="glyph"><TextBlock Text="△" /></Border>
-                                        <TextBlock Text="Triangle" FontSize="13.5" VerticalAlignment="Center" />
-                                    </StackPanel>
-                                    <Border Grid.Column="1" Classes="chip"><TextBlock Text="Y" /></Border>
-                                    <Border Grid.Column="2" Classes="chip"><TextBlock Text="V · Num 1" /></Border>
-                                </Grid>
-                            </Border>
-                            <Border BorderBrush="{StaticResource VRowLine}" BorderThickness="0,1,0,0" Padding="0,5">
-                                <Grid ColumnDefinitions="1.3*,*,*" ColumnSpacing="10">
-                                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                                        <Border Classes="glyph wide"><TextBlock Text="START" /></Border>
-                                        <TextBlock Text="Pause" Classes="muted" FontSize="12.5" VerticalAlignment="Center" />
-                                    </StackPanel>
-                                    <Border Grid.Column="1" Classes="chip"><TextBlock Text="Menu" /></Border>
-                                    <Border Grid.Column="2" Classes="chip"><TextBlock Text="Enter" /></Border>
-                                </Grid>
-                            </Border>
-                            <Border BorderBrush="{StaticResource VRowLine}" BorderThickness="0,1,0,0" Padding="0,5">
-                                <Grid ColumnDefinitions="1.3*,*,*" ColumnSpacing="10">
-                                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                                        <Border Classes="glyph wide"><TextBlock Text="SELECT" /></Border>
-                                    </StackPanel>
-                                    <Border Grid.Column="1" Classes="chip"><TextBlock Text="View" /></Border>
-                                    <Border Grid.Column="2" Classes="chip"><TextBlock Text="Tab" /></Border>
-                                </Grid>
-                            </Border>
-                        </StackPanel>
-                        <StackPanel Grid.Column="2">
-                            <Grid ColumnDefinitions="1.3*,*,*" ColumnSpacing="10" Margin="0,0,0,0">
-                                <TextBlock Classes="cap" Text="BUTTON" Margin="0,8" />
-                                <TextBlock Grid.Column="1" Classes="cap" Text="CONTROLLER" Margin="0,8" />
-                                <TextBlock Grid.Column="2" Classes="cap" Text="KEYBOARD" Margin="0,8" />
-                            </Grid>
-                            <Border BorderBrush="{StaticResource VRowLine}" BorderThickness="0,1,0,0" Padding="0,5">
-                                <Grid ColumnDefinitions="1.3*,*,*" ColumnSpacing="10">
-                                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                                        <Border Classes="glyph wide"><TextBlock Text="L1" /></Border>
-                                        <TextBlock Text="Dodge" Classes="muted" FontSize="12.5" VerticalAlignment="Center" />
-                                    </StackPanel>
-                                    <Border Grid.Column="1" Classes="chip"><TextBlock Text="LB" /></Border>
-                                    <Border Grid.Column="2" Classes="chip"><TextBlock Text="Q" /></Border>
-                                </Grid>
-                            </Border>
-                            <Border BorderBrush="{StaticResource VRowLine}" BorderThickness="0,1,0,0" Padding="0,5">
-                                <Grid ColumnDefinitions="1.3*,*,*" ColumnSpacing="10">
-                                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                                        <Border Classes="glyph wide"><TextBlock Text="R1" /></Border>
-                                        <TextBlock Text="Block" Classes="muted" FontSize="12.5" VerticalAlignment="Center" />
-                                    </StackPanel>
-                                    <Border Grid.Column="1" Classes="chip"><TextBlock Text="RB" /></Border>
-                                    <Border Grid.Column="2" Classes="chip"><TextBlock Text="E" /></Border>
-                                </Grid>
-                            </Border>
-                            <Border BorderBrush="{StaticResource VRowLine}" BorderThickness="0,1,0,0" Padding="0,5">
-                                <Grid ColumnDefinitions="1.3*,*,*" ColumnSpacing="10">
-                                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                                        <Border Classes="glyph wide"><TextBlock Text="L2" /></Border>
-                                    </StackPanel>
-                                    <Border Grid.Column="1" Classes="chip"><TextBlock Text="LT" /></Border>
-                                    <Border Grid.Column="2" Classes="chip"><TextBlock Text="Left Shift" /></Border>
-                                </Grid>
-                            </Border>
-                            <Border BorderBrush="{StaticResource VRowLine}" BorderThickness="0,1,0,0" Padding="0,5">
-                                <Grid ColumnDefinitions="1.3*,*,*" ColumnSpacing="10">
-                                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                                        <Border Classes="glyph wide"><TextBlock Text="R2" /></Border>
-                                    </StackPanel>
-                                    <Border Grid.Column="1" Classes="chip"><TextBlock Text="RT" /></Border>
-                                    <Border Grid.Column="2" Classes="chip"><TextBlock Text="Right Shift" /></Border>
-                                </Grid>
-                            </Border>
-                            <Border BorderBrush="{StaticResource VRowLine}" BorderThickness="0,1,0,0" Padding="0,5">
-                                <Grid ColumnDefinitions="1.3*,*,*" ColumnSpacing="10">
-                                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                                        <TextBlock Text="D-pad · left stick" FontSize="13.5" VerticalAlignment="Center" />
-                                        <TextBlock Text="Move" Classes="muted" FontSize="12.5" VerticalAlignment="Center" />
-                                    </StackPanel>
-                                    <Border Grid.Column="1" Classes="chip"><TextBlock Text="D-pad · left stick" /></Border>
-                                    <Border Grid.Column="2" Classes="chip"><TextBlock Text="Arrows · W A S D" /></Border>
-                                </Grid>
-                            </Border>
-                            <Border BorderBrush="{StaticResource VRowLine}" BorderThickness="0,1,0,0" Padding="0,5">
-                                <Grid ColumnDefinitions="1.3*,*,*" ColumnSpacing="10">
-                                    <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
-                                        <TextBlock Text="Right stick" FontSize="13.5" VerticalAlignment="Center" />
-                                        <TextBlock Text="Taunt · Blazin&apos;" Classes="muted" FontSize="12.5" VerticalAlignment="Center" />
-                                    </StackPanel>
-                                    <Border Grid.Column="1" Classes="chip"><TextBlock Text="Right stick" /></Border>
-                                    <Border Grid.Column="2" Classes="chip"><TextBlock Text="I J K L" /></Border>
-                                </Grid>
-                            </Border>
-                        </StackPanel>
+                    <Grid ColumnDefinitions="*,Auto">
+                        <TextBlock Classes="cap" Text="BUTTONS" VerticalAlignment="Bottom" />
+                        <Button Grid.Column="1" Classes="outline" Content="Default buttons" Command="{Binding ResetButtonsCommand}"
+                                Margin="0,0,0,4" />
                     </Grid>
-                    <TextBlock Classes="hint" Margin="0,10,0,0" TextWrapping="Wrap"
-                               Text="The game's buttons are fixed. The keyboard's keys work for the player picked under Keyboard." />
+                    <Border Classes="capline" />
+                    <Grid ColumnDefinitions="190,260,*" ColumnSpacing="12">
+                        <TextBlock Classes="cap" Text="PS2 BUTTON" Margin="0,8" />
+                        <TextBlock Grid.Column="1" Classes="cap" Text="CONTROLLER BUTTON" Margin="0,8" />
+                        <TextBlock Grid.Column="2" Classes="cap" Text="KEYBOARD KEYS" Margin="0,8" />
+                    </Grid>
+                    <ItemsControl ItemsSource="{Binding Bindings}">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate x:DataType="vm:ButtonBinding">
+                                <Border BorderBrush="{StaticResource VRowLine}" BorderThickness="0,1,0,0" Padding="0,4">
+                                    <Grid ColumnDefinitions="190,260,*,Auto,Auto" ColumnSpacing="12">
+                                        <StackPanel Orientation="Horizontal" Spacing="8" VerticalAlignment="Center">
+                                            <Border Classes="glyph" Classes.wide="{Binding WideGlyph}"><TextBlock Text="{Binding Glyph}" /></Border>
+                                            <TextBlock Text="{Binding Label}" FontSize="13.5" VerticalAlignment="Center" />
+                                        </StackPanel>
+                                        <ComboBox Grid.Column="1" HorizontalAlignment="Stretch" VerticalAlignment="Center"
+                                                  IsVisible="{Binding HasPad}" ItemsSource="{Binding Options}"
+                                                  SelectedItem="{Binding Pad}" />
+                                        <TextBlock Grid.Column="1" Text="The stick itself" Classes="muted" FontSize="12.5"
+                                                   VerticalAlignment="Center" IsVisible="{Binding NoPad}" />
+                                        <TextBox Grid.Column="2" Text="{Binding Keys}" VerticalAlignment="Center" />
+                                        <Button Grid.Column="3" Classes="outline" Content="{Binding AddText}" VerticalAlignment="Center"
+                                                Command="{Binding $parent[UserControl].((vm:SettingsViewModel)DataContext).ListenForKeyCommand}"
+                                                CommandParameter="{Binding}" />
+                                        <Button Grid.Column="4" Classes="outline" Content="Clear" VerticalAlignment="Center"
+                                                Command="{Binding ClearKeysCommand}" />
+                                    </Grid>
+                                </Border>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                    <TextBlock Classes="hint" Margin="0,10,0,0" TextWrapping="Wrap" LineHeight="18"
+                               Text="Controller buttons are named as on a PlayStation pad (Xbox names in brackets) and apply to every controller. The keyboard keys work for the player picked under Keyboard; several keys are separated by commas. Changes are used the next time the game starts." />
                 </StackPanel>
             </StackPanel>
         </ScrollViewer>
