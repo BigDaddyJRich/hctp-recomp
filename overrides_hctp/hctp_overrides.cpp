@@ -1685,7 +1685,7 @@ namespace
     // (78) only; give Modern Hogan's attire 0 the same flag when its dress pack (EMD2\3202) is installed.
     void enableHoganDress(uint8_t *rdram)
     {
-        // Nov 5: every Modern Hogan attire A whose dress pack EMD2A2 is installed gets the flag (was attire 0 only),
+        // Nov 5: every Modern Hogan attire A whose dress pack EMD2/32A2 is installed gets the flag (was attire 0 only),
         // so each attire walks out in its own gear and tears it (WM19 = attire 1 -> 3212).
         static const uint8_t dressMask = [] {
             uint8_t m = 0;
