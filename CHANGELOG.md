@@ -12,6 +12,10 @@ run scripts are intentionally kept out of the public repository.
 - Started from Steam, a PlayStation controller no longer plays as two players at once (Steam Input's Xbox controller
   is used). Launcher switch for DS4Windows / DualSenseX users: "Read PlayStation controllers directly".
 - The log (game.log.err) now says why a PlayStation controller was not used, for bug reports.
+- First setup: the progress bar no longer sits still at 22% while the game's code is turned into C++ (it counts the
+  files), and the time hints are real: the game build takes about 20 minutes on a fast PC and up to 2 hours with
+  8 GB of memory. It is still working when the bar moves slowly.
+- Setup scripts checked with the Python the download ships (3.14): no more warnings.
 - Launcher: vibration strength (100% = exactly as the game vibrates), and new picture options: anti-aliasing (FXAA),
   anisotropic filtering (2x-16x) and scaling to the window (smooth, sharp or blocky) with sharpening. All are off
   by default, so the game looks the same until you change them.
