@@ -10,8 +10,12 @@ on a 4-core PC or with 8 GB of memory (measured: the game's compiles add up to a
 over as many cores as your memory allows). Updating from 0.3.6 in the launcher rebuilds the game too. The progress
 bar can sit for minutes on the biggest files: it is still working.
 
-- Building the game needs less memory: the biggest single file of the build (the game's 413,000-entry function
-  table) now compiles in about 0.8 GB and 6 seconds instead of 1.8 GB and 40 seconds.
+- **Builds on 8 GB PCs.** The whole game build now fits in 2.5 GB of memory (tested: the full build inside a hard
+  2.5 GB limit peaked at 1.95 GB). Before, single steps needed 3.1 GB and two ran at once, so 8 GB PCs ran out
+  ("compiler is out of heap space") or crawled. The setup now runs only as many compiles at once as the memory that
+  is FREE right now allows (2 GB each, 1 GB kept for Windows), so an open browser no longer breaks the build.
+  Changes: big game functions compile on their own instead of 32 to a batch; the VU1 graphics code is built only in
+  the variant the game runs; the 413,000-entry function table compiles as data (0.8 GB / 6 s instead of 1.8 GB / 40 s).
 - PlayStation 5 controllers: full-strength vibration on current DualSense firmware (2.24 and newer; before, it was
   very weak), vibration over Bluetooth fixed for PS4 and PS5 controllers.
 - Started from Steam, a PlayStation controller no longer plays as two players at once (Steam Input's Xbox controller
