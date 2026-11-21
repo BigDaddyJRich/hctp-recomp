@@ -25,7 +25,10 @@ public sealed class GameSettings
     public string Renderer = "gpu";         // gpu | cpu
     public int Scale = 16;                  // 1 2 4 8 5 6 16 (= 1x 2x 3x 4x 5x 6x auto; 16 the default)
     public string Filter = "fsr";           // fsr | smooth | blocky
-    public int Sharpening = 75;             // 0-100
+    public int Sharpening = 75;             // 0-100, with UpscaleFilter "sharp"
+    public string Antialiasing = "off";     // off | fxaa (0.3.7)
+    public int Anisotropic;                 // 0 (off) 2 4 8 16 (0.3.7)
+    public string UpscaleFilter = "smooth"; // smooth | sharp | blocky: scaling to the window (0.3.7)
     public bool HighPoly = true;            // High Poly wrestlers and arenas in every match
     public bool Sharp2D = true;             // the HUD, text and menus in the 3-D's detail
     public string Camera = "vendetta";      // the fight camera: vendetta (the game's own) | nomercy | wk2
@@ -36,6 +39,8 @@ public sealed class GameSettings
     public bool Multitap = true;            // up to 4 players (a multitap in port 2)
     public bool[] Vibration = { true, true, true, true }; // per player
     public int Keyboard = 1;                // the player the keyboard plays as: 1-4 (player 1 the default), 0 = nobody
+    public int VibrationStrength = 100;     // 25-200 %: x the game's own motor values (0.3.7)
+    public bool PlaystationDirect = true;   // PS4 / PS5 controllers read directly (false: leave them to Steam / DS4Windows)
     // [controls] button bindings (the game's ps2_host_settings.h): key_<name> = keyboard keys ("X, Space"),
     // pad_<name> = the controller button that presses it, named as on a PlayStation pad ("Cross" = Xbox A)
     public static readonly string[] BindingNames =
@@ -86,7 +91,10 @@ public sealed class GameSettings
         "renderer = \"gpu\"         # \"gpu\" (the graphics card) or \"cpu\"\n" +
         "scale = 16               # how much sharper than the PS2: 1, 2, 4, 8 = 1x 2x 3x 4x, 5 = 5x, 6 = 6x, 16 = auto\n" +
         "filter = \"fsr\"           # scaling to the window: \"fsr\", \"smooth\" or \"blocky\"\n" +
-        "sharpening = 75          # 0-100, with \"fsr\"\n" +
+        "sharpening = 75          # 0-100, with upscale_filter = \"sharp\"\n" +
+        "antialiasing = \"off\"     # \"off\" or \"fxaa\" (smooths jagged edges)\n" +
+        "anisotropic = 0          # 0 (off, as on the PS2), 2, 4, 8 or 16: sharper floors and walls at an angle\n" +
+        "upscale_filter = \"smooth\" # scaling the picture to the window: \"smooth\", \"sharp\" or \"blocky\"\n" +
         "sharp_2d = true          # the HUD, text and menus in the same detail as the 3-D (as PCSX2 upscales them); false = as on the PS2\n" +
         "high_poly = true         # every wrestler and arena at full detail in every match; false = as on the PS2\n" +
         "                         # (lower-detail wrestlers and arenas in 3- and 4-fighter matches)\n" +
@@ -104,6 +112,9 @@ public sealed class GameSettings
         "vibration_3 = true\n" +
         "vibration_4 = true\n" +
         "keyboard = 1             # which player the keyboard plays as (with their controller): 1-4, 0 = nobody\n" +
+        "vibration_strength = 100 # 25-200 (%): 100 = exactly as the game vibrates the controller\n" +
+        "playstation_direct = true # PlayStation 4 / 5 controllers read directly; false = leave them to Steam Input or\n" +
+        "                         # DS4Windows (their virtual Xbox controller)\n" +
         "# Buttons. key_<button> = the keyboard keys for it (comma separated; names such as A-Z, 0-9, Up, Space, Enter,\n" +
         "# LShift, RCtrl, Numpad0, F1, Comma). pad_<button> = the controller button that presses it, named as on a\n" +
         "# PlayStation pad (Cross = Xbox A, Circle = B, Square = X, Triangle = Y; \"None\" = nothing). Missing = default.\n" +
@@ -145,6 +156,12 @@ public sealed class GameSettings
                     break;
                 case "graphics.filter": s.Filter = OneOf(value, s.Filter, "fsr", "smooth", "blocky"); break;
                 case "graphics.sharpening": s.Sharpening = Int(value, s.Sharpening, 0, 100); break;
+                case "graphics.antialiasing": s.Antialiasing = OneOf(value, s.Antialiasing, "off", "fxaa"); break;
+                case "graphics.anisotropic":
+                    var an = Int(value, s.Anisotropic, 0, 16);
+                    s.Anisotropic = an is 0 or 2 or 4 or 8 or 16 ? an : s.Anisotropic;
+                    break;
+                case "graphics.upscale_filter": s.UpscaleFilter = OneOf(value, s.UpscaleFilter, "smooth", "sharp", "blocky"); break;
                 case "graphics.high_poly": s.HighPoly = Bool(value, s.HighPoly); break;
                 case "graphics.sharp_2d": s.Sharp2D = Bool(value, s.Sharp2D); break;
                 case "graphics.camera": s.Camera = OneOf(value, s.Camera, "vendetta", "nomercy", "wk2"); break;
@@ -156,6 +173,8 @@ public sealed class GameSettings
                 case "controls.vibration_3": s.Vibration[2] = Bool(value, s.Vibration[2]); break;
                 case "controls.vibration_4": s.Vibration[3] = Bool(value, s.Vibration[3]); break;
                 case "controls.keyboard": s.Keyboard = Int(value, s.Keyboard, 0, 4); break;
+                case "controls.vibration_strength": s.VibrationStrength = Int(value, s.VibrationStrength, 25, 200); break;
+                case "controls.playstation_direct": s.PlaystationDirect = Bool(value, s.PlaystationDirect); break;
                 case var k when k.StartsWith("controls.key_", StringComparison.Ordinal):
                     var ki = Array.IndexOf(BindingNames, k["controls.key_".Length..]);
                     if (ki >= 0)
@@ -197,6 +216,9 @@ public sealed class GameSettings
             ("graphics", "scale", Scale.ToString(CultureInfo.InvariantCulture)),
             ("graphics", "filter", Quote(Filter)),
             ("graphics", "sharpening", Sharpening.ToString(CultureInfo.InvariantCulture)),
+            ("graphics", "antialiasing", Quote(Antialiasing)),
+            ("graphics", "anisotropic", Anisotropic.ToString(CultureInfo.InvariantCulture)),
+            ("graphics", "upscale_filter", Quote(UpscaleFilter)),
             ("graphics", "sharp_2d", Sharp2D ? "true" : "false"),
             ("graphics", "high_poly", HighPoly ? "true" : "false"),
             ("graphics", "camera", Quote(Camera)),
@@ -208,6 +230,8 @@ public sealed class GameSettings
             ("controls", "vibration_3", Vibration[2] ? "true" : "false"),
             ("controls", "vibration_4", Vibration[3] ? "true" : "false"),
             ("controls", "keyboard", Keyboard.ToString(CultureInfo.InvariantCulture)),
+            ("controls", "vibration_strength", VibrationStrength.ToString(CultureInfo.InvariantCulture)),
+            ("controls", "playstation_direct", PlaystationDirect ? "true" : "false"),
             ("gameplay", "unlock_all", UnlockAll ? "true" : "false"),
             ("gameplay", "matrix_replay", MatrixReplay ? "true" : "false"),
             ("updates", "check_on_open", CheckUpdates ? "true" : "false"),

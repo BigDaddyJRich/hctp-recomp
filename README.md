@@ -20,7 +20,8 @@ You need Windows 10/11 64-bit, a CPU with AVX2, a DirectX 11 graphics card, 16 G
 
 - **Saves:** `Documents\HCTP`.
 - **Controllers:** Xbox controllers, PlayStation 4 / 5 controllers (USB or Bluetooth, with vibration), and keyboard.
-  Keys and buttons can be changed on the launcher's Controls page. Up to 4 players.
+  Keys and buttons can be changed on the launcher's Controls page. Up to 4 players. Using DS4Windows or DualSenseX?
+  Turn off "Read PlayStation controllers directly" on the Controls page (Steam Input is detected by itself).
 - **Slow or choppy?** Lower **Scale** in the launcher's Settings (Auto picks 6x on a 4K screen; try 3x or 2x).
 - **Matrix spin + instant replay:** two features cut from the game (L1 during a finisher, L2), behind a switch in the
   launcher's Settings, off by default.

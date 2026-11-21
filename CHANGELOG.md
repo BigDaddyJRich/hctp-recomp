@@ -3,6 +3,19 @@
 This file records HCTP-specific changes only. Local experiments, extracted game assets, emulator dumps, and temporary
 run scripts are intentionally kept out of the public repository.
 
+## 0.3.7
+
+- Building the game needs less memory: the biggest single file of the build (the game's 413,000-entry function
+  table) now compiles in about 0.8 GB and 6 seconds instead of 1.8 GB and 40 seconds.
+- PlayStation 5 controllers: full-strength vibration on current DualSense firmware (2.24 and newer; before, it was
+  very weak), vibration over Bluetooth fixed for PS4 and PS5 controllers.
+- Started from Steam, a PlayStation controller no longer plays as two players at once (Steam Input's Xbox controller
+  is used). Launcher switch for DS4Windows / DualSenseX users: "Read PlayStation controllers directly".
+- The log (game.log.err) now says why a PlayStation controller was not used, for bug reports.
+- Launcher: vibration strength (100% = exactly as the game vibrates), and new picture options: anti-aliasing (FXAA),
+  anisotropic filtering (2x-16x) and scaling to the window (smooth, sharp or blocky) with sharpening. All are off
+  by default, so the game looks the same until you change them.
+
 ## 0.3.6
 
 - Memory card: no more "corrupted" message on first boot (the card's directory listing now works like the PS2's).

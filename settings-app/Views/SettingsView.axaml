@@ -165,18 +165,45 @@
                         </Grid>
                     </Border>
                 </StackPanel>
-                <StackPanel IsVisible="False">
-                    <TextBlock Classes="cap" Text="SCALING TO THE WINDOW" />
+                <StackPanel>
+                    <TextBlock Classes="cap" Text="PICTURE QUALITY" />
                     <Border Classes="capline" />
                     <Border Classes="row">
                         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
                             <StackPanel VerticalAlignment="Center" Spacing="2">
-                                <TextBlock Classes="label" Text="Filter" />
-                                <TextBlock Classes="hint" Text="{Binding FilterHint}" />
+                                <TextBlock Classes="label" Text="Anti-aliasing" />
+                                <TextBlock Classes="hint" TextWrapping="Wrap" Text="FXAA smooths jagged edges. Off = as before" />
                             </StackPanel>
-                            <ListBox Grid.Column="1" Classes="seg" SelectedIndex="{Binding FilterIndex}">
-                                <ListBoxItem Content="FSR" />
+                            <ListBox Grid.Column="1" Classes="seg" SelectedIndex="{Binding AntialiasingIndex}">
+                                <ListBoxItem Content="Off" />
+                                <ListBoxItem Content="FXAA" />
+                            </ListBox>
+                        </Grid>
+                    </Border>
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Classes="label" Text="Anisotropic filtering" />
+                                <TextBlock Classes="hint" TextWrapping="Wrap" Text="Sharper floors, mats and walls seen at an angle. Off = as on the PS2" />
+                            </StackPanel>
+                            <ListBox Grid.Column="1" Classes="seg" SelectedIndex="{Binding AnisoIndex}">
+                                <ListBoxItem Content="Off" />
+                                <ListBoxItem Content="2×" />
+                                <ListBoxItem Content="4×" />
+                                <ListBoxItem Content="8×" />
+                                <ListBoxItem Content="16×" />
+                            </ListBox>
+                        </Grid>
+                    </Border>
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Classes="label" Text="Scaling to the window" />
+                                <TextBlock Classes="hint" Text="{Binding UpscaleHint}" />
+                            </StackPanel>
+                            <ListBox Grid.Column="1" Classes="seg" SelectedIndex="{Binding UpscaleIndex}">
                                 <ListBoxItem Content="Smooth" />
+                                <ListBoxItem Content="Sharp" />
                                 <ListBoxItem Content="Blocky" />
                             </ListBox>
                         </Grid>
@@ -185,7 +212,7 @@
                         <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
                             <StackPanel VerticalAlignment="Center" Spacing="2">
                                 <TextBlock Classes="label" Text="Sharpening" />
-                                <TextBlock Classes="hint" Text="How crisp edges look after scaling (with FSR)" />
+                                <TextBlock Classes="hint" Text="How crisp edges look (with Sharp)" />
                             </StackPanel>
                             <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
                                 <Slider Width="200" Minimum="0" Maximum="100" TickFrequency="1" IsSnapToTickEnabled="True"
@@ -318,6 +345,31 @@
                     </Border>
                     <TextBlock Classes="hint" Margin="0,10,0,0" LineHeight="18"
                                Text="Controllers are given out in order: Xbox-style (XInput) ones first (the ones counted here), then PlayStation 4 and 5 controllers (USB or Bluetooth, no extra program needed). Vibration works with both. The game's own VIBRATION option (pause menu) still applies." />
+                    <Border Classes="row" Margin="0,10,0,0">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Classes="label" Text="Vibration strength" />
+                                <TextBlock Classes="hint" TextWrapping="Wrap" Text="100% = exactly as the game vibrates the controller" />
+                            </StackPanel>
+                            <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="10" VerticalAlignment="Center">
+                                <Slider Width="200" Minimum="25" Maximum="200" TickFrequency="5" IsSnapToTickEnabled="True"
+                                        Value="{Binding VibrationStrength}" />
+                                <TextBlock Width="42" TextAlignment="Right" VerticalAlignment="Center" Classes="mono muted"
+                                           Text="{Binding VibrationStrengthText}" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                    <Border Classes="row">
+                        <Grid ColumnDefinitions="*,Auto" ColumnSpacing="16">
+                            <StackPanel VerticalAlignment="Center" Spacing="2">
+                                <TextBlock Classes="label" Text="Read PlayStation controllers directly" />
+                                <TextBlock Classes="hint" TextWrapping="Wrap"
+                                           Text="On: PS4 / PS5 controllers work with no extra program. Turn off if you use DS4Windows or DualSenseX (their Xbox controller is used instead, so one controller never plays as two players). Started from Steam, Steam Input is detected by itself." />
+                            </StackPanel>
+                            <ToggleSwitch Grid.Column="1" OnContent="" OffContent="" VerticalAlignment="Center"
+                                          IsChecked="{Binding PlaystationDirect}" />
+                        </Grid>
+                    </Border>
                 </StackPanel>
 
                 <StackPanel>

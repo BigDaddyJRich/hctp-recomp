@@ -26,6 +26,7 @@ PATCH_SCRIPTS = [  # order matters (MakeChar 0x345700 declaration order = canoni
     "patch_runner_handedits.py",
     "patch_rosterx_code32.py",  # Nov 12 Step C2 (32-bit cast codes)
     "patch_svr_native_motion.py",  # Nov 12 SvR04/06 native motion (after handedits: rewrites its CCharIK twist hunks)
+    "compact_function_table.py",  # 0.3.7: register_functions.cpp as constant data (LAST: handedits edits its lines)
 ]
 
 

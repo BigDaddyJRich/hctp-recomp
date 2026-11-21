@@ -55,7 +55,7 @@ public static class SetupOutput
             return $"Building: part {m.Groups[1].Value} of {m.Groups[2].Value}";
         if (line.StartsWith("Checking which files changed:"))
             return line + " files";
-        if (line == "Turning the game's code into C++" || line.StartsWith("Microsoft's C++ build tools are missing"))
+        if (line.StartsWith("Turning the game's code into C++") || line.StartsWith("Microsoft's C++ build tools are missing"))
             return line;
         if (line == "the disc is already prepared")
             return "Your disc was already read";
@@ -105,11 +105,11 @@ public partial class SetupViewModel : ObservableObject
         // the steps tools\setup_game.py goes through, with about how much of the time each takes
         Steps = new ObservableCollection<SetupStep>
         {
-            new("Reading your disc", 0.06, "about 1 min"),
+            new("Reading your disc", 0.06, "1-3 min"),
             new("Getting the build tools", 0.04, "only if they're missing"),
-            new("Building the recompiler", 0.12, "about 1 min"),
-            new("Turning the game's code into C++", 0.10, "under a minute"),
-            new("Building the game", 0.66, "about 10 min"),
+            new("Building the recompiler", 0.12, "1-5 min"),
+            new("Turning the game's code into C++", 0.10, "2-10 min"),
+            new("Building the game", 0.66, "20 min on a fast PC, up to 2 hours on 8 GB of memory"),
             new("Finishing", 0.02, ""),
         };
     }

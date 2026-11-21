@@ -1,4 +1,4 @@
-"""Nov 10 STEP A permanent roster codes: patch every guest "slti rd, rs, 0x2710" (cast code < 10000 = stock, else CAW)
+r"""Nov 10 STEP A permanent roster codes: patch every guest "slti rd, rs, 0x2710" (cast code < 10000 = stock, else CAW)
 in the generated runner .cpp files so roster-expansion slot codes (16200..65499) take the stock path.
 Idempotent; re-run after a recompiler regen. Backups: <runner>\..\..\..\overrides_backup\runner_cawcheck\.
 GetDefStsBit 0x1bcb74 is skipped (range compare of a non-code value)."""

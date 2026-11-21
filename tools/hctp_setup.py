@@ -10,6 +10,7 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import setup_game as base  # noqa: E402
@@ -21,7 +22,10 @@ ELF = 'SLUS_207.87'
 base.STEPS[:] = ['Your game', 'Build tools', 'The recompiler', 'Recompiling the game', 'Building the game', 'Finishing']
 RUNNER = os.path.join(PS2RECOMP, 'ps2xRuntime', 'src', 'runner')
 RUNNER_PATCHES = ('patch_rosterx_cawcheck.py', 'patch_rosterx_cawoff.py', 'patch_rosterx_scale.py', 'patch_prop_texwindow.py',
-                  'patch_runner_handedits.py', 'patch_rosterx_code32.py', 'patch_svr_native_motion.py')
+                  'patch_runner_handedits.py', 'patch_rosterx_code32.py', 'patch_svr_native_motion.py',
+                  # 0.3.7: LAST (patch_runner_handedits.py edits its lines): the 413,000-entry function table as
+                  # constant data, so the build's biggest single compile needs little memory
+                  'compact_function_table.py')
 
 
 def step_disc(data, disc):
@@ -69,8 +73,37 @@ def step_recompile(recompiler, data):
     say("Turning the game's code into C++")
     log = os.path.join(logs, 'recomp.log')
     say(f'> {recompiler} {config} (its output: {log})')
+    # 0.3.7: the recompiler prints nothing until it is done (the launcher's bar sat at 22% for minutes and players
+    # thought it had hung): count the C++ files it has written so far (~14,800 for HCTP) as this step's progress
+    generated = os.path.join(SRC, 'generated')
+    started = time.time()
+    expected = 14800
+
+    def written():
+        n = 0
+        try:
+            with os.scandir(generated) as it:
+                for e in it:
+                    try:
+                        if e.name.endswith('.cpp') and e.stat().st_mtime >= started - 2:
+                            n += 1
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+        return n
+
     with open(log, 'w', encoding='utf-8', errors='replace') as out:
-        code = subprocess.run([recompiler, config], cwd=SRC, stdout=out, stderr=subprocess.STDOUT).returncode
+        proc = subprocess.Popen([recompiler, config], cwd=SRC, stdout=out, stderr=subprocess.STDOUT)
+        last = -1
+        while proc.poll() is None:
+            time.sleep(2)
+            n = written()
+            if n != last:
+                last = n
+                say(f"Turning the game's code into C++: {n:,} files")
+                progress(0.14 * min(1.0, n / expected))
+        code = proc.returncode
     if code != 0:
         raise SetupError(f'the recompiler failed (exit code {code}); see {log}')
     progress(0.15)

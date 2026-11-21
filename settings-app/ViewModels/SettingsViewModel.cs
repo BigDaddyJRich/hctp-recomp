@@ -15,6 +15,8 @@ public partial class SettingsViewModel : ObservableObject
     private static readonly string[] Modes = { "window", "borderless", "fullscreen" };
     private static readonly string[] Filters = { "fsr", "smooth", "blocky" };
     private static readonly string[] Cameras = { "vendetta", "nomercy", "wk2" };
+    private static readonly int[] Anisos = { 0, 2, 4, 8, 16 };
+    private static readonly string[] Upscales = { "smooth", "sharp", "blocky" };
 
     // the properties that are settings (a change is saved); the others are worked out from them
     private static readonly HashSet<string> Saved = new()
@@ -23,7 +25,8 @@ public partial class SettingsViewModel : ObservableObject
         nameof(ShapeIndex), nameof(RendererIndex), nameof(ScaleIndex), nameof(FilterIndex), nameof(Sharpening),
         nameof(Volume), nameof(Reverb), nameof(Multitap), nameof(Vibration1), nameof(Vibration2), nameof(Vibration3),
         nameof(Vibration4), nameof(HighPoly), nameof(Sharp2D), nameof(KeyboardIndex), nameof(CheckUpdates), nameof(CameraIndex),
-        nameof(UnlockAll), nameof(MatrixReplay),
+        nameof(UnlockAll), nameof(MatrixReplay), nameof(AntialiasingIndex), nameof(AnisoIndex), nameof(UpscaleIndex),
+        nameof(VibrationStrength), nameof(PlaystationDirect),
     };
 
     private readonly GameFolder _folder;
@@ -131,6 +134,11 @@ public partial class SettingsViewModel : ObservableObject
     [ObservableProperty] private int _scaleIndex;
     [ObservableProperty] private int _filterIndex;
     [ObservableProperty] private double _sharpening;
+    [ObservableProperty] private int _antialiasingIndex; // 0 off, 1 FXAA
+    [ObservableProperty] private int _anisoIndex;        // Anisos
+    [ObservableProperty] private int _upscaleIndex;      // Upscales
+    [ObservableProperty] private double _vibrationStrength = 100;
+    [ObservableProperty] private bool _playstationDirect = true;
     [ObservableProperty] private bool _highPoly;
     [ObservableProperty] private bool _sharp2D;
     /// <summary>The fight camera: 0 SmackDown! Here Comes the Pain (the game's own), 1 WWF No Mercy, 2 Wrestle Kingdom 2.</summary>
@@ -244,7 +252,15 @@ public partial class SettingsViewModel : ObservableObject
 
     public string SharpeningText => $"{(int)Math.Round(Sharpening)}%";
     public string VolumeText => $"{(int)Math.Round(Volume)}%";
-    public bool SharpeningEnabled => FilterIndex == 0;
+    public bool SharpeningEnabled => UpscaleIndex == 1;
+    public string VibrationStrengthText => $"{(int)Math.Round(VibrationStrength)}%";
+
+    public string UpscaleHint => UpscaleIndex switch
+    {
+        1 => "Crisper edges after scaling (contrast-adaptive sharpening)",
+        2 => "Hard pixels, like an emulator with no filter",
+        _ => "Default: smooth",
+    };
 
     /// <summary>A short line for the Play page: how the game will open.</summary>
     public string Summary
@@ -275,6 +291,7 @@ public partial class SettingsViewModel : ObservableObject
                          nameof(MaximisedHint), nameof(FullscreenHint), nameof(WindowsRate), nameof(RefreshHint),
                          nameof(VsyncHint), nameof(ShapeHint), nameof(RendererHint), nameof(ScaleHint), nameof(FilterHint),
                          nameof(SharpeningText), nameof(VolumeText), nameof(SharpeningEnabled), nameof(Summary),
+                         nameof(UpscaleHint), nameof(VibrationStrengthText),
                          nameof(SummaryWindow), nameof(SummaryPicture), nameof(SummaryPlayers),
                      })
                 base.OnPropertyChanged(new PropertyChangedEventArgs(derived));
@@ -347,6 +364,11 @@ public partial class SettingsViewModel : ObservableObject
             ScaleIndex = Math.Max(0, Array.IndexOf(Scales, s.Scale));
             FilterIndex = Math.Max(0, Array.IndexOf(Filters, s.Filter));
             Sharpening = s.Sharpening;
+            AntialiasingIndex = s.Antialiasing == "fxaa" ? 1 : 0;
+            AnisoIndex = Math.Max(0, Array.IndexOf(Anisos, s.Anisotropic));
+            UpscaleIndex = Math.Max(0, Array.IndexOf(Upscales, s.UpscaleFilter));
+            VibrationStrength = s.VibrationStrength;
+            PlaystationDirect = s.PlaystationDirect;
             HighPoly = s.HighPoly;
             Sharp2D = s.Sharp2D;
             CameraIndex = Math.Max(0, Array.IndexOf(Cameras, s.Camera));
@@ -449,6 +471,11 @@ public partial class SettingsViewModel : ObservableObject
         Scale = Scales[Math.Clamp(ScaleIndex, 0, 6)],
         Filter = Filters[Math.Clamp(FilterIndex, 0, 2)],
         Sharpening = (int)Math.Round(Sharpening),
+        Antialiasing = AntialiasingIndex == 1 ? "fxaa" : "off",
+        Anisotropic = Anisos[Math.Clamp(AnisoIndex, 0, Anisos.Length - 1)],
+        UpscaleFilter = Upscales[Math.Clamp(UpscaleIndex, 0, Upscales.Length - 1)],
+        VibrationStrength = (int)Math.Round(VibrationStrength),
+        PlaystationDirect = PlaystationDirect,
         HighPoly = HighPoly,
         Sharp2D = Sharp2D,
         Camera = Cameras[Math.Clamp(CameraIndex, 0, 2)],

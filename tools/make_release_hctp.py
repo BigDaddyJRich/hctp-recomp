@@ -47,11 +47,11 @@ KEEP = ('LICENSE', 'THIRD-PARTY-NOTICES.txt', 'README.md', 'CHANGELOG.md', 'conf
         # runs them after sync_generated.py so a player's game = the tested one
         'tools/patch_rosterx_cawcheck.py', 'tools/patch_rosterx_cawoff.py', 'tools/patch_rosterx_scale.py',
         'tools/patch_prop_texwindow.py', 'tools/patch_runner_handedits.py', 'tools/patch_rosterx_code32.py',
-        'tools/patch_svr_native_motion.py')
+        'tools/patch_svr_native_motion.py', 'tools/compact_function_table.py')
 # Nov 18: the runtime = the active PS2Recomp worktree (F:\hctp-newbase-vulcan, branch codex/new-base-vulkan) at a PINNED
 # commit (tested by Jordan; the worktree's uncommitted edits never go in). Move the pin only to a tested commit.
 RUNTIME_REPO = r'F:\hctp-newbase-vulcan'
-RUNTIME_REF = 'a71bdff'
+RUNTIME_REF = '061da4d'  # 0.3.7 candidate: branch release-0.3.7 (worktree F:/hctp-rel037), self-tested by Claude
 # Nov 18: SvR06/SvR04 entrance pyro needs a GS host-texture path that is not in the pinned runtime and other games' data;
 # hctp_public_stubs.cpp gives its no-pack answers instead
 KIT_SKIP = ('overrides_hctp/hctp_svr06_pyro.cpp',)
@@ -98,9 +98,16 @@ PLAYING
 CONTROLLERS
   - Xbox controllers (and anything that works as an Xbox controller): plug in and play.
   - PlayStation 4 and 5 controllers: USB or Bluetooth, with vibration. No extra programs needed.
+    Using DS4Windows or DualSenseX? Turn off "Read PlayStation controllers directly" on the launcher's Controls
+    page, so one controller doesn't play as two players. (Started from Steam, Steam Input is detected by itself.)
+  - Vibration too weak or too strong? Controls page > Vibration strength (100% = exactly as the game does it).
   - Keyboard: the keys are listed (and can be changed) on the launcher's Controls page. Controller buttons can be
     changed there too.
   - Up to 4 players (8 controllers can be connected).
+
+PICTURE
+  Launcher > Settings > Graphics: anti-aliasing (FXAA), anisotropic filtering (sharper floors at an angle) and
+  scaling to the window (smooth, sharp or blocky). All off by default.
 
 SLOW OR CHOPPY?
   Open the launcher > Settings > lower "Scale" (Auto picks it from your screen: a 4K screen picks 6x,
@@ -147,6 +154,11 @@ def main():
                     z.write(path, SRC + rel)
                     n += 1
             counts['ours'] = n
+            # 0.3.7: every single file KEEP names must be in the kit (a new script left untracked in git = missing
+            # from the kit = every player's setup fails at that step; caught by the Nov 20 clean-install test)
+            missing = [k for k in KEEP if not k.endswith('/') and k not in listed]
+            if missing:
+                raise SystemExit(f'not in git (git add them): {missing}')
             # PS2Recomp as committed (its working copy holds the game's generated runner code: never taken from there)
             counts['PS2Recomp@' + RUNTIME_REF] = base.add_archive(z, RUNTIME_REPO, SRC + 'PS2Recomp/', ps2recomp_skip,
                                                                   RUNTIME_REF)
