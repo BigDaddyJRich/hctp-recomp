@@ -86,7 +86,9 @@ INSTALL (step by step)
      If Windows says "Windows protected your PC": click "More info", then "Run anyway".
   3. Pick your disc image (.iso or .chd). The launcher builds the game on your PC.
      If Microsoft's free C++ build tools are missing, it installs them first (allow the Windows prompt once).
-     The first build takes 30-90 minutes. Close your browser and other games while it builds.
+     Expected time: about 25-40 minutes on a fast PC (8+ cores, 16-32 GB of memory), 1-2 hours on a 4-core PC
+     or with 8 GB of memory. The bar can move slowly for minutes: it is still working, don't close it.
+     Close your browser and other games while it builds.
   4. When it is done, press PLAY.
 
 PLAYING

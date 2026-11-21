@@ -11,7 +11,9 @@ Windows game, built on your PC from your own disc. The game's code is translated
 1. Get **HCTP-Recompiled-Windows.zip** from the [latest release](https://github.com/BigDaddyJRich/hctp-recomp/releases/latest)
    and unzip it to a short path, e.g. `C:\Games\HCTP Recompiled` (not Desktop / Downloads / OneDrive).
 2. Open **HCTP Recompiled Settings.exe** (the launcher) and pick your disc image (.iso or .chd).
-3. It builds the game on your PC (30-90 minutes the first time). Then press **PLAY**.
+3. It builds the game on your PC, then press **PLAY**. **Expected first install time:** about 25-40 minutes on a
+   fast PC (8+ cores, 16-32 GB of memory), 1-2 hours on a 4-core PC or with 8 GB of memory. The bar can move slowly
+   for minutes at a time: it is still working. Updates through the launcher rebuild too (usually quicker).
 
 **Only the unmodified USA retail disc (SLUS-20787) works.** Modded, patched or other-region ISOs break the game
 (for example a freeze on the Brock Lesnar screen).

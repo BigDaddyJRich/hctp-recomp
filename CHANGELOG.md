@@ -5,6 +5,11 @@ run scripts are intentionally kept out of the public repository.
 
 ## 0.3.7
 
+**Expected install time (first build):** about 25-40 minutes on a fast PC (8+ cores, 16-32 GB of memory), 1-2 hours
+on a 4-core PC or with 8 GB of memory (measured: the game's compiles add up to about 3 hours of one CPU core, split
+over as many cores as your memory allows). Updating from 0.3.6 in the launcher rebuilds the game too. The progress
+bar can sit for minutes on the biggest files: it is still working.
+
 - Building the game needs less memory: the biggest single file of the build (the game's 413,000-entry function
   table) now compiles in about 0.8 GB and 6 seconds instead of 1.8 GB and 40 seconds.
 - PlayStation 5 controllers: full-strength vibration on current DualSense firmware (2.24 and newer; before, it was
