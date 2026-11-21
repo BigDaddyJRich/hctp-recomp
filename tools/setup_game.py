@@ -200,7 +200,7 @@ def build_jobs():
 
 
 RESERVE_GB = 1.0  # left for Windows and the programs already open (they are already counted out of "free now")
-PER_JOB_GB = 1.5  # the biggest single compile of the game build is ~1.2 GB (measured Nov 20), with a little margin
+PER_JOB_GB = 2.0  # the biggest single compile of the game build: 1.9 GB (measured Nov 20, whole build under a 2.5 GB cap)
 
 
 def build_with_retry(build_dir, env, start, end):
