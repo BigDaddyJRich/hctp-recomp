@@ -18,6 +18,12 @@ import struct
 import sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+# --fast-only (0.3.7, players' setup): only the throughput variant (_t), the one the game registers by default
+# (HCTP_VU1_FAST unset). The cycle-exact variant is for developers (HCTP_VU1_FAST=0) and doubled this file's compile
+# memory (2.24 GB in one compile, measured Nov 20: an 8 GB PC ran out of heap here).
+FAST_ONLY = '--fast-only' in sys.argv
+if FAST_ONLY:
+    sys.argv.remove('--fast-only')
 ELF = sys.argv[1] if len(sys.argv) > 1 else os.path.join(os.environ.get('HCTP_DATA') or ROOT, 'game', 'SLUS_207.87')
 OUT = sys.argv[2] if len(sys.argv) > 2 else os.path.join(ROOT, 'generated', 'vu1_compiled.cpp')
 CODE_SIZE = 0x4000       # VU1 code memory
@@ -956,7 +962,7 @@ def main():
              'namespace',
              '{']
     global THROUGHPUT
-    for THROUGHPUT, sfx in ((False, ''), (True, '_t')):
+    for THROUGHPUT, sfx in (((True, '_t'),) if FAST_ONLY else ((False, ''), (True, '_t'))):
       pieces = []
       total_pairs = total_compiled = 0
       for n, st in enumerate(sets):
@@ -1001,7 +1007,14 @@ def main():
       lines.append('')
     lines.append('struct Vu1CompiledRegistrar')
     lines.append('{')
-    lines += ['    Vu1CompiledRegistrar()',
+    if FAST_ONLY:
+        lines += ['    Vu1CompiledRegistrar()',
+                  '    {',
+                  '        // built with --fast-only: the throughput variant only (HCTP_VU1_FAST=0 has no cycle-exact one here)',
+                  '        vu1RegisterCompiledPieces(vu1c_pieces_t, sizeof(vu1c_pieces_t) / sizeof(vu1c_pieces_t[0]));',
+                  '    }']
+    else:
+      lines += ['    Vu1CompiledRegistrar()',
               '    {',
               '        const char *fast = std::getenv("HCTP_VU1_FAST"); // throughput variant: no stall/ready bookkeeping, plain MADD',
               "        if (!(fast && fast[0] == '0')) // default on; HCTP_VU1_FAST=0 = the cycle-exact variant",

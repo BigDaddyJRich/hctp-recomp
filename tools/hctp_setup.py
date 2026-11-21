@@ -107,7 +107,8 @@ def step_recompile(recompiler, data):
     if code != 0:
         raise SetupError(f'the recompiler failed (exit code {code}); see {log}')
     progress(0.15)
-    run([sys.executable, os.path.join(SRC, 'tools', 'vu1_recomp.py'), os.path.join(data, 'game', ELF),
+    # --fast-only (0.3.7): the VU1 variant the game uses; the developers' cycle-exact copy doubled this compile (2.2 GB)
+    run([sys.executable, os.path.join(SRC, 'tools', 'vu1_recomp.py'), '--fast-only', os.path.join(data, 'game', ELF),
          os.path.join(SRC, 'generated', 'vu1_compiled.cpp')], cwd=SRC)
     progress(0.18)
     run([sys.executable, os.path.join(SRC, 'tools', 'sync_generated.py')], cwd=SRC,
