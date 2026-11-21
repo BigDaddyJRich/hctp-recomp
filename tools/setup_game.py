@@ -183,12 +183,24 @@ def build_jobs():
                     ('virtualtotal', ctypes.c_ulonglong), ('virtualfree', ctypes.c_ulonglong), ('extended', ctypes.c_ulonglong)]
     status = Status()
     status.length = ctypes.sizeof(Status)
-    total_gb, free_gb = 8, 8
+    total_gb, avail_gb, free_gb = 8.0, 4.0, 8.0
     if ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
-        total_gb, free_gb = status.total / (1 << 30), status.pagefree / (1 << 30)
-    jobs = max(1, min(os.cpu_count() or 2, int(total_gb // 3), int(free_gb // 2)))
-    say(f'{jobs} compiles at a time ({total_gb:.0f} GB of memory, {free_gb:.0f} GB of commit free)')
+        total_gb = status.total / (1 << 30)
+        avail_gb = status.free / (1 << 30)      # physical memory free right now (after Windows and open programs)
+        free_gb = status.pagefree / (1 << 30)   # commit free (memory + page file)
+    # 0.3.7: test switch HCTP_SETUP_MEMORY_GB="<free physical>,<commit free>" (a big PC acting as an 8 GB one)
+    if os.environ.get('HCTP_SETUP_MEMORY_GB'):
+        avail_gb, free_gb = (float(v) for v in os.environ['HCTP_SETUP_MEMORY_GB'].split(','))
+    # 0.3.7 (8 GB PCs): count the memory FREE now, keep RESERVE_GB for Windows and what else runs, and give each
+    # compile PER_JOB_GB (measured Nov 20: the biggest single compile after the 64 KB unity limit, with margin).
+    # Total memory alone let an 8 GB PC with a browser open run 2 compiles of up to 3.1 GB: it paged until it crawled.
+    jobs = max(1, min(os.cpu_count() or 2, int((avail_gb - RESERVE_GB) // PER_JOB_GB), int(free_gb // PER_JOB_GB)))
+    say(f'{jobs} compiles at a time ({total_gb:.0f} GB of memory, {avail_gb:.1f} GB free now, {free_gb:.0f} GB of commit free)')
     return jobs
+
+
+RESERVE_GB = 1.0  # left for Windows and the programs already open (they are already counted out of "free now")
+PER_JOB_GB = 1.5  # the biggest single compile of the game build is ~1.2 GB (measured Nov 20), with a little margin
 
 
 def build_with_retry(build_dir, env, start, end):

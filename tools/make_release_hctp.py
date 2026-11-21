@@ -51,7 +51,7 @@ KEEP = ('LICENSE', 'THIRD-PARTY-NOTICES.txt', 'README.md', 'CHANGELOG.md', 'conf
 # Nov 18: the runtime = the active PS2Recomp worktree (F:\hctp-newbase-vulcan, branch codex/new-base-vulkan) at a PINNED
 # commit (tested by Jordan; the worktree's uncommitted edits never go in). Move the pin only to a tested commit.
 RUNTIME_REPO = r'F:\hctp-newbase-vulcan'
-RUNTIME_REF = '061da4d'  # 0.3.7 candidate: branch release-0.3.7 (worktree F:/hctp-rel037), self-tested by Claude
+RUNTIME_REF = '958028e'  # 0.3.7 candidate: branch release-0.3.7 (worktree F:/hctp-rel037)
 # Nov 18: SvR06/SvR04 entrance pyro needs a GS host-texture path that is not in the pinned runtime and other games' data;
 # hctp_public_stubs.cpp gives its no-pack answers instead
 KIT_SKIP = ('overrides_hctp/hctp_svr06_pyro.cpp',)
